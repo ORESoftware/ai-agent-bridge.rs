@@ -133,7 +133,10 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
         };
 
         if let Req::Auth { token } = &req {
-            authed = state.config.api_auth_bearer.as_deref() == Some(token.as_str());
+            authed = match state.config.api_auth_bearer.as_deref() {
+                Some(expected) => crate::config::constant_time_eq(expected.as_bytes(), token.as_bytes()),
+                None => true,
+            };
             write_line(&writer, &json!({ "ok": authed, "op": "auth" })).await?;
             if !authed {
                 write_line(&writer, &json!({ "ok": false, "error": "unauthorized" })).await?;
