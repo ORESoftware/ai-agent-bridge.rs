@@ -22,6 +22,12 @@ pub enum BridgeError {
     #[error("bad request: {0}")]
     BadRequest(String),
 
+    #[error("{what} exceeds the {limit}-byte limit")]
+    PayloadTooLarge { what: &'static str, limit: usize },
+
+    #[error("capacity for {what} reached ({limit})")]
+    CapacityExceeded { what: &'static str, limit: usize },
+
     #[error("unauthorized")]
     Unauthorized,
 }
