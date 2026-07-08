@@ -75,6 +75,10 @@ fn env_or(key: &str, default: &str) -> String {
     env_opt(key).unwrap_or_else(|| default.to_string())
 }
 
+fn env_usize(key: &str, default: usize) -> usize {
+    env_opt(key).and_then(|v| v.parse().ok()).filter(|d| *d > 0).unwrap_or(default)
+}
+
 impl Config {
     /// Build config from the environment. Accepts both the service-specific env
     /// names and a few common aliases so it slots into existing deployments.
