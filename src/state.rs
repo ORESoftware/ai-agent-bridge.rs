@@ -100,12 +100,26 @@ impl AppState {
         if key.is_empty() {
             return Err(BridgeError::BadRequest("agent_key is required".into()));
         }
+        if key.len() > MAX_KEY_BYTES {
+            return Err(BridgeError::PayloadTooLarge { what: "agent_key", limit: MAX_KEY_BYTES });
+        }
         agent.agent_key = key.clone();
         if agent.display_name.trim().is_empty() {
             agent.display_name = key.clone();
         }
+        // Truncate free-text fields to the DB column limits (UTF-8 safe).
+        truncate_bytes(&mut agent.display_name, 200);
+        if let Some(h) = agent.host.as_mut() {
+            truncate_bytes(h, 255);
+        }
         agent.registered_at = now_ts();
-        self.agents.write().unwrap().insert(key, agent.clone());
+        {
+            let mut agents = self.agents.write().unwrap();
+            if !agents.contains_key(&key) && agents.len() >= self.config.max_agents {
+                return Err(BridgeError::CapacityExceeded { what: "agents", limit: self.config.max_agents });
+            }
+            agents.insert(key, agent.clone());
+        }
         self.persist_agent(&agent);
         Ok(agent)
     }
