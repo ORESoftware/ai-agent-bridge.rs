@@ -44,7 +44,10 @@ pub fn router(state: Arc<AppState>) -> Router {
     let public = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(healthz))
-        .route("/", get(index));
+        .route("/", get(index))
+        // Backward-compatible claude-inbox contract (see crate::compat).
+        .route("/health", get(health_compat))
+        .route("/claude", post(claude_inbox));
 
     let api = Router::new()
         .route("/agents/register", post(register_agent))
