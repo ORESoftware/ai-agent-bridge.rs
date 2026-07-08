@@ -5,7 +5,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::StatusCode,
     middleware::{from_fn_with_state, Next},
     response::sse::{Event as SseEvent, KeepAlive, Sse},
