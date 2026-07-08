@@ -81,17 +81,20 @@ async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
             }
         };
         reader.consume(upto);
-        if newline {
-            if buf.last() == Some(&b'\r') {
-                buf.pop();
-            }
-            return Ok(Some(String::from_utf8_lossy(&buf).into_owned()));
-        }
+        // Enforce the cap in BOTH cases — a full oversized line plus its newline
+        // can arrive in a single fill_buf chunk, so checking only the no-newline
+        // path would let it through.
         if buf.len() > max {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "tcp frame exceeds max size",
             ));
+        }
+        if newline {
+            if buf.last() == Some(&b'\r') {
+                buf.pop();
+            }
+            return Ok(Some(String::from_utf8_lossy(&buf).into_owned()));
         }
     }
 }
