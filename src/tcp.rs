@@ -20,6 +20,9 @@ type Writer = Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>;
 
 pub async fn serve(state: Arc<AppState>, listener: TcpListener) -> anyhow::Result<()> {
     info!(addr = %listener.local_addr()?, "tcp listener up");
+    // Bound concurrent connections; excess are dropped (load shed) rather than
+    // spawning unbounded tasks.
+    let conns = Arc::new(tokio::sync::Semaphore::new(state.config.max_tcp_connections));
     loop {
         let (socket, peer) = match listener.accept().await {
             Ok(v) => v,
@@ -28,12 +31,65 @@ pub async fn serve(state: Arc<AppState>, listener: TcpListener) -> anyhow::Resul
                 continue;
             }
         };
+        let permit = match conns.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                warn!(peer = %peer, "tcp connection cap reached; dropping connection");
+                continue;
+            }
+        };
         let state = state.clone();
         tokio::spawn(async move {
+            let _permit = permit; // released when the connection ends
             if let Err(e) = handle_conn(state, socket).await {
                 debug!(peer = %peer, error = %e, "tcp connection closed");
             }
         });
+    }
+}
+
+/// Read one `\n`-delimited frame, but never buffer more than `max` bytes (a
+/// client that never sends a newline must not exhaust memory). Returns `None` at
+/// EOF. Trailing `\r` is stripped.
+async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    max: usize,
+) -> std::io::Result<Option<String>> {
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        let (upto, newline) = {
+            let available = reader.fill_buf().await?;
+            if available.is_empty() {
+                return if buf.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+                };
+            }
+            match available.iter().position(|&b| b == b'\n') {
+                Some(pos) => {
+                    buf.extend_from_slice(&available[..pos]);
+                    (pos + 1, true)
+                }
+                None => {
+                    buf.extend_from_slice(available);
+                    (available.len(), false)
+                }
+            }
+        };
+        reader.consume(upto);
+        if newline {
+            if buf.last() == Some(&b'\r') {
+                buf.pop();
+            }
+            return Ok(Some(String::from_utf8_lossy(&buf).into_owned()));
+        }
+        if buf.len() > max {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "tcp frame exceeds max size",
+            ));
+        }
     }
 }
 
