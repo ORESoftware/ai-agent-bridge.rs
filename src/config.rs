@@ -36,6 +36,11 @@ pub struct Config {
     /// Similarity below which `resolve` mints a brand-new topic instead of
     /// joining an existing one (the "fluid topic formation" knob).
     pub resolve_threshold: f32,
+    /// Bearer token for the legacy `POST /claude` claude-inbox route. When set,
+    /// that route requires `Authorization: Bearer <token>`.
+    pub inbox_token: Option<String>,
+    /// Directory holding `inbox.jsonl` for the legacy claude-inbox contract.
+    pub inbox_dir: std::path::PathBuf,
 }
 
 fn env_opt(key: &str) -> Option<String> {
@@ -92,6 +97,12 @@ impl Config {
             database_url: env_opt("DATABASE_URL").or_else(|| env_opt("RDS_DATABASE_URL")),
             history_limit,
             resolve_threshold,
+            inbox_token: env_opt("AI_AGENT_BRIDGE_TOKEN").or_else(|| env_opt("CLAUDE_INBOX_TOKEN")),
+            inbox_dir: std::path::PathBuf::from(
+                env_opt("AI_AGENT_BRIDGE_DIR")
+                    .or_else(|| env_opt("CLAUDE_INBOX_DIR"))
+                    .unwrap_or_else(|| "/tmp/claude_bridge".to_string()),
+            ),
         })
     }
 
@@ -110,6 +121,8 @@ impl Config {
             database_url: None,
             history_limit: DEFAULT_HISTORY_LIMIT,
             resolve_threshold: 0.72,
+            inbox_token: None,
+            inbox_dir: std::env::temp_dir().join("claude_bridge_test"),
         }
     }
 }

@@ -11,9 +11,22 @@ use ai_agent_bridge::{http, tcp};
 use tokio::net::TcpListener;
 
 pub fn state() -> Arc<AppState> {
-    let cfg = Config::in_memory();
+    let mut cfg = Config::in_memory();
+    // Unique inbox dir per state so the claude-inbox compat tests don't collide.
+    cfg.inbox_dir = unique_tmp_dir();
     let embedder = Embedder::new(cfg.embed_dim, "local-hash-v1".into(), None, "local".into(), None);
     AppState::new(cfg, embedder)
+}
+
+fn unique_tmp_dir() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("aab-test-{nanos}-{n}"))
 }
 
 /// Boot the HTTP server on a free port; returns its base URL.
