@@ -142,25 +142,26 @@ async fn tcp_oversized_frame_drops_the_connection() {
     assert_eq!(n, 0, "expected EOF after an oversized frame");
 }
 
+async fn send(w: &mut tokio::net::tcp::OwnedWriteHalf, v: Value) {
+    let mut line = serde_json::to_vec(&v).unwrap();
+    line.push(b'\n');
+    w.write_all(&line).await.unwrap();
+    w.flush().await.unwrap();
+}
+
+async fn recv(reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>) -> Value {
+    let mut l = String::new();
+    reader.read_line(&mut l).await.unwrap();
+    serde_json::from_str(l.trim()).unwrap()
+}
+
 #[tokio::test]
 async fn tcp_auth_handshake_enforced() {
     let mut cfg = common::base_config();
     cfg.api_auth_bearer = Some("tok".into());
     let addr = common::spawn_tcp(common::state_with(cfg)).await;
-    let (r, w) = TcpStream::connect(addr).await.unwrap().into_split();
+    let (r, mut w) = TcpStream::connect(addr).await.unwrap().into_split();
     let mut reader = BufReader::new(r);
-    let mut w = w;
-
-    let recv = |reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>| async move {
-        let mut l = String::new();
-        reader.read_line(&mut l).await.unwrap();
-        serde_json::from_str::<Value>(l.trim()).unwrap()
-    };
-    let mut send = |w: &mut tokio::net::tcp::OwnedWriteHalf, v: Value| {
-        let mut line = serde_json::to_vec(&v).unwrap();
-        line.push(b'\n');
-        async move { w.write_all(&line).await.unwrap(); w.flush().await.unwrap(); }
-    };
 
     let hello = recv(&mut reader).await;
     assert_eq!(hello["needs_auth"], true);
