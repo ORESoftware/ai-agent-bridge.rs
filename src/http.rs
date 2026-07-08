@@ -41,6 +41,7 @@ impl IntoResponse for ApiError {
 type ApiResult = Result<Json<serde_json::Value>, ApiError>;
 
 pub fn router(state: Arc<AppState>) -> Router {
+    let body_limit = state.config.max_http_body_bytes;
     let public = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(healthz))
