@@ -89,20 +89,36 @@ pub struct AppState {
     pub embedder: Embedder,
     agents: RwLock<HashMap<String, Agent>>,
     channels: RwLock<HashMap<String, ChannelState>>,
+    /// Live count of `inbox.jsonl` lines, so `GET /health` is O(1) instead of
+    /// re-scanning the whole file on every (unauthenticated) request.
+    inbox_count: AtomicU64,
     #[cfg(feature = "postgres")]
     db: Option<crate::db::Db>,
 }
 
 impl AppState {
     pub fn new(config: Config, embedder: Embedder) -> Arc<Self> {
+        let inbox_count = AtomicU64::new(crate::compat::inbox_count(&config.inbox_dir) as u64);
         Arc::new(Self {
             config,
             embedder,
             agents: RwLock::new(HashMap::new()),
             channels: RwLock::new(HashMap::new()),
+            inbox_count,
             #[cfg(feature = "postgres")]
             db: None,
         })
+    }
+
+    /// Append a message to the claude-inbox `inbox.jsonl` and bump the counter.
+    pub fn append_inbox(&self, msg: &serde_json::Value) -> std::io::Result<()> {
+        crate::compat::append_inbox(&self.config.inbox_dir, msg)?;
+        self.inbox_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub fn inbox_message_count(&self) -> u64 {
+        self.inbox_count.load(Ordering::Relaxed)
     }
 
     #[cfg(feature = "postgres")]
