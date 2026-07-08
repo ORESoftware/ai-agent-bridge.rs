@@ -224,6 +224,16 @@ async fn dispatch(
             Some(reply(state.set_context(&channel, &key, value, &updated_by).map(|e| json!({ "entry": e }))))
         }
         Req::Subscribe { channel, agent_key, since } => {
+            // Drop finished forwarders, then cap live subscriptions per connection
+            // so a client cannot spawn unbounded tasks with repeated `subscribe`s.
+            sub_tasks.retain(|t| !t.is_finished());
+            if sub_tasks.len() >= MAX_SUBS_PER_CONN {
+                return Some(json!({
+                    "ok": false,
+                    "error": "too_many_subscriptions",
+                    "limit": MAX_SUBS_PER_CONN
+                }));
+            }
             match state.subscribe(&channel, agent_key.as_deref()) {
                 Ok(mut rx) => {
                     // Replay recent history first so a late joiner has context.
