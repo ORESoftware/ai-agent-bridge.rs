@@ -3,8 +3,9 @@
 //! from. Postgres (when compiled in) is a best-effort mirror, never on the hot path.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
+use parking_lot::RwLock;
 use tokio::sync::broadcast;
 
 use crate::config::{Config, MAX_MEMBERS};
