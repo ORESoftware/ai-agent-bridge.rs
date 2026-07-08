@@ -119,7 +119,7 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
     )
     .await?;
 
-    while let Some(line) = lines.next_line().await? {
+    while let Some(line) = read_capped_line(&mut reader, max_line).await? {
         let line = line.trim();
         if line.is_empty() {
             continue;
