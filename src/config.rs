@@ -64,6 +64,19 @@ pub struct Config {
     pub max_http_body_bytes: usize,
 }
 
+/// Constant-time byte comparison for bearer tokens (avoids leaking a match
+/// prefix via response timing). Length is allowed to leak, as is conventional.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 fn env_opt(key: &str) -> Option<String> {
     match std::env::var(key) {
         Ok(v) if !v.trim().is_empty() => Some(v.trim().to_string()),
