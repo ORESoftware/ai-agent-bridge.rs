@@ -105,7 +105,8 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
     let _ = socket.set_nodelay(true);
     let (read_half, write_half) = socket.into_split();
     let writer: Writer = Arc::new(Mutex::new(write_half));
-    let mut lines = BufReader::new(read_half).lines();
+    let mut reader = BufReader::new(read_half);
+    let max_line = state.config.max_tcp_line_bytes;
 
     // Auth handshake: when a bearer is configured, nothing but `auth`/`ping`
     // works until the client presents it.
