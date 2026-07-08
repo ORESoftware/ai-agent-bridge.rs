@@ -38,7 +38,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # Postgres persistence is OFF by default so the in-memory core builds and tests
 # anywhere (laptop / CI) without the pg-defs path dep. The cluster build turns it
 # on with `--features postgres`, mirroring soccer_engine's `postgres-persistence`.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json"], optional = true }
+# `macros` is required so the generated dd-pg-defs crate's `#[derive(sqlx::FromRow)]`
+# resolves (its own sqlx dep does not enable it); feature-unified across the graph.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "macros"], optional = true }
 dd-pg-defs = { path = "../../libs/pg-defs/generated/rust", features = ["sqlx"], optional = true }
 
 [features]
