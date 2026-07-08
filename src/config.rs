@@ -121,6 +121,8 @@ impl Config {
             database_url: None,
             history_limit: DEFAULT_HISTORY_LIMIT,
             resolve_threshold: 0.72,
+            inbox_token: None,
+            inbox_dir: std::env::temp_dir().join("claude_bridge_test"),
         }
     }
 }
