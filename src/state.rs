@@ -158,7 +158,7 @@ impl AppState {
         }
         let topic = if topic.trim().is_empty() { slug.replace('-', " ") } else { topic.to_string() };
         let embedding = self.embedder.embed(&topic).await;
-        Ok(self.insert_channel(slug, topic, created_by, embedding))
+        self.insert_channel(slug, topic, created_by, embedding)
     }
 
     /// Semantic search over topic embeddings, best score first.
