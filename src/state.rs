@@ -734,10 +734,12 @@ mod tests {
 
     #[test]
     fn truncate_bytes_respects_char_boundaries() {
-        let mut s = "aébあc".to_string(); // 1 + 2 + 2 + 3 + 1 = 9 bytes
-        truncate_bytes(&mut s, 4); // would split 'あ' at byte 4 -> must back off to 3
-        assert_eq!(s, "aé"); // 3 bytes, no panic, no split char
-        assert!(s.len() <= 4);
+        // bytes: a(1) é(2) b(1) あ(3) c(1) = 8 total
+        let mut s = "aébあc".to_string();
+        // max=5 lands inside 'あ' (bytes 4..7); must back off to byte 4.
+        truncate_bytes(&mut s, 5);
+        assert_eq!(s, "aéb");
+        assert_eq!(s.len(), 4);
     }
 
     #[test]
