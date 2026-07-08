@@ -1,0 +1,22 @@
+# Rust build output
+/target
+target/
+**/*.rs.bk
+
+# We DO commit Cargo.lock — this is a binary/service crate and the deploy builds
+# with `cargo build --release --locked`.
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+
+# Editor / OS cruft
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Logs
+*.log
