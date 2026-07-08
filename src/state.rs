@@ -221,36 +221,46 @@ impl AppState {
         topic: String,
         created_by: &str,
         embedding: Vec<f32>,
-    ) -> Channel {
-        let mut chans = self.channels.write().unwrap();
-        // Double-checked: a concurrent creator may have won the race.
-        if let Some(existing) = chans.get(&slug) {
-            return existing.to_public();
-        }
-        let (tx, _rx) = broadcast::channel(256);
-        let created_by = if created_by.trim().is_empty() { "system" } else { created_by };
-        let state = ChannelState {
-            slug: slug.clone(),
-            topic,
-            topic_summary: None,
-            embedding,
-            embedding_model: self.embedder.model_name().to_string(),
-            created_by: created_by.to_string(),
-            created_at: now_ts(),
-            meta: serde_json::json!({}),
-            members: HashMap::new(),
-            messages: VecDeque::new(),
-            next_seq: 1,
-            message_count: 0,
-            context: HashMap::new(),
-            tx,
-            history_limit: self.config.history_limit,
+    ) -> BridgeResult<Channel> {
+        let public = {
+            let mut chans = self.channels.write().unwrap();
+            // Double-checked: a concurrent creator may have won the race.
+            if let Some(existing) = chans.get(&slug) {
+                return Ok(existing.to_public());
+            }
+            // Bound total channels so an attacker cannot mint unbounded topics
+            // (e.g. via `resolve`/`create`/`POST /claude` with fresh queries).
+            if chans.len() >= self.config.max_channels {
+                return Err(BridgeError::CapacityExceeded {
+                    what: "channels",
+                    limit: self.config.max_channels,
+                });
+            }
+            let (tx, _rx) = broadcast::channel(256);
+            let created_by = if created_by.trim().is_empty() { "system" } else { created_by };
+            let state = ChannelState {
+                slug: slug.clone(),
+                topic,
+                topic_summary: None,
+                embedding,
+                embedding_model: self.embedder.model_name().to_string(),
+                created_by: created_by.to_string(),
+                created_at: now_ts(),
+                meta: serde_json::json!({}),
+                members: HashMap::new(),
+                messages: VecDeque::new(),
+                next_seq: 1,
+                message_count: 0,
+                context: HashMap::new(),
+                tx,
+                history_limit: self.config.history_limit,
+            };
+            let public = state.to_public();
+            chans.insert(slug, state);
+            public
         };
-        let public = state.to_public();
-        chans.insert(slug, state);
-        drop(chans);
-        self.persist_channel(&public, &public.topic.clone());
-        public
+        self.persist_channel(&public, &public.topic);
+        Ok(public)
     }
 
     /// Reinstate a channel from persisted state on boot, using its stored
