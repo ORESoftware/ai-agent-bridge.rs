@@ -16,6 +16,21 @@ pub const MAX_MEMBERS: usize = 32;
 /// in Postgres when persistence is enabled.
 pub const DEFAULT_HISTORY_LIMIT: usize = 1000;
 
+/// Resource ceilings (all overridable via env) that bound memory against a
+/// hostile or buggy client. Channels/agents grow unbounded otherwise; messages
+/// and TCP frames are read from the network.
+pub const DEFAULT_MAX_CHANNELS: usize = 10_000;
+pub const DEFAULT_MAX_AGENTS: usize = 50_000;
+/// Max message/context byte length — matches the DB `content` CHECK (1 MiB).
+pub const DEFAULT_MAX_CONTENT_BYTES: usize = 1_048_576;
+/// Max bytes in one TCP JSONL frame before the connection is dropped (a frame
+/// with no newline must not buffer without bound).
+pub const DEFAULT_MAX_TCP_LINE_BYTES: usize = 2_097_152;
+/// Max concurrent TCP connections (each is a task); excess are dropped.
+pub const DEFAULT_MAX_TCP_CONNECTIONS: usize = 4_096;
+/// Max HTTP request body bytes (also guards `POST /claude`).
+pub const DEFAULT_MAX_HTTP_BODY_BYTES: usize = 2_097_152;
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub host: IpAddr,
