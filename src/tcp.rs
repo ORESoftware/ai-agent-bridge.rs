@@ -18,6 +18,9 @@ use crate::types::{Agent, AgentKind, Event, MemberRole, Role};
 
 type Writer = Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>;
 
+/// Max concurrent `subscribe` forwarders on a single TCP connection.
+const MAX_SUBS_PER_CONN: usize = 64;
+
 pub async fn serve(state: Arc<AppState>, listener: TcpListener) -> anyhow::Result<()> {
     info!(addr = %listener.local_addr()?, "tcp listener up");
     // Bound concurrent connections; excess are dropped (load shed) rather than
