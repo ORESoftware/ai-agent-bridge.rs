@@ -20,6 +20,7 @@ dependencies = [
  "chrono",
  "dd-pg-defs",
  "futures",
+ "parking_lot",
  "reqwest",
  "serde",
  "serde_json",
