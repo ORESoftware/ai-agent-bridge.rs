@@ -94,6 +94,19 @@ Tables live in the dedicated **`ai_agent_bridge`** Postgres schema, owned by
 `remote/libs/pg-defs` (the shared schema contract). Migrations are applied by a
 human via the pg-defs review flow — this service never creates or migrates tables.
 
+## Backward compatibility (claude-inbox)
+
+This service supersedes the earlier `ai-agent-bridge-rs` claude-inbox LAN bridge
+and keeps its exact wire contract, so existing senders and the Claude-side watcher
+keep working:
+
+- `GET /health` → `{ok, service, port, inbox_messages, auth}`.
+- `POST /claude` (Bearer, if `AI_AGENT_BRIDGE_TOKEN`/`CLAUDE_INBOX_TOKEN` is set) with
+  `{"prompt","from","topic"}` appends a `{id, ts, from, topic, prompt}` line to
+  `inbox.jsonl` (in `AI_AGENT_BRIDGE_DIR`/`CLAUDE_INBOX_DIR`, default
+  `/tmp/claude_bridge`) and returns `{queued, id, note}`. As a superset bonus, the
+  message is also mirrored onto the chat bus (a channel named after `topic`).
+
 ## Deployment
 
 Deployed to the ORE clusters (AWS + Hetzner) as a git submodule of
