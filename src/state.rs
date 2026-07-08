@@ -535,11 +535,24 @@ impl AppState {
         if key.is_empty() {
             return Err(BridgeError::BadRequest("context key is required".into()));
         }
+        if key.len() > MAX_CONTEXT_KEY_BYTES {
+            return Err(BridgeError::PayloadTooLarge { what: "context key", limit: MAX_CONTEXT_KEY_BYTES });
+        }
+        let value_bytes = serde_json::to_vec(&value).map(|v| v.len()).unwrap_or(usize::MAX);
+        if value_bytes > self.config.max_content_bytes {
+            return Err(BridgeError::PayloadTooLarge {
+                what: "context value",
+                limit: self.config.max_content_bytes,
+            });
+        }
         let entry = {
             let mut chans = self.channels.write().unwrap();
             let ch = chans
                 .get_mut(slug)
                 .ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
+            if !ch.context.contains_key(key) && ch.context.len() >= MAX_CONTEXT_KEYS {
+                return Err(BridgeError::CapacityExceeded { what: "context keys", limit: MAX_CONTEXT_KEYS });
+            }
             let version = ch.context.get(key).map(|e| e.version + 1).unwrap_or(1);
             let entry = ContextEntry {
                 key: key.to_string(),
