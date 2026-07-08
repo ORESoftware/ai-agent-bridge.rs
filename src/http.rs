@@ -100,6 +100,79 @@ async fn index() -> impl IntoResponse {
     }))
 }
 
+// ---- claude-inbox backward compatibility (see crate::compat) -----------------
+
+/// Legacy `GET /health` — same payload shape as the retired ai-agent-bridge-rs.
+async fn health_compat(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(json!({
+        "ok": true,
+        "service": "ai-agent-bridge",
+        "port": s.config.http_port,
+        "inbox_messages": crate::compat::inbox_count(&s.config.inbox_dir),
+        "auth": "Bearer token required for POST /claude",
+    }))
+}
+
+/// Legacy `POST /claude` — Bearer-protected inbox append. Appends the exact
+/// `{id, ts, from, topic, prompt}` line to `inbox.jsonl`, and as a superset bonus
+/// also mirrors the message onto the chat bus (best-effort).
+async fn claude_inbox(
+    State(s): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    if let Some(tok) = &s.config.inbox_token {
+        let presented = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok());
+        if presented != Some(format!("Bearer {tok}").as_str()) {
+            return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" }))).into_response();
+        }
+    }
+
+    let data: serde_json::Value = if body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(v) => v,
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("bad json: {e}") }))).into_response()
+            }
+        }
+    };
+
+    let id = crate::compat::now_millis();
+    let from = crate::compat::field(&data, "from", "codex", 64);
+    let topic = crate::compat::field(&data, "topic", "", 128);
+    let prompt = data.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let msg = json!({ "id": id, "ts": crate::compat::iso8601_secs(), "from": from, "topic": topic, "prompt": prompt });
+
+    if let Err(e) = crate::compat::append_inbox(&s.config.inbox_dir, &msg) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("inbox write failed: {e}") }))).into_response();
+    }
+
+    // Superset bonus: surface it on the chat bus too, so subscribed agents see it
+    // live. Never fails the inbox contract.
+    if !prompt.is_empty() {
+        let slug = crate::state::slugify(&topic);
+        let slug = if slug.is_empty() { "claude-inbox".to_string() } else { slug };
+        let topic_text = if topic.trim().is_empty() { "claude inbox" } else { &topic };
+        if s.create_or_get_channel(&slug, topic_text, &from).await.is_ok() {
+            let _ = s.post_message(&slug, &from, Role::User, &prompt, json!({ "via": "claude-inbox", "id": id }));
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "queued": true,
+            "id": id,
+            "note": "Claude will read this on its next watcher wake and reply via the peer bridge.",
+        })),
+    )
+        .into_response()
+}
+
 // ---- agents -----------------------------------------------------------------
 
 #[derive(Deserialize)]
