@@ -12,6 +12,25 @@ use crate::embed::{cosine, Embedder};
 use crate::error::{BridgeError, BridgeResult};
 use crate::types::*;
 
+/// Max bytes for an `agent_key` (matches the DB `varchar(120)` columns).
+const MAX_KEY_BYTES: usize = 120;
+/// Max bytes for a shared-context key (matches DB `varchar(200)`).
+const MAX_CONTEXT_KEY_BYTES: usize = 200;
+/// Max distinct shared-context keys per channel.
+const MAX_CONTEXT_KEYS: usize = 10_000;
+
+/// Truncate a `String` to at most `max` bytes without splitting a UTF-8 char.
+fn truncate_bytes(s: &mut String, max: usize) {
+    if s.len() <= max {
+        return;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s.truncate(end);
+}
+
 /// Live per-channel state. The embedding is kept here (never serialized to
 /// clients); everything a client sees comes through [`ChannelState::to_public`].
 struct ChannelState {
