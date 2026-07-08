@@ -97,6 +97,12 @@ impl Config {
             database_url: env_opt("DATABASE_URL").or_else(|| env_opt("RDS_DATABASE_URL")),
             history_limit,
             resolve_threshold,
+            inbox_token: env_opt("AI_AGENT_BRIDGE_TOKEN").or_else(|| env_opt("CLAUDE_INBOX_TOKEN")),
+            inbox_dir: std::path::PathBuf::from(
+                env_opt("AI_AGENT_BRIDGE_DIR")
+                    .or_else(|| env_opt("CLAUDE_INBOX_DIR"))
+                    .unwrap_or_else(|| "/tmp/claude_bridge".to_string()),
+            ),
         })
     }
 
