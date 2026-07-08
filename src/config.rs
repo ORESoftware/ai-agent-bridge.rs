@@ -128,6 +128,12 @@ impl Config {
                     .or_else(|| env_opt("CLAUDE_INBOX_DIR"))
                     .unwrap_or_else(|| "/tmp/claude_bridge".to_string()),
             ),
+            max_channels: env_usize("MAX_CHANNELS", DEFAULT_MAX_CHANNELS),
+            max_agents: env_usize("MAX_AGENTS", DEFAULT_MAX_AGENTS),
+            max_content_bytes: env_usize("MAX_CONTENT_BYTES", DEFAULT_MAX_CONTENT_BYTES),
+            max_tcp_line_bytes: env_usize("MAX_TCP_LINE_BYTES", DEFAULT_MAX_TCP_LINE_BYTES),
+            max_tcp_connections: env_usize("MAX_TCP_CONNECTIONS", DEFAULT_MAX_TCP_CONNECTIONS),
+            max_http_body_bytes: env_usize("MAX_HTTP_BODY_BYTES", DEFAULT_MAX_HTTP_BODY_BYTES),
         })
     }
 
