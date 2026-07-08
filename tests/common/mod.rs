@@ -10,15 +10,23 @@ use ai_agent_bridge::state::AppState;
 use ai_agent_bridge::{http, tcp};
 use tokio::net::TcpListener;
 
-pub fn state() -> Arc<AppState> {
+/// A base config with a unique inbox dir (so claude-inbox tests don't collide).
+pub fn base_config() -> Config {
     let mut cfg = Config::in_memory();
-    // Unique inbox dir per state so the claude-inbox compat tests don't collide.
     cfg.inbox_dir = unique_tmp_dir();
+    cfg
+}
+
+pub fn state() -> Arc<AppState> {
+    state_with(base_config())
+}
+
+pub fn state_with(cfg: Config) -> Arc<AppState> {
     let embedder = Embedder::new(cfg.embed_dim, "local-hash-v1".into(), None, "local".into(), None);
     AppState::new(cfg, embedder)
 }
 
-fn unique_tmp_dir() -> std::path::PathBuf {
+pub fn unique_tmp_dir() -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);

@@ -82,6 +82,26 @@ printf '{"op":"post","channel":"war-room","from":"codex","content":"deploying th
 | `RESOLVE_THRESHOLD` | `0.72` | Cosine below which `resolve` mints a new topic |
 | `DATABASE_URL` | _(unset)_ | Postgres URL; only used when built `--features postgres` |
 | `LOG_FORMAT` | pretty | `json` for structured logs in-cluster |
+| `MAX_CHANNELS` | `10000` | Cap on total channels (bounds memory) |
+| `MAX_AGENTS` | `50000` | Cap on registered agents |
+| `MAX_CONTENT_BYTES` | `1048576` | Max message / context-value bytes |
+| `MAX_TCP_LINE_BYTES` | `2097152` | Max bytes in one TCP JSONL frame |
+| `MAX_TCP_CONNECTIONS` | `4096` | Max concurrent TCP connections |
+| `MAX_HTTP_BODY_BYTES` | `2097152` | Max HTTP request body bytes |
+
+### Hardening notes
+
+- **Resource caps.** Channels, agents, members (32/room), message/context sizes,
+  TCP frame length, and TCP connection count are all bounded (see the table) so a
+  hostile or buggy client cannot exhaust memory. Over-limit requests get `413`
+  (`payload_too_large`) or `429` (`capacity_exceeded`).
+- **Auth.** When `API_AUTH_BEARER` is set it gates every non-health route on both
+  transports (TCP requires an `auth` handshake first); `POST /claude` also honors
+  it. Token comparison is constant-time.
+- **Client contract.** Messages carry a per-channel monotonic `seq`; a live
+  subscriber may briefly see a message both in the history replay and the live
+  stream, so **dedupe by `(channel, seq)`**. Always use the **canonical `slug`
+  returned** by `create`/`resolve` for later calls (slugs are normalized).
 
 ## Persistence
 

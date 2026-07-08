@@ -3,14 +3,35 @@
 //! from. Postgres (when compiled in) is a best-effort mirror, never on the hot path.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
+use parking_lot::RwLock;
 use tokio::sync::broadcast;
 
 use crate::config::{Config, MAX_MEMBERS};
 use crate::embed::{cosine, Embedder};
 use crate::error::{BridgeError, BridgeResult};
 use crate::types::*;
+
+/// Max bytes for an `agent_key` (matches the DB `varchar(120)` columns).
+const MAX_KEY_BYTES: usize = 120;
+/// Max bytes for a shared-context key (matches DB `varchar(200)`).
+const MAX_CONTEXT_KEY_BYTES: usize = 200;
+/// Max distinct shared-context keys per channel.
+const MAX_CONTEXT_KEYS: usize = 10_000;
+
+/// Truncate a `String` to at most `max` bytes without splitting a UTF-8 char.
+fn truncate_bytes(s: &mut String, max: usize) {
+    if s.len() <= max {
+        return;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s.truncate(end);
+}
 
 /// Live per-channel state. The embedding is kept here (never serialized to
 /// clients); everything a client sees comes through [`ChannelState::to_public`].
@@ -68,20 +89,36 @@ pub struct AppState {
     pub embedder: Embedder,
     agents: RwLock<HashMap<String, Agent>>,
     channels: RwLock<HashMap<String, ChannelState>>,
+    /// Live count of `inbox.jsonl` lines, so `GET /health` is O(1) instead of
+    /// re-scanning the whole file on every (unauthenticated) request.
+    inbox_count: AtomicU64,
     #[cfg(feature = "postgres")]
     db: Option<crate::db::Db>,
 }
 
 impl AppState {
     pub fn new(config: Config, embedder: Embedder) -> Arc<Self> {
+        let inbox_count = AtomicU64::new(crate::compat::inbox_count(&config.inbox_dir) as u64);
         Arc::new(Self {
             config,
             embedder,
             agents: RwLock::new(HashMap::new()),
             channels: RwLock::new(HashMap::new()),
+            inbox_count,
             #[cfg(feature = "postgres")]
             db: None,
         })
+    }
+
+    /// Append a message to the claude-inbox `inbox.jsonl` and bump the counter.
+    pub fn append_inbox(&self, msg: &serde_json::Value) -> std::io::Result<()> {
+        crate::compat::append_inbox(&self.config.inbox_dir, msg)?;
+        self.inbox_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub fn inbox_message_count(&self) -> u64 {
+        self.inbox_count.load(Ordering::Relaxed)
     }
 
     #[cfg(feature = "postgres")]
@@ -100,18 +137,32 @@ impl AppState {
         if key.is_empty() {
             return Err(BridgeError::BadRequest("agent_key is required".into()));
         }
+        if key.len() > MAX_KEY_BYTES {
+            return Err(BridgeError::PayloadTooLarge { what: "agent_key", limit: MAX_KEY_BYTES });
+        }
         agent.agent_key = key.clone();
         if agent.display_name.trim().is_empty() {
             agent.display_name = key.clone();
         }
+        // Truncate free-text fields to the DB column limits (UTF-8 safe).
+        truncate_bytes(&mut agent.display_name, 200);
+        if let Some(h) = agent.host.as_mut() {
+            truncate_bytes(h, 255);
+        }
         agent.registered_at = now_ts();
-        self.agents.write().unwrap().insert(key, agent.clone());
+        {
+            let mut agents = self.agents.write();
+            if !agents.contains_key(&key) && agents.len() >= self.config.max_agents {
+                return Err(BridgeError::CapacityExceeded { what: "agents", limit: self.config.max_agents });
+            }
+            agents.insert(key, agent.clone());
+        }
         self.persist_agent(&agent);
         Ok(agent)
     }
 
     pub fn list_agents(&self) -> Vec<Agent> {
-        self.agents.read().unwrap().values().cloned().collect()
+        self.agents.read().values().cloned().collect()
     }
 
     // ---- channels -------------------------------------------------------------
@@ -120,7 +171,6 @@ impl AppState {
         let mut v: Vec<Channel> = self
             .channels
             .read()
-            .unwrap()
             .values()
             .map(|c| c.to_public())
             .collect();
@@ -131,14 +181,13 @@ impl AppState {
     pub fn get_channel(&self, slug: &str) -> BridgeResult<Channel> {
         self.channels
             .read()
-            .unwrap()
             .get(slug)
             .map(|c| c.to_public())
             .ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))
     }
 
     fn channel_exists(&self, slug: &str) -> bool {
-        self.channels.read().unwrap().contains_key(slug)
+        self.channels.read().contains_key(slug)
     }
 
     /// Create a channel by slug, or return the existing one unchanged. The topic
@@ -153,19 +202,19 @@ impl AppState {
         if slug.is_empty() {
             return Err(BridgeError::BadRequest("slug is required".into()));
         }
-        if let Some(ch) = self.channels.read().unwrap().get(&slug) {
+        if let Some(ch) = self.channels.read().get(&slug) {
             return Ok(ch.to_public());
         }
         let topic = if topic.trim().is_empty() { slug.replace('-', " ") } else { topic.to_string() };
         let embedding = self.embedder.embed(&topic).await;
-        Ok(self.insert_channel(slug, topic, created_by, embedding))
+        self.insert_channel(slug, topic, created_by, embedding)
     }
 
     /// Semantic search over topic embeddings, best score first.
     pub async fn search_channels(&self, query: &str, limit: usize) -> Vec<ScoredChannel> {
         let qvec = self.embedder.embed(query).await;
         let mut scored: Vec<ScoredChannel> = {
-            let chans = self.channels.read().unwrap();
+            let chans = self.channels.read();
             chans
                 .values()
                 .map(|c| ScoredChannel {
@@ -195,7 +244,7 @@ impl AppState {
         let qvec = self.embedder.embed(query).await;
 
         let best: Option<(String, f32)> = {
-            let chans = self.channels.read().unwrap();
+            let chans = self.channels.read();
             chans
                 .values()
                 .map(|c| (c.slug.clone(), cosine(&qvec, &c.embedding)))
@@ -211,7 +260,7 @@ impl AppState {
 
         // No sufficiently-close topic — create a new one, reusing the query vector.
         let slug = self.unique_slug(&slugify(query));
-        let channel = self.insert_channel(slug, query.to_string(), created_by, qvec);
+        let channel = self.insert_channel(slug, query.to_string(), created_by, qvec)?;
         Ok(ResolveOutcome { channel, score: 0.0, created: true })
     }
 
@@ -221,36 +270,46 @@ impl AppState {
         topic: String,
         created_by: &str,
         embedding: Vec<f32>,
-    ) -> Channel {
-        let mut chans = self.channels.write().unwrap();
-        // Double-checked: a concurrent creator may have won the race.
-        if let Some(existing) = chans.get(&slug) {
-            return existing.to_public();
-        }
-        let (tx, _rx) = broadcast::channel(256);
-        let created_by = if created_by.trim().is_empty() { "system" } else { created_by };
-        let state = ChannelState {
-            slug: slug.clone(),
-            topic,
-            topic_summary: None,
-            embedding,
-            embedding_model: self.embedder.model_name().to_string(),
-            created_by: created_by.to_string(),
-            created_at: now_ts(),
-            meta: serde_json::json!({}),
-            members: HashMap::new(),
-            messages: VecDeque::new(),
-            next_seq: 1,
-            message_count: 0,
-            context: HashMap::new(),
-            tx,
-            history_limit: self.config.history_limit,
+    ) -> BridgeResult<Channel> {
+        let public = {
+            let mut chans = self.channels.write();
+            // Double-checked: a concurrent creator may have won the race.
+            if let Some(existing) = chans.get(&slug) {
+                return Ok(existing.to_public());
+            }
+            // Bound total channels so an attacker cannot mint unbounded topics
+            // (e.g. via `resolve`/`create`/`POST /claude` with fresh queries).
+            if chans.len() >= self.config.max_channels {
+                return Err(BridgeError::CapacityExceeded {
+                    what: "channels",
+                    limit: self.config.max_channels,
+                });
+            }
+            let (tx, _rx) = broadcast::channel(256);
+            let created_by = if created_by.trim().is_empty() { "system" } else { created_by };
+            let state = ChannelState {
+                slug: slug.clone(),
+                topic,
+                topic_summary: None,
+                embedding,
+                embedding_model: self.embedder.model_name().to_string(),
+                created_by: created_by.to_string(),
+                created_at: now_ts(),
+                meta: serde_json::json!({}),
+                members: HashMap::new(),
+                messages: VecDeque::new(),
+                next_seq: 1,
+                message_count: 0,
+                context: HashMap::new(),
+                tx,
+                history_limit: self.config.history_limit,
+            };
+            let public = state.to_public();
+            chans.insert(slug, state);
+            public
         };
-        let public = state.to_public();
-        chans.insert(slug, state);
-        drop(chans);
-        self.persist_channel(&public, &public.topic.clone());
-        public
+        self.persist_channel(&public, &public.topic);
+        Ok(public)
     }
 
     /// Reinstate a channel from persisted state on boot, using its stored
@@ -268,7 +327,7 @@ impl AppState {
         created_at: &str,
         meta: serde_json::Value,
     ) {
-        let mut chans = self.channels.write().unwrap();
+        let mut chans = self.channels.write();
         if chans.contains_key(slug) {
             return;
         }
@@ -319,7 +378,7 @@ impl AppState {
             return Err(BridgeError::BadRequest("agent_key is required".into()));
         }
         let (outcome, event) = {
-            let mut chans = self.channels.write().unwrap();
+            let mut chans = self.channels.write();
             let ch = chans
                 .get_mut(slug)
                 .ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
@@ -371,7 +430,7 @@ impl AppState {
     /// Leave a chatroom. Returns whether the agent had been a member.
     pub fn leave(&self, slug: &str, agent_key: &str) -> BridgeResult<bool> {
         let (removed, event) = {
-            let mut chans = self.channels.write().unwrap();
+            let mut chans = self.channels.write();
             let ch = chans
                 .get_mut(slug)
                 .ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
@@ -396,7 +455,7 @@ impl AppState {
     }
 
     pub fn members(&self, slug: &str) -> BridgeResult<Vec<Member>> {
-        let chans = self.channels.read().unwrap();
+        let chans = self.channels.read();
         let ch = chans.get(slug).ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
         let mut v: Vec<Member> = ch.members.values().cloned().collect();
         v.sort_by(|a, b| a.joined_at.cmp(&b.joined_at).then(a.agent_key.cmp(&b.agent_key)));
@@ -406,7 +465,6 @@ impl AppState {
     pub fn is_member(&self, slug: &str, agent_key: &str) -> bool {
         self.channels
             .read()
-            .unwrap()
             .get(slug)
             .map(|c| c.members.contains_key(agent_key))
             .unwrap_or(false)
@@ -428,14 +486,23 @@ impl AppState {
         if from.is_empty() {
             return Err(BridgeError::BadRequest("`from` (agent_key) is required".into()));
         }
+        if from.len() > MAX_KEY_BYTES {
+            return Err(BridgeError::PayloadTooLarge { what: "agent_key", limit: MAX_KEY_BYTES });
+        }
         if content.is_empty() {
             return Err(BridgeError::BadRequest("`content` is required".into()));
+        }
+        if content.len() > self.config.max_content_bytes {
+            return Err(BridgeError::PayloadTooLarge {
+                what: "message content",
+                limit: self.config.max_content_bytes,
+            });
         }
         // Ensure a seat (enforces the cap for first-time posters).
         self.join(slug, from, MemberRole::Member)?;
 
         let (message, tx) = {
-            let mut chans = self.channels.write().unwrap();
+            let mut chans = self.channels.write();
             let ch = chans
                 .get_mut(slug)
                 .ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
@@ -468,7 +535,7 @@ impl AppState {
 
     /// Recent messages, optionally only those with `seq > since`.
     pub fn history(&self, slug: &str, since: Option<u64>) -> BridgeResult<Vec<Message>> {
-        let chans = self.channels.read().unwrap();
+        let chans = self.channels.read();
         let ch = chans.get(slug).ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
         let since = since.unwrap_or(0);
         Ok(ch.messages.iter().filter(|m| m.seq > since).cloned().collect())
@@ -484,7 +551,7 @@ impl AppState {
         if let Some(key) = agent_key.filter(|k| !k.trim().is_empty()) {
             self.join(slug, key, MemberRole::Member)?;
         }
-        let chans = self.channels.read().unwrap();
+        let chans = self.channels.read();
         let ch = chans.get(slug).ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
         Ok(ch.tx.subscribe())
     }
@@ -502,12 +569,25 @@ impl AppState {
         if key.is_empty() {
             return Err(BridgeError::BadRequest("context key is required".into()));
         }
+        if key.len() > MAX_CONTEXT_KEY_BYTES {
+            return Err(BridgeError::PayloadTooLarge { what: "context key", limit: MAX_CONTEXT_KEY_BYTES });
+        }
+        let value_bytes = serde_json::to_vec(&value).map(|v| v.len()).unwrap_or(usize::MAX);
+        if value_bytes > self.config.max_content_bytes {
+            return Err(BridgeError::PayloadTooLarge {
+                what: "context value",
+                limit: self.config.max_content_bytes,
+            });
+        }
         let entry = {
-            let mut chans = self.channels.write().unwrap();
+            let mut chans = self.channels.write();
             let ch = chans
                 .get_mut(slug)
                 .ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
-            let version = ch.context.get(key).map(|e| e.version + 1).unwrap_or(1);
+            if !ch.context.contains_key(key) && ch.context.len() >= MAX_CONTEXT_KEYS {
+                return Err(BridgeError::CapacityExceeded { what: "context keys", limit: MAX_CONTEXT_KEYS });
+            }
+            let version = ch.context.get(key).map(|e| e.version.saturating_add(1)).unwrap_or(1);
             let entry = ContextEntry {
                 key: key.to_string(),
                 value,
@@ -523,7 +603,7 @@ impl AppState {
     }
 
     pub fn get_context(&self, slug: &str) -> BridgeResult<Vec<ContextEntry>> {
-        let chans = self.channels.read().unwrap();
+        let chans = self.channels.read();
         let ch = chans.get(slug).ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
         let mut v: Vec<ContextEntry> = ch.context.values().cloned().collect();
         v.sort_by(|a, b| a.key.cmp(&b.key));
@@ -531,7 +611,7 @@ impl AppState {
     }
 
     pub fn get_context_key(&self, slug: &str, key: &str) -> BridgeResult<Option<ContextEntry>> {
-        let chans = self.channels.read().unwrap();
+        let chans = self.channels.read();
         let ch = chans.get(slug).ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
         Ok(ch.context.get(key).cloned())
     }
@@ -562,7 +642,7 @@ impl AppState {
     fn persist_channel(&self, channel: &Channel, topic: &str) {
         let c = channel.clone();
         let embedding = {
-            self.channels.read().unwrap().get(&channel.slug).map(|s| s.embedding.clone())
+            self.channels.read().get(&channel.slug).map(|s| s.embedding.clone())
         };
         let topic = topic.to_string();
         if let Some(embedding) = embedding {
@@ -622,7 +702,9 @@ pub fn slugify(text: &str) -> String {
         out.pop();
     }
     if out.len() > 96 {
-        out.truncate(96);
+        // Byte-safe: `is_alphanumeric()` admits multibyte chars, so a raw
+        // truncate(96) could split a char and panic.
+        truncate_bytes(&mut out, 96);
         while out.ends_with('-') {
             out.pop();
         }
@@ -640,9 +722,83 @@ mod tests {
     use super::*;
 
     fn state() -> Arc<AppState> {
-        let cfg = Config::in_memory();
+        state_cfg(|_| {})
+    }
+
+    fn state_cfg(f: impl FnOnce(&mut Config)) -> Arc<AppState> {
+        let mut cfg = Config::in_memory();
+        f(&mut cfg);
         let embedder = Embedder::new(cfg.embed_dim, "local-hash-v1".into(), None, "local".into(), None);
         AppState::new(cfg, embedder)
+    }
+
+    #[test]
+    fn truncate_bytes_respects_char_boundaries() {
+        // bytes: a(1) é(2) b(1) あ(3) c(1) = 8 total
+        let mut s = "aébあc".to_string();
+        // max=5 lands inside 'あ' (bytes 4..7); must back off to byte 4.
+        truncate_bytes(&mut s, 5);
+        assert_eq!(s, "aéb");
+        assert_eq!(s.len(), 4);
+    }
+
+    #[test]
+    fn slugify_does_not_panic_on_long_multibyte() {
+        // Unicode letters pass is_alphanumeric() and were pushed raw; a byte-index
+        // truncate at 96 could split a char. Must not panic.
+        let s = slugify(&"あ".repeat(200));
+        assert!(s.len() <= 96);
+        assert!(std::str::from_utf8(s.as_bytes()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn channel_cap_is_enforced() {
+        let s = state_cfg(|c| c.max_channels = 2);
+        s.create_or_get_channel("a", "topic a", "claude").await.unwrap();
+        s.create_or_get_channel("b", "topic b", "claude").await.unwrap();
+        // Re-getting an existing channel is fine even at the cap.
+        assert!(s.create_or_get_channel("a", "topic a", "claude").await.is_ok());
+        // A third distinct channel is rejected.
+        let err = s.create_or_get_channel("c", "topic c", "claude").await.unwrap_err();
+        assert!(matches!(err, BridgeError::CapacityExceeded { .. }), "got {err:?}");
+        // resolve also refuses to mint past the cap.
+        let err = s.resolve_channel("something entirely new", "codex", Some(0.99)).await.unwrap_err();
+        assert!(matches!(err, BridgeError::CapacityExceeded { .. }));
+    }
+
+    #[test]
+    fn agent_cap_is_enforced_but_updates_are_free() {
+        let s = state_cfg(|c| c.max_agents = 2);
+        let mk = |k: &str| Agent { agent_key: k.into(), display_name: String::new(), kind: AgentKind::Other, host: None, meta: serde_json::json!({}), registered_at: String::new() };
+        s.register_agent(mk("a")).unwrap();
+        s.register_agent(mk("b")).unwrap();
+        // Updating an existing agent stays allowed at the cap.
+        assert!(s.register_agent(mk("a")).is_ok());
+        // A third distinct agent is rejected.
+        assert!(matches!(s.register_agent(mk("c")).unwrap_err(), BridgeError::CapacityExceeded { .. }));
+    }
+
+    #[test]
+    fn agent_key_over_120_bytes_rejected() {
+        let s = state();
+        let long = "x".repeat(121);
+        let a = Agent { agent_key: long, display_name: String::new(), kind: AgentKind::Other, host: None, meta: serde_json::json!({}), registered_at: String::new() };
+        assert!(matches!(s.register_agent(a).unwrap_err(), BridgeError::PayloadTooLarge { .. }));
+    }
+
+    #[tokio::test]
+    async fn oversized_message_and_context_rejected() {
+        let s = state_cfg(|c| c.max_content_bytes = 64);
+        s.create_or_get_channel("room", "topic", "claude").await.unwrap();
+        let big = "z".repeat(65);
+        assert!(matches!(
+            s.post_message("room", "claude", Role::User, &big, serde_json::json!({})).unwrap_err(),
+            BridgeError::PayloadTooLarge { .. }
+        ));
+        assert!(matches!(
+            s.set_context("room", "k", serde_json::json!(big), "claude").unwrap_err(),
+            BridgeError::PayloadTooLarge { .. }
+        ));
     }
 
     #[test]

@@ -34,6 +34,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# parking_lot RwLock: no lock poisoning (a panic under the lock can't cascade
+# into every later request), and no Result to unwrap.
+parking_lot = "0.12"
 
 # Postgres persistence is OFF by default so the in-memory core builds and tests
 # anywhere (laptop / CI) without the pg-defs path dep. The cluster build turns it

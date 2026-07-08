@@ -5,7 +5,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::StatusCode,
     middleware::{from_fn_with_state, Next},
     response::sse::{Event as SseEvent, KeepAlive, Sse},
@@ -41,6 +41,7 @@ impl IntoResponse for ApiError {
 type ApiResult = Result<Json<serde_json::Value>, ApiError>;
 
 pub fn router(state: Arc<AppState>) -> Router {
+    let body_limit = state.config.max_http_body_bytes;
     let public = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(healthz))
@@ -64,7 +65,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/channels/{slug}/context", get(get_context).put(put_context).post(put_context))
         .layer(from_fn_with_state(state.clone(), auth));
 
-    public.merge(api).with_state(state)
+    public.merge(api).layer(DefaultBodyLimit::max(body_limit)).with_state(state)
 }
 
 /// Bearer-token gate. No-op when `API_AUTH_BEARER` is unset. Health/index live
@@ -80,7 +81,10 @@ async fn auth(
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "));
-        if presented != Some(expected.as_str()) {
+        let ok = presented
+            .map(|p| crate::config::constant_time_eq(p.as_bytes(), expected.as_bytes()))
+            .unwrap_or(false);
+        if !ok {
             return ApiError(BridgeError::Unauthorized).into_response();
         }
     }
@@ -108,7 +112,7 @@ async fn health_compat(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         "ok": true,
         "service": "ai-agent-bridge",
         "port": s.config.http_port,
-        "inbox_messages": crate::compat::inbox_count(&s.config.inbox_dir),
+        "inbox_messages": s.inbox_message_count(),
         "auth": "Bearer token required for POST /claude",
     }))
 }
@@ -121,11 +125,26 @@ async fn claude_inbox(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    if let Some(tok) = &s.config.inbox_token {
+    // Authorized if the presented bearer matches EITHER the inbox token or the
+    // global API bearer. If neither is configured, /claude is open (legacy
+    // default). This closes the bypass where API_AUTH_BEARER locked the rest of
+    // the API but left /claude reachable.
+    let accepted: Vec<&String> = [s.config.inbox_token.as_ref(), s.config.api_auth_bearer.as_ref()]
+        .into_iter()
+        .flatten()
+        .collect();
+    if !accepted.is_empty() {
         let presented = headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok());
-        if presented != Some(format!("Bearer {tok}").as_str()) {
+        let ok = presented
+            .map(|p| {
+                accepted.iter().any(|tok| {
+                    crate::config::constant_time_eq(p.as_bytes(), format!("Bearer {tok}").as_bytes())
+                })
+            })
+            .unwrap_or(false);
+        if !ok {
             return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" }))).into_response();
         }
     }
@@ -135,8 +154,9 @@ async fn claude_inbox(
     } else {
         match serde_json::from_slice(&body) {
             Ok(v) => v,
-            Err(e) => {
-                return (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("bad json: {e}") }))).into_response()
+            // Don't echo parser offsets back to the client.
+            Err(_) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid json body" }))).into_response()
             }
         }
     };
@@ -147,8 +167,9 @@ async fn claude_inbox(
     let prompt = data.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let msg = json!({ "id": id, "ts": crate::compat::iso8601_secs(), "from": from, "topic": topic, "prompt": prompt });
 
-    if let Err(e) = crate::compat::append_inbox(&s.config.inbox_dir, &msg) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("inbox write failed: {e}") }))).into_response();
+    if let Err(e) = s.append_inbox(&msg) {
+        tracing::warn!(error = %e, "inbox write failed");
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "inbox write failed" }))).into_response();
     }
 
     // Superset bonus: surface it on the chat bus too, so subscribed agents see it

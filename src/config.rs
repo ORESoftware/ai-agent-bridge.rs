@@ -16,6 +16,21 @@ pub const MAX_MEMBERS: usize = 32;
 /// in Postgres when persistence is enabled.
 pub const DEFAULT_HISTORY_LIMIT: usize = 1000;
 
+/// Resource ceilings (all overridable via env) that bound memory against a
+/// hostile or buggy client. Channels/agents grow unbounded otherwise; messages
+/// and TCP frames are read from the network.
+pub const DEFAULT_MAX_CHANNELS: usize = 10_000;
+pub const DEFAULT_MAX_AGENTS: usize = 50_000;
+/// Max message/context byte length — matches the DB `content` CHECK (1 MiB).
+pub const DEFAULT_MAX_CONTENT_BYTES: usize = 1_048_576;
+/// Max bytes in one TCP JSONL frame before the connection is dropped (a frame
+/// with no newline must not buffer without bound).
+pub const DEFAULT_MAX_TCP_LINE_BYTES: usize = 2_097_152;
+/// Max concurrent TCP connections (each is a task); excess are dropped.
+pub const DEFAULT_MAX_TCP_CONNECTIONS: usize = 4_096;
+/// Max HTTP request body bytes (also guards `POST /claude`).
+pub const DEFAULT_MAX_HTTP_BODY_BYTES: usize = 2_097_152;
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub host: IpAddr,
@@ -41,6 +56,25 @@ pub struct Config {
     pub inbox_token: Option<String>,
     /// Directory holding `inbox.jsonl` for the legacy claude-inbox contract.
     pub inbox_dir: std::path::PathBuf,
+    pub max_channels: usize,
+    pub max_agents: usize,
+    pub max_content_bytes: usize,
+    pub max_tcp_line_bytes: usize,
+    pub max_tcp_connections: usize,
+    pub max_http_body_bytes: usize,
+}
+
+/// Constant-time byte comparison for bearer tokens (avoids leaking a match
+/// prefix via response timing). Length is allowed to leak, as is conventional.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 fn env_opt(key: &str) -> Option<String> {
@@ -52,6 +86,10 @@ fn env_opt(key: &str) -> Option<String> {
 
 fn env_or(key: &str, default: &str) -> String {
     env_opt(key).unwrap_or_else(|| default.to_string())
+}
+
+fn env_usize(key: &str, default: usize) -> usize {
+    env_opt(key).and_then(|v| v.parse().ok()).filter(|d| *d > 0).unwrap_or(default)
 }
 
 impl Config {
@@ -103,6 +141,12 @@ impl Config {
                     .or_else(|| env_opt("CLAUDE_INBOX_DIR"))
                     .unwrap_or_else(|| "/tmp/claude_bridge".to_string()),
             ),
+            max_channels: env_usize("MAX_CHANNELS", DEFAULT_MAX_CHANNELS),
+            max_agents: env_usize("MAX_AGENTS", DEFAULT_MAX_AGENTS),
+            max_content_bytes: env_usize("MAX_CONTENT_BYTES", DEFAULT_MAX_CONTENT_BYTES),
+            max_tcp_line_bytes: env_usize("MAX_TCP_LINE_BYTES", DEFAULT_MAX_TCP_LINE_BYTES),
+            max_tcp_connections: env_usize("MAX_TCP_CONNECTIONS", DEFAULT_MAX_TCP_CONNECTIONS),
+            max_http_body_bytes: env_usize("MAX_HTTP_BODY_BYTES", DEFAULT_MAX_HTTP_BODY_BYTES),
         })
     }
 
@@ -123,6 +167,12 @@ impl Config {
             resolve_threshold: 0.72,
             inbox_token: None,
             inbox_dir: std::env::temp_dir().join("claude_bridge_test"),
+            max_channels: DEFAULT_MAX_CHANNELS,
+            max_agents: DEFAULT_MAX_AGENTS,
+            max_content_bytes: DEFAULT_MAX_CONTENT_BYTES,
+            max_tcp_line_bytes: DEFAULT_MAX_TCP_LINE_BYTES,
+            max_tcp_connections: DEFAULT_MAX_TCP_CONNECTIONS,
+            max_http_body_bytes: DEFAULT_MAX_HTTP_BODY_BYTES,
         }
     }
 }

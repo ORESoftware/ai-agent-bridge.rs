@@ -18,8 +18,14 @@ use crate::types::{Agent, AgentKind, Event, MemberRole, Role};
 
 type Writer = Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>;
 
+/// Max concurrent `subscribe` forwarders on a single TCP connection.
+const MAX_SUBS_PER_CONN: usize = 64;
+
 pub async fn serve(state: Arc<AppState>, listener: TcpListener) -> anyhow::Result<()> {
     info!(addr = %listener.local_addr()?, "tcp listener up");
+    // Bound concurrent connections; excess are dropped (load shed) rather than
+    // spawning unbounded tasks.
+    let conns = Arc::new(tokio::sync::Semaphore::new(state.config.max_tcp_connections));
     loop {
         let (socket, peer) = match listener.accept().await {
             Ok(v) => v,
@@ -28,12 +34,68 @@ pub async fn serve(state: Arc<AppState>, listener: TcpListener) -> anyhow::Resul
                 continue;
             }
         };
+        let permit = match conns.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                warn!(peer = %peer, "tcp connection cap reached; dropping connection");
+                continue;
+            }
+        };
         let state = state.clone();
         tokio::spawn(async move {
+            let _permit = permit; // released when the connection ends
             if let Err(e) = handle_conn(state, socket).await {
                 debug!(peer = %peer, error = %e, "tcp connection closed");
             }
         });
+    }
+}
+
+/// Read one `\n`-delimited frame, but never buffer more than `max` bytes (a
+/// client that never sends a newline must not exhaust memory). Returns `None` at
+/// EOF. Trailing `\r` is stripped.
+async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    max: usize,
+) -> std::io::Result<Option<String>> {
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        let (upto, newline) = {
+            let available = reader.fill_buf().await?;
+            if available.is_empty() {
+                return if buf.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+                };
+            }
+            match available.iter().position(|&b| b == b'\n') {
+                Some(pos) => {
+                    buf.extend_from_slice(&available[..pos]);
+                    (pos + 1, true)
+                }
+                None => {
+                    buf.extend_from_slice(available);
+                    (available.len(), false)
+                }
+            }
+        };
+        reader.consume(upto);
+        // Enforce the cap in BOTH cases — a full oversized line plus its newline
+        // can arrive in a single fill_buf chunk, so checking only the no-newline
+        // path would let it through.
+        if buf.len() > max {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "tcp frame exceeds max size",
+            ));
+        }
+        if newline {
+            if buf.last() == Some(&b'\r') {
+                buf.pop();
+            }
+            return Ok(Some(String::from_utf8_lossy(&buf).into_owned()));
+        }
     }
 }
 
@@ -49,7 +111,8 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
     let _ = socket.set_nodelay(true);
     let (read_half, write_half) = socket.into_split();
     let writer: Writer = Arc::new(Mutex::new(write_half));
-    let mut lines = BufReader::new(read_half).lines();
+    let mut reader = BufReader::new(read_half);
+    let max_line = state.config.max_tcp_line_bytes;
 
     // Auth handshake: when a bearer is configured, nothing but `auth`/`ping`
     // works until the client presents it.
@@ -62,7 +125,7 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
     )
     .await?;
 
-    while let Some(line) = lines.next_line().await? {
+    while let Some(line) = read_capped_line(&mut reader, max_line).await? {
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -76,11 +139,17 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
         };
 
         if let Req::Auth { token } = &req {
-            authed = state.config.api_auth_bearer.as_deref() == Some(token.as_str());
-            write_line(&writer, &json!({ "ok": authed, "op": "auth" })).await?;
+            authed = match state.config.api_auth_bearer.as_deref() {
+                Some(expected) => crate::config::constant_time_eq(expected.as_bytes(), token.as_bytes()),
+                None => true,
+            };
+            // Exactly one response frame per request: ok=false here already means
+            // the token was rejected.
+            let mut resp = json!({ "ok": authed, "op": "auth" });
             if !authed {
-                write_line(&writer, &json!({ "ok": false, "error": "unauthorized" })).await?;
+                resp["error"] = json!("unauthorized");
             }
+            write_line(&writer, &resp).await?;
             continue;
         }
         if matches!(req, Req::Ping) {
@@ -164,6 +233,16 @@ async fn dispatch(
             Some(reply(state.set_context(&channel, &key, value, &updated_by).map(|e| json!({ "entry": e }))))
         }
         Req::Subscribe { channel, agent_key, since } => {
+            // Drop finished forwarders, then cap live subscriptions per connection
+            // so a client cannot spawn unbounded tasks with repeated `subscribe`s.
+            sub_tasks.retain(|t| !t.is_finished());
+            if sub_tasks.len() >= MAX_SUBS_PER_CONN {
+                return Some(json!({
+                    "ok": false,
+                    "error": "too_many_subscriptions",
+                    "limit": MAX_SUBS_PER_CONN
+                }));
+            }
             match state.subscribe(&channel, agent_key.as_deref()) {
                 Ok(mut rx) => {
                     // Replay recent history first so a late joiner has context.

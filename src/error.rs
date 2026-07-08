@@ -22,6 +22,12 @@ pub enum BridgeError {
     #[error("bad request: {0}")]
     BadRequest(String),
 
+    #[error("{what} exceeds the {limit}-byte limit")]
+    PayloadTooLarge { what: &'static str, limit: usize },
+
+    #[error("capacity for {what} reached ({limit})")]
+    CapacityExceeded { what: &'static str, limit: usize },
+
     #[error("unauthorized")]
     Unauthorized,
 }
@@ -34,6 +40,8 @@ impl BridgeError {
             BridgeError::ChannelFull { .. } => "channel_full",
             BridgeError::NotAMember { .. } => "not_a_member",
             BridgeError::BadRequest(_) => "bad_request",
+            BridgeError::PayloadTooLarge { .. } => "payload_too_large",
+            BridgeError::CapacityExceeded { .. } => "capacity_exceeded",
             BridgeError::Unauthorized => "unauthorized",
         }
     }
@@ -44,6 +52,8 @@ impl BridgeError {
             BridgeError::ChannelFull { .. } => 409,
             BridgeError::NotAMember { .. } => 403,
             BridgeError::BadRequest(_) => 400,
+            BridgeError::PayloadTooLarge { .. } => 413,
+            BridgeError::CapacityExceeded { .. } => 429,
             BridgeError::Unauthorized => 401,
         }
     }
@@ -52,6 +62,8 @@ impl BridgeError {
     pub fn payload(&self) -> ErrorPayload {
         let (limit, current) = match self {
             BridgeError::ChannelFull { limit, current, .. } => (Some(*limit), Some(*current)),
+            BridgeError::PayloadTooLarge { limit, .. } => (Some(*limit), None),
+            BridgeError::CapacityExceeded { limit, .. } => (Some(*limit), None),
             _ => (None, None),
         };
         ErrorPayload {
