@@ -452,8 +452,17 @@ impl AppState {
         if from.is_empty() {
             return Err(BridgeError::BadRequest("`from` (agent_key) is required".into()));
         }
+        if from.len() > MAX_KEY_BYTES {
+            return Err(BridgeError::PayloadTooLarge { what: "agent_key", limit: MAX_KEY_BYTES });
+        }
         if content.is_empty() {
             return Err(BridgeError::BadRequest("`content` is required".into()));
+        }
+        if content.len() > self.config.max_content_bytes {
+            return Err(BridgeError::PayloadTooLarge {
+                what: "message content",
+                limit: self.config.max_content_bytes,
+            });
         }
         // Ensure a seat (enforces the cap for first-time posters).
         self.join(slug, from, MemberRole::Member)?;
