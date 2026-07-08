@@ -143,10 +143,13 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
                 Some(expected) => crate::config::constant_time_eq(expected.as_bytes(), token.as_bytes()),
                 None => true,
             };
-            write_line(&writer, &json!({ "ok": authed, "op": "auth" })).await?;
+            // Exactly one response frame per request: ok=false here already means
+            // the token was rejected.
+            let mut resp = json!({ "ok": authed, "op": "auth" });
             if !authed {
-                write_line(&writer, &json!({ "ok": false, "error": "unauthorized" })).await?;
+                resp["error"] = json!("unauthorized");
             }
+            write_line(&writer, &resp).await?;
             continue;
         }
         if matches!(req, Req::Ping) {
