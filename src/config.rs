@@ -56,6 +56,12 @@ pub struct Config {
     pub inbox_token: Option<String>,
     /// Directory holding `inbox.jsonl` for the legacy claude-inbox contract.
     pub inbox_dir: std::path::PathBuf,
+    pub max_channels: usize,
+    pub max_agents: usize,
+    pub max_content_bytes: usize,
+    pub max_tcp_line_bytes: usize,
+    pub max_tcp_connections: usize,
+    pub max_http_body_bytes: usize,
 }
 
 fn env_opt(key: &str) -> Option<String> {
