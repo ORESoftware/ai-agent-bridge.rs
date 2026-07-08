@@ -167,8 +167,9 @@ async fn claude_inbox(
     let prompt = data.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let msg = json!({ "id": id, "ts": crate::compat::iso8601_secs(), "from": from, "topic": topic, "prompt": prompt });
 
-    if let Err(e) = crate::compat::append_inbox(&s.config.inbox_dir, &msg) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("inbox write failed: {e}") }))).into_response();
+    if let Err(e) = s.append_inbox(&msg) {
+        tracing::warn!(error = %e, "inbox write failed");
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "inbox write failed" }))).into_response();
     }
 
     // Superset bonus: surface it on the chat bus too, so subscribed agents see it
