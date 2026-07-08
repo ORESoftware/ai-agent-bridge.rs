@@ -134,7 +134,7 @@ impl AppState {
         }
         agent.registered_at = now_ts();
         {
-            let mut agents = self.agents.write().unwrap();
+            let mut agents = self.agents.write();
             if !agents.contains_key(&key) && agents.len() >= self.config.max_agents {
                 return Err(BridgeError::CapacityExceeded { what: "agents", limit: self.config.max_agents });
             }
@@ -145,7 +145,7 @@ impl AppState {
     }
 
     pub fn list_agents(&self) -> Vec<Agent> {
-        self.agents.read().unwrap().values().cloned().collect()
+        self.agents.read().values().cloned().collect()
     }
 
     // ---- channels -------------------------------------------------------------
@@ -154,7 +154,6 @@ impl AppState {
         let mut v: Vec<Channel> = self
             .channels
             .read()
-            .unwrap()
             .values()
             .map(|c| c.to_public())
             .collect();
@@ -165,14 +164,13 @@ impl AppState {
     pub fn get_channel(&self, slug: &str) -> BridgeResult<Channel> {
         self.channels
             .read()
-            .unwrap()
             .get(slug)
             .map(|c| c.to_public())
             .ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))
     }
 
     fn channel_exists(&self, slug: &str) -> bool {
-        self.channels.read().unwrap().contains_key(slug)
+        self.channels.read().contains_key(slug)
     }
 
     /// Create a channel by slug, or return the existing one unchanged. The topic
@@ -187,7 +185,7 @@ impl AppState {
         if slug.is_empty() {
             return Err(BridgeError::BadRequest("slug is required".into()));
         }
-        if let Some(ch) = self.channels.read().unwrap().get(&slug) {
+        if let Some(ch) = self.channels.read().get(&slug) {
             return Ok(ch.to_public());
         }
         let topic = if topic.trim().is_empty() { slug.replace('-', " ") } else { topic.to_string() };
@@ -199,7 +197,7 @@ impl AppState {
     pub async fn search_channels(&self, query: &str, limit: usize) -> Vec<ScoredChannel> {
         let qvec = self.embedder.embed(query).await;
         let mut scored: Vec<ScoredChannel> = {
-            let chans = self.channels.read().unwrap();
+            let chans = self.channels.read();
             chans
                 .values()
                 .map(|c| ScoredChannel {
@@ -229,7 +227,7 @@ impl AppState {
         let qvec = self.embedder.embed(query).await;
 
         let best: Option<(String, f32)> = {
-            let chans = self.channels.read().unwrap();
+            let chans = self.channels.read();
             chans
                 .values()
                 .map(|c| (c.slug.clone(), cosine(&qvec, &c.embedding)))
@@ -257,7 +255,7 @@ impl AppState {
         embedding: Vec<f32>,
     ) -> BridgeResult<Channel> {
         let public = {
-            let mut chans = self.channels.write().unwrap();
+            let mut chans = self.channels.write();
             // Double-checked: a concurrent creator may have won the race.
             if let Some(existing) = chans.get(&slug) {
                 return Ok(existing.to_public());
@@ -312,7 +310,7 @@ impl AppState {
         created_at: &str,
         meta: serde_json::Value,
     ) {
-        let mut chans = self.channels.write().unwrap();
+        let mut chans = self.channels.write();
         if chans.contains_key(slug) {
             return;
         }
@@ -363,7 +361,7 @@ impl AppState {
             return Err(BridgeError::BadRequest("agent_key is required".into()));
         }
         let (outcome, event) = {
-            let mut chans = self.channels.write().unwrap();
+            let mut chans = self.channels.write();
             let ch = chans
                 .get_mut(slug)
                 .ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
@@ -415,7 +413,7 @@ impl AppState {
     /// Leave a chatroom. Returns whether the agent had been a member.
     pub fn leave(&self, slug: &str, agent_key: &str) -> BridgeResult<bool> {
         let (removed, event) = {
-            let mut chans = self.channels.write().unwrap();
+            let mut chans = self.channels.write();
             let ch = chans
                 .get_mut(slug)
                 .ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
@@ -440,7 +438,7 @@ impl AppState {
     }
 
     pub fn members(&self, slug: &str) -> BridgeResult<Vec<Member>> {
-        let chans = self.channels.read().unwrap();
+        let chans = self.channels.read();
         let ch = chans.get(slug).ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
         let mut v: Vec<Member> = ch.members.values().cloned().collect();
         v.sort_by(|a, b| a.joined_at.cmp(&b.joined_at).then(a.agent_key.cmp(&b.agent_key)));
@@ -450,7 +448,6 @@ impl AppState {
     pub fn is_member(&self, slug: &str, agent_key: &str) -> bool {
         self.channels
             .read()
-            .unwrap()
             .get(slug)
             .map(|c| c.members.contains_key(agent_key))
             .unwrap_or(false)
@@ -488,7 +485,7 @@ impl AppState {
         self.join(slug, from, MemberRole::Member)?;
 
         let (message, tx) = {
-            let mut chans = self.channels.write().unwrap();
+            let mut chans = self.channels.write();
             let ch = chans
                 .get_mut(slug)
                 .ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
@@ -521,7 +518,7 @@ impl AppState {
 
     /// Recent messages, optionally only those with `seq > since`.
     pub fn history(&self, slug: &str, since: Option<u64>) -> BridgeResult<Vec<Message>> {
-        let chans = self.channels.read().unwrap();
+        let chans = self.channels.read();
         let ch = chans.get(slug).ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
         let since = since.unwrap_or(0);
         Ok(ch.messages.iter().filter(|m| m.seq > since).cloned().collect())
@@ -537,7 +534,7 @@ impl AppState {
         if let Some(key) = agent_key.filter(|k| !k.trim().is_empty()) {
             self.join(slug, key, MemberRole::Member)?;
         }
-        let chans = self.channels.read().unwrap();
+        let chans = self.channels.read();
         let ch = chans.get(slug).ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
         Ok(ch.tx.subscribe())
     }
@@ -566,7 +563,7 @@ impl AppState {
             });
         }
         let entry = {
-            let mut chans = self.channels.write().unwrap();
+            let mut chans = self.channels.write();
             let ch = chans
                 .get_mut(slug)
                 .ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
@@ -589,7 +586,7 @@ impl AppState {
     }
 
     pub fn get_context(&self, slug: &str) -> BridgeResult<Vec<ContextEntry>> {
-        let chans = self.channels.read().unwrap();
+        let chans = self.channels.read();
         let ch = chans.get(slug).ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
         let mut v: Vec<ContextEntry> = ch.context.values().cloned().collect();
         v.sort_by(|a, b| a.key.cmp(&b.key));
@@ -597,7 +594,7 @@ impl AppState {
     }
 
     pub fn get_context_key(&self, slug: &str, key: &str) -> BridgeResult<Option<ContextEntry>> {
-        let chans = self.channels.read().unwrap();
+        let chans = self.channels.read();
         let ch = chans.get(slug).ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
         Ok(ch.context.get(key).cloned())
     }
@@ -628,7 +625,7 @@ impl AppState {
     fn persist_channel(&self, channel: &Channel, topic: &str) {
         let c = channel.clone();
         let embedding = {
-            self.channels.read().unwrap().get(&channel.slug).map(|s| s.embedding.clone())
+            self.channels.read().get(&channel.slug).map(|s| s.embedding.clone())
         };
         let topic = topic.to_string();
         if let Some(embedding) = embedding {
