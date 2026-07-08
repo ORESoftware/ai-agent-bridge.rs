@@ -36,6 +36,11 @@ pub struct Config {
     /// Similarity below which `resolve` mints a brand-new topic instead of
     /// joining an existing one (the "fluid topic formation" knob).
     pub resolve_threshold: f32,
+    /// Bearer token for the legacy `POST /claude` claude-inbox route. When set,
+    /// that route requires `Authorization: Bearer <token>`.
+    pub inbox_token: Option<String>,
+    /// Directory holding `inbox.jsonl` for the legacy claude-inbox contract.
+    pub inbox_dir: std::path::PathBuf,
 }
 
 fn env_opt(key: &str) -> Option<String> {
