@@ -3,6 +3,7 @@
 //! from. Postgres (when compiled in) is a best-effort mirror, never on the hot path.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
