@@ -685,7 +685,9 @@ pub fn slugify(text: &str) -> String {
         out.pop();
     }
     if out.len() > 96 {
-        out.truncate(96);
+        // Byte-safe: `is_alphanumeric()` admits multibyte chars, so a raw
+        // truncate(96) could split a char and panic.
+        truncate_bytes(&mut out, 96);
         while out.ends_with('-') {
             out.pop();
         }
