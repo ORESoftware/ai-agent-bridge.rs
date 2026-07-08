@@ -59,6 +59,19 @@ impl Embedder {
     /// Embed text, preferring the remote backend and falling back to local on any
     /// error (network, non-2xx, or an unrecognized response shape).
     pub async fn embed(&self, text: &str) -> Vec<f32> {
+        // Cap the embedded prefix: topic routing gains nothing from megabytes of
+        // input, and the local hasher's per-trigram work would otherwise stall the
+        // async worker on a hostile query. 16 KiB is far more than any real topic.
+        const MAX_EMBED_BYTES: usize = 16 * 1024;
+        let text = if text.len() > MAX_EMBED_BYTES {
+            let mut end = MAX_EMBED_BYTES;
+            while end > 0 && !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            &text[..end]
+        } else {
+            text
+        };
         if let Some(remote) = &self.remote {
             match remote.embed(text).await {
                 Ok(v) if !v.is_empty() => {
