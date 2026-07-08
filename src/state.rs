@@ -570,7 +570,7 @@ impl AppState {
             if !ch.context.contains_key(key) && ch.context.len() >= MAX_CONTEXT_KEYS {
                 return Err(BridgeError::CapacityExceeded { what: "context keys", limit: MAX_CONTEXT_KEYS });
             }
-            let version = ch.context.get(key).map(|e| e.version + 1).unwrap_or(1);
+            let version = ch.context.get(key).map(|e| e.version.saturating_add(1)).unwrap_or(1);
             let entry = ContextEntry {
                 key: key.to_string(),
                 value,
