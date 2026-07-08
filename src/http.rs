@@ -80,7 +80,10 @@ async fn auth(
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "));
-        if presented != Some(expected.as_str()) {
+        let ok = presented
+            .map(|p| crate::config::constant_time_eq(p.as_bytes(), expected.as_bytes()))
+            .unwrap_or(false);
+        if !ok {
             return ApiError(BridgeError::Unauthorized).into_response();
         }
     }
