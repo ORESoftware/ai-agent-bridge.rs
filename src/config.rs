@@ -154,6 +154,12 @@ impl Config {
             resolve_threshold: 0.72,
             inbox_token: None,
             inbox_dir: std::env::temp_dir().join("claude_bridge_test"),
+            max_channels: DEFAULT_MAX_CHANNELS,
+            max_agents: DEFAULT_MAX_AGENTS,
+            max_content_bytes: DEFAULT_MAX_CONTENT_BYTES,
+            max_tcp_line_bytes: DEFAULT_MAX_TCP_LINE_BYTES,
+            max_tcp_connections: DEFAULT_MAX_TCP_CONNECTIONS,
+            max_http_body_bytes: DEFAULT_MAX_HTTP_BODY_BYTES,
         }
     }
 }
