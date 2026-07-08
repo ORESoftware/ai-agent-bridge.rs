@@ -112,7 +112,7 @@ async fn health_compat(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         "ok": true,
         "service": "ai-agent-bridge",
         "port": s.config.http_port,
-        "inbox_messages": crate::compat::inbox_count(&s.config.inbox_dir),
+        "inbox_messages": s.inbox_message_count(),
         "auth": "Bearer token required for POST /claude",
     }))
 }
