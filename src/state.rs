@@ -722,9 +722,81 @@ mod tests {
     use super::*;
 
     fn state() -> Arc<AppState> {
-        let cfg = Config::in_memory();
+        state_cfg(|_| {})
+    }
+
+    fn state_cfg(f: impl FnOnce(&mut Config)) -> Arc<AppState> {
+        let mut cfg = Config::in_memory();
+        f(&mut cfg);
         let embedder = Embedder::new(cfg.embed_dim, "local-hash-v1".into(), None, "local".into(), None);
         AppState::new(cfg, embedder)
+    }
+
+    #[test]
+    fn truncate_bytes_respects_char_boundaries() {
+        let mut s = "aébあc".to_string(); // 1 + 2 + 2 + 3 + 1 = 9 bytes
+        truncate_bytes(&mut s, 4); // would split 'あ' at byte 4 -> must back off to 3
+        assert_eq!(s, "aé"); // 3 bytes, no panic, no split char
+        assert!(s.len() <= 4);
+    }
+
+    #[test]
+    fn slugify_does_not_panic_on_long_multibyte() {
+        // Unicode letters pass is_alphanumeric() and were pushed raw; a byte-index
+        // truncate at 96 could split a char. Must not panic.
+        let s = slugify(&"あ".repeat(200));
+        assert!(s.len() <= 96);
+        assert!(std::str::from_utf8(s.as_bytes()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn channel_cap_is_enforced() {
+        let s = state_cfg(|c| c.max_channels = 2);
+        s.create_or_get_channel("a", "topic a", "claude").await.unwrap();
+        s.create_or_get_channel("b", "topic b", "claude").await.unwrap();
+        // Re-getting an existing channel is fine even at the cap.
+        assert!(s.create_or_get_channel("a", "topic a", "claude").await.is_ok());
+        // A third distinct channel is rejected.
+        let err = s.create_or_get_channel("c", "topic c", "claude").await.unwrap_err();
+        assert!(matches!(err, BridgeError::CapacityExceeded { .. }), "got {err:?}");
+        // resolve also refuses to mint past the cap.
+        let err = s.resolve_channel("something entirely new", "codex", Some(0.99)).await.unwrap_err();
+        assert!(matches!(err, BridgeError::CapacityExceeded { .. }));
+    }
+
+    #[test]
+    fn agent_cap_is_enforced_but_updates_are_free() {
+        let s = state_cfg(|c| c.max_agents = 2);
+        let mk = |k: &str| Agent { agent_key: k.into(), display_name: String::new(), kind: AgentKind::Other, host: None, meta: serde_json::json!({}), registered_at: String::new() };
+        s.register_agent(mk("a")).unwrap();
+        s.register_agent(mk("b")).unwrap();
+        // Updating an existing agent stays allowed at the cap.
+        assert!(s.register_agent(mk("a")).is_ok());
+        // A third distinct agent is rejected.
+        assert!(matches!(s.register_agent(mk("c")).unwrap_err(), BridgeError::CapacityExceeded { .. }));
+    }
+
+    #[test]
+    fn agent_key_over_120_bytes_rejected() {
+        let s = state();
+        let long = "x".repeat(121);
+        let a = Agent { agent_key: long, display_name: String::new(), kind: AgentKind::Other, host: None, meta: serde_json::json!({}), registered_at: String::new() };
+        assert!(matches!(s.register_agent(a).unwrap_err(), BridgeError::PayloadTooLarge { .. }));
+    }
+
+    #[tokio::test]
+    async fn oversized_message_and_context_rejected() {
+        let s = state_cfg(|c| c.max_content_bytes = 64);
+        s.create_or_get_channel("room", "topic", "claude").await.unwrap();
+        let big = "z".repeat(65);
+        assert!(matches!(
+            s.post_message("room", "claude", Role::User, &big, serde_json::json!({})).unwrap_err(),
+            BridgeError::PayloadTooLarge { .. }
+        ));
+        assert!(matches!(
+            s.set_context("room", "k", serde_json::json!(big), "claude").unwrap_err(),
+            BridgeError::PayloadTooLarge { .. }
+        ));
     }
 
     #[test]
