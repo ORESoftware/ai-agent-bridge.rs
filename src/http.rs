@@ -125,13 +125,24 @@ async fn claude_inbox(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    if let Some(tok) = &s.config.inbox_token {
+    // Authorized if the presented bearer matches EITHER the inbox token or the
+    // global API bearer. If neither is configured, /claude is open (legacy
+    // default). This closes the bypass where API_AUTH_BEARER locked the rest of
+    // the API but left /claude reachable.
+    let accepted: Vec<&String> = [s.config.inbox_token.as_ref(), s.config.api_auth_bearer.as_ref()]
+        .into_iter()
+        .flatten()
+        .collect();
+    if !accepted.is_empty() {
         let presented = headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok());
-        let expected = format!("Bearer {tok}");
         let ok = presented
-            .map(|p| crate::config::constant_time_eq(p.as_bytes(), expected.as_bytes()))
+            .map(|p| {
+                accepted.iter().any(|tok| {
+                    crate::config::constant_time_eq(p.as_bytes(), format!("Bearer {tok}").as_bytes())
+                })
+            })
             .unwrap_or(false);
         if !ok {
             return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" }))).into_response();
@@ -143,8 +154,9 @@ async fn claude_inbox(
     } else {
         match serde_json::from_slice(&body) {
             Ok(v) => v,
-            Err(e) => {
-                return (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("bad json: {e}") }))).into_response()
+            // Don't echo parser offsets back to the client.
+            Err(_) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid json body" }))).into_response()
             }
         }
     };
