@@ -67,6 +67,37 @@ async fn full_rest_flow_register_create_search_post_context() {
 }
 
 #[tokio::test]
+async fn claude_inbox_backward_compat() {
+    let base = common::spawn_http(common::state()).await;
+    let c = reqwest::Client::new();
+
+    // Legacy GET /health shape.
+    let health = get(&c, format!("{base}/health")).await;
+    assert_eq!(health["service"], "ai-agent-bridge");
+    assert_eq!(health["inbox_messages"], 0);
+
+    // Legacy POST /claude appends to inbox.jsonl and returns {queued,id,note}.
+    let (st, body) = post(
+        &c,
+        format!("{base}/claude"),
+        json!({ "prompt": "the plateau broke at gen 291", "from": "codex", "topic": "soccer plateau" }),
+    )
+    .await;
+    assert!(st.is_success());
+    assert_eq!(body["queued"], true);
+    assert!(body["id"].as_u64().unwrap() > 0);
+
+    // /health now reports the queued message.
+    let health2 = get(&c, format!("{base}/health")).await;
+    assert_eq!(health2["inbox_messages"], 1);
+
+    // Superset: the same message is also live on the chat bus.
+    let msgs = get(&c, format!("{base}/channels/soccer-plateau/messages")).await;
+    assert_eq!(msgs["messages"][0]["content"], "the plateau broke at gen 291");
+    assert_eq!(msgs["messages"][0]["from"], "codex");
+}
+
+#[tokio::test]
 async fn thirty_third_member_gets_409_channel_full() {
     let base = common::spawn_http(common::state()).await;
     let c = reqwest::Client::new();
