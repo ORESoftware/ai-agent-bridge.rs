@@ -65,7 +65,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/channels/{slug}/context", get(get_context).put(put_context).post(put_context))
         .layer(from_fn_with_state(state.clone(), auth));
 
-    public.merge(api).with_state(state)
+    public.merge(api).layer(DefaultBodyLimit::max(body_limit)).with_state(state)
 }
 
 /// Bearer-token gate. No-op when `API_AUTH_BEARER` is unset. Health/index live
