@@ -526,10 +526,17 @@ impl AppState {
                 limit: self.config.max_content_bytes,
             });
         }
+        // Cap `meta` too, else 1 byte of content + megabytes of JSON meta bypasses
+        // the content cap and accumulates in the history ring.
+        let meta_bytes = serde_json::to_vec(&meta).map(|v| v.len()).unwrap_or(usize::MAX);
+        if meta_bytes > self.config.max_content_bytes {
+            return Err(BridgeError::PayloadTooLarge { what: "message meta", limit: self.config.max_content_bytes });
+        }
         // Ensure a seat (enforces the cap for first-time posters).
         self.join(slug, from, MemberRole::Member)?;
 
-        let (message, tx) = {
+        let budget = self.config.max_channel_history_bytes;
+        let message = {
             let mut chans = self.channels.write();
             let ch = chans
                 .get_mut(slug)
@@ -550,13 +557,23 @@ impl AppState {
                 meta,
                 created_at: now_ts(),
             };
+            ch.history_bytes += message.content.len();
             ch.messages.push_back(message.clone());
-            while ch.messages.len() > ch.history_limit {
-                ch.messages.pop_front();
+            // Evict oldest by count AND by total retained bytes (always keep >= 1),
+            // so one hot channel can't hoard ~1 GiB of history.
+            while ch.messages.len() > ch.history_limit
+                || (ch.history_bytes > budget && ch.messages.len() > 1)
+            {
+                if let Some(old) = ch.messages.pop_front() {
+                    ch.history_bytes = ch.history_bytes.saturating_sub(old.content.len());
+                }
             }
-            (message, ch.tx.clone())
+            // Broadcast under the write lock so live delivery order matches `seq`
+            // (two concurrent posts can't be observed out of order). send is
+            // non-blocking, so holding the lock across it is safe and brief.
+            let _ = ch.tx.send(Event::Message(message.clone()));
+            message
         };
-        let _ = tx.send(Event::Message(message.clone()));
         self.persist_message(&message);
         Ok(message)
     }
