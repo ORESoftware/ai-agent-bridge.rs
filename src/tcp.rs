@@ -180,6 +180,7 @@ async fn dispatch(
     writer: &Writer,
     req: Req,
     sub_tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+    subscribed: &mut std::collections::HashSet<String>,
 ) -> Option<Value> {
     match req {
         Req::Auth { .. } | Req::Ping => None, // handled upstream
