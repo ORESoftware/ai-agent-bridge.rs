@@ -1033,7 +1033,7 @@ mod tests {
         s.create_or_get_channel("live", "topic", "claude").await.unwrap();
         // Join before subscribing so no presence event precedes the message.
         s.join("live", "claude", MemberRole::Member).unwrap();
-        let mut rx = s.subscribe("live", None).unwrap();
+        let (mut rx, _) = s.subscribe("live", None).unwrap();
         s.post_message("live", "claude", Role::Assistant, "ping", serde_json::json!({})).unwrap();
         let ev = rx.recv().await.unwrap();
         match ev {
