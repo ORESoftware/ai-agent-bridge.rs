@@ -116,7 +116,7 @@ impl AppState {
     }
 
     /// Append a message to the claude-inbox `inbox.jsonl` and bump the counter.
-    pub fn append_inbox(&self, msg: &serde_json::Value) -> std::io::Result<()> {
+    pub fn append_inbox<T: serde::Serialize>(&self, msg: &T) -> std::io::Result<()> {
         crate::compat::append_inbox(&self.config.inbox_dir, msg)?;
         self.inbox_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
