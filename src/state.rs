@@ -637,11 +637,13 @@ impl AppState {
                 return Err(BridgeError::CapacityExceeded { what: "context keys", limit: MAX_CONTEXT_KEYS });
             }
             let version = ch.context.get(key).map(|e| e.version.saturating_add(1)).unwrap_or(1);
+            let mut updated_by = updated_by.to_string();
+            truncate_bytes(&mut updated_by, MAX_KEY_BYTES);
             let entry = ContextEntry {
                 key: key.to_string(),
                 value,
                 version,
-                updated_by: updated_by.to_string(),
+                updated_by,
                 updated_at: now_ts(),
             };
             ch.context.insert(key.to_string(), entry.clone());
