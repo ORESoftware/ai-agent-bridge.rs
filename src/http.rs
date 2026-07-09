@@ -167,9 +167,16 @@ async fn claude_inbox(
     let from = crate::compat::field(&data, "from", "codex", 64);
     let topic = crate::compat::field(&data, "topic", "", 128);
     let prompt = data.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let msg = json!({ "id": id, "ts": crate::compat::iso8601_secs(), "from": from, "topic": topic, "prompt": prompt });
+    // Typed struct -> exact key order {id, ts, from, topic, prompt} in inbox.jsonl.
+    let entry = crate::compat::InboxLine {
+        id,
+        ts: crate::compat::iso8601_secs(),
+        from: from.clone(),
+        topic: topic.clone(),
+        prompt: prompt.clone(),
+    };
 
-    if let Err(e) = s.append_inbox(&msg) {
+    if let Err(e) = s.append_inbox(&entry) {
         tracing::warn!(error = %e, "inbox write failed");
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "inbox write failed" }))).into_response();
     }
