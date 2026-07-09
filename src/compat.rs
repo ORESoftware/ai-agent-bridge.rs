@@ -36,7 +36,7 @@ pub fn inbox_count(dir: &Path) -> usize {
 }
 
 /// Append one JSON line to `inbox.jsonl`, matching the legacy format.
-pub fn append_inbox(dir: &Path, msg: &Value) -> std::io::Result<()> {
+pub fn append_inbox<T: Serialize>(dir: &Path, msg: &T) -> std::io::Result<()> {
     create_dir_all(dir)?;
     let mut f = OpenOptions::new().create(true).append(true).open(inbox_path(dir))?;
     let mut line = serde_json::to_string(msg).unwrap_or_else(|_| "{}".to_string());
