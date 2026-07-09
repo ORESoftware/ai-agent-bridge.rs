@@ -463,26 +463,26 @@ impl AppState {
 
     /// Leave a chatroom. Returns whether the agent had been a member.
     pub fn leave(&self, slug: &str, agent_key: &str) -> BridgeResult<bool> {
-        let (removed, event) = {
+        let removed = {
             let mut chans = self.channels.write();
             let ch = chans
                 .get_mut(slug)
                 .ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
             if ch.members.remove(agent_key).is_none() {
-                (false, None)
+                false
             } else {
-                let event = Event::Presence {
+                // Under the lock, like join/messages, for causal ordering.
+                let _ = ch.tx.send(Event::Presence {
                     channel: ch.slug.clone(),
                     agent_key: agent_key.to_string(),
                     event: PresenceKind::Left,
                     member_count: ch.members.len(),
                     at: now_ts(),
-                };
-                (true, Some((ch.tx.clone(), event)))
+                });
+                true
             }
         };
-        if let Some((tx, event)) = event {
-            let _ = tx.send(event);
+        if removed {
             self.persist_member_removal(slug, agent_key);
         }
         Ok(removed)
