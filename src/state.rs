@@ -728,7 +728,7 @@ mod tests {
     fn state_cfg(f: impl FnOnce(&mut Config)) -> Arc<AppState> {
         let mut cfg = Config::in_memory();
         f(&mut cfg);
-        let embedder = Embedder::new(cfg.embed_dim, "local-hash-v1".into(), None, "local".into(), None);
+        let embedder = Embedder::new(cfg.embed_dim, None, "local".into(), None);
         AppState::new(cfg, embedder)
     }
 
