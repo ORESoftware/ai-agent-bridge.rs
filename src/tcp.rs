@@ -271,6 +271,7 @@ async fn dispatch(
                         }
                     }
                     subscribed.insert(channel.clone());
+                    let ch_name = channel.clone();
                     let _ = write_line(writer, &json!({ "ok": true, "subscribed": channel })).await;
                     let writer = writer.clone();
                     let task = tokio::spawn(async move {
@@ -281,7 +282,15 @@ async fn dispatch(
                                         break;
                                     }
                                 }
-                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                    // Fell behind the broadcast ring: `n` messages were
+                                    // dropped. Signal it (don't silently gap) so the client
+                                    // can reconcile via `history` with `since`.
+                                    let notice = json!({ "type": "lagged", "channel": ch_name, "dropped": n });
+                                    if write_line(&writer, &notice).await.is_err() {
+                                        break;
+                                    }
+                                }
                                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                             }
                         }
