@@ -162,7 +162,7 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
             continue;
         }
 
-        let response = dispatch(&state, &writer, req, &mut sub_tasks).await;
+        let response = dispatch(&state, &writer, req, &mut sub_tasks, &mut subscribed).await;
         if let Some(resp) = response {
             write_line(&writer, &resp).await?;
         }
