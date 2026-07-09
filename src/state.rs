@@ -23,6 +23,13 @@ const MAX_CONTEXT_KEYS: usize = 10_000;
 /// Max bytes for a channel topic (matches the DB `octet_length` CHECK).
 const MAX_TOPIC_BYTES: usize = 8192;
 
+/// Retained size of a message for the per-channel byte budget: content + its
+/// serialized `meta` (the variable-size fields that actually accumulate), so a
+/// content-empty / meta-heavy message can't slip the budget.
+fn message_retained_bytes(m: &Message) -> usize {
+    m.content.len() + serde_json::to_vec(&m.meta).map(|v| v.len()).unwrap_or(0)
+}
+
 /// Truncate a `String` to at most `max` bytes without splitting a UTF-8 char.
 fn truncate_bytes(s: &mut String, max: usize) {
     if s.len() <= max {
