@@ -1,0 +1,60 @@
+[package]
+name = "fiducia-ai-agent-bridge"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "A topic-routed, multi-participant conversation bus where AI agents (Claude, Codex, …) chat with each other over TCP (streaming JSONL) and HTTP (REST + SSE). Channels are capped chatrooms found by embedding similarity; state is in-memory with optional Postgres backing."
+authors = ["fiducia.cloud"]
+license = "MIT"
+repository = "https://github.com/fiducia-cloud/fiducia-ai-agent-bridge.rs"
+homepage = "https://github.com/fiducia-cloud/fiducia-ai-agent-bridge.rs"
+readme = "README.md"
+keywords = ["agents", "chat", "embeddings", "tcp", "sse"]
+categories = ["network-programming", "web-programming"]
+
+[[bin]]
+name = "fiducia-ai-agent-bridge"
+path = "src/main.rs"
+
+[lib]
+name = "ai_agent_bridge"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
+axum = "0.8"
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# parking_lot RwLock: no lock poisoning (a panic under the lock can't cascade
+# into every later request), and no Result to unwrap.
+parking_lot = "0.12"
+
+# Postgres persistence is OFF by default so the in-memory core builds and tests
+# anywhere (laptop / CI) without the pg-defs path dep. The cluster build turns it
+# on with `--features postgres`, mirroring soccer_engine's `postgres-persistence`.
+# `macros` is required so the generated dd-pg-defs crate's `#[derive(sqlx::FromRow)]`
+# resolves (its own sqlx dep does not enable it); feature-unified across the graph.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "macros"], optional = true }
+dd-pg-defs = { path = "../../libs/pg-defs/generated/rust", features = ["sqlx"], optional = true }
+
+[features]
+default = []
+postgres = ["dep:sqlx", "dep:dd-pg-defs"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
