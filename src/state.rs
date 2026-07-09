@@ -123,6 +123,8 @@ impl AppState {
             inbox_count,
             #[cfg(feature = "postgres")]
             db: None,
+            #[cfg(feature = "postgres")]
+            persist_sem: Arc::new(tokio::sync::Semaphore::new(256)),
         })
     }
 
