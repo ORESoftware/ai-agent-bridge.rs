@@ -60,7 +60,7 @@ async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
 ) -> std::io::Result<Option<String>> {
     let mut buf: Vec<u8> = Vec::new();
     loop {
-        let (upto, newline) = {
+        let (upto, newline, overflow) = {
             let available = reader.fill_buf().await?;
             if available.is_empty() {
                 return if buf.is_empty() {
@@ -70,21 +70,29 @@ async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
                 };
             }
             match available.iter().position(|&b| b == b'\n') {
+                // Check BEFORE copying so `buf` never exceeds `max`, even when a
+                // whole oversized line + newline arrives in one fill_buf chunk.
                 Some(pos) => {
-                    buf.extend_from_slice(&available[..pos]);
-                    (pos + 1, true)
+                    if buf.len() + pos > max {
+                        (pos + 1, true, true)
+                    } else {
+                        buf.extend_from_slice(&available[..pos]);
+                        (pos + 1, true, false)
+                    }
                 }
                 None => {
-                    buf.extend_from_slice(available);
-                    (available.len(), false)
+                    if buf.len() + available.len() > max {
+                        (available.len(), false, true)
+                    } else {
+                        let n = available.len();
+                        buf.extend_from_slice(available);
+                        (n, false, false)
+                    }
                 }
             }
         };
         reader.consume(upto);
-        // Enforce the cap in BOTH cases — a full oversized line plus its newline
-        // can arrive in a single fill_buf chunk, so checking only the no-newline
-        // path would let it through.
-        if buf.len() > max {
+        if overflow {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "tcp frame exceeds max size",
