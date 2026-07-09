@@ -118,6 +118,7 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
     // works until the client presents it.
     let mut authed = state.config.api_auth_bearer.is_none();
     let mut sub_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let mut subscribed: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     write_line(
         &writer,
