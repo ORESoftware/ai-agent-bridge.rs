@@ -400,6 +400,11 @@ impl AppState {
         if agent_key.is_empty() {
             return Err(BridgeError::BadRequest("agent_key is required".into()));
         }
+        // Same cap as register/post so join/subscribe can't smuggle an oversized
+        // key into membership + presence broadcasts (and break PG persistence).
+        if agent_key.len() > MAX_KEY_BYTES {
+            return Err(BridgeError::PayloadTooLarge { what: "agent_key", limit: MAX_KEY_BYTES });
+        }
         let (outcome, event) = {
             let mut chans = self.channels.write();
             let ch = chans
