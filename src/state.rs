@@ -270,8 +270,8 @@ impl AppState {
 
         // No sufficiently-close topic — create a new one, reusing the query vector.
         let slug = self.unique_slug(&slugify(query));
-        let channel = self.insert_channel(slug, query.to_string(), created_by, qvec)?;
-        Ok(ResolveOutcome { channel, score: 0.0, created: true })
+        let (channel, created) = self.insert_channel(slug, query.to_string(), created_by, qvec, model)?;
+        Ok(ResolveOutcome { channel, score: 0.0, created })
     }
 
     /// Returns `(channel, created)` — `created` is false when a concurrent creator
