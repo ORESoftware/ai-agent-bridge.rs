@@ -30,6 +30,9 @@ pub const DEFAULT_MAX_TCP_LINE_BYTES: usize = 2_097_152;
 pub const DEFAULT_MAX_TCP_CONNECTIONS: usize = 4_096;
 /// Max HTTP request body bytes (also guards `POST /claude`).
 pub const DEFAULT_MAX_HTTP_BODY_BYTES: usize = 2_097_152;
+/// Max retained message-content bytes per channel's in-memory history ring, so a
+/// hot channel is bounded by size, not just `history_limit` * message size.
+pub const DEFAULT_MAX_CHANNEL_HISTORY_BYTES: usize = 8_388_608;
 
 #[derive(Clone, Debug)]
 pub struct Config {
