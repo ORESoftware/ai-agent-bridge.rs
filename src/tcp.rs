@@ -236,6 +236,11 @@ async fn dispatch(
             // Drop finished forwarders, then cap live subscriptions per connection
             // so a client cannot spawn unbounded tasks with repeated `subscribe`s.
             sub_tasks.retain(|t| !t.is_finished());
+            // One live stream per channel per connection: a second subscribe to the
+            // same channel would deliver every event twice (or 64x at the cap).
+            if subscribed.contains(&channel) {
+                return Some(json!({ "ok": false, "error": "already_subscribed", "channel": channel }));
+            }
             if sub_tasks.len() >= MAX_SUBS_PER_CONN {
                 return Some(json!({
                     "ok": false,
@@ -244,13 +249,18 @@ async fn dispatch(
                 }));
             }
             match state.subscribe(&channel, agent_key.as_deref()) {
-                Ok(mut rx) => {
-                    // Replay recent history first so a late joiner has context.
+                Ok((mut rx, high_water)) => {
+                    // Replay history only up to the subscribe high-water; the live
+                    // receiver yields strictly newer messages, so no message is
+                    // delivered twice (replay + live).
                     if let Ok(history) = state.history(&channel, since) {
                         for m in history {
-                            let _ = write_line(writer, &event_json(&Event::Message(m))).await;
+                            if m.seq <= high_water {
+                                let _ = write_line(writer, &event_json(&Event::Message(m))).await;
+                            }
                         }
                     }
+                    subscribed.insert(channel.clone());
                     let _ = write_line(writer, &json!({ "ok": true, "subscribed": channel })).await;
                     let writer = writer.clone();
                     let task = tokio::spawn(async move {
