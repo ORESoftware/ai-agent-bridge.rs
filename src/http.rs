@@ -387,7 +387,7 @@ async fn stream_channel(
             // Signal a lag (don't silently drop) so the client knows it missed
             // messages and can reconcile via `GET /messages?since=`.
             Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => Some(Ok(
-                SseEvent::default().json_data(&json!({ "type": "lagged", "dropped": n })).unwrap_or_default(),
+                SseEvent::default().json_data(json!({ "type": "lagged", "dropped": n })).unwrap_or_default(),
             )),
         }
     });
