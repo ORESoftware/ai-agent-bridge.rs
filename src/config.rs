@@ -124,7 +124,9 @@ impl Config {
             .unwrap_or(DEFAULT_HISTORY_LIMIT);
 
         let resolve_threshold = env_opt("RESOLVE_THRESHOLD")
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|t| t.is_finite())
+            .map(|t| t.clamp(0.0, 1.0))
             .unwrap_or(0.72);
 
         Ok(Self {
