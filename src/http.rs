@@ -137,10 +137,12 @@ async fn claude_inbox(
         let presented = headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok());
+        // Non-short-circuiting fold (`|`, not `any`): every candidate is compared
+        // so the check doesn't leak, via timing, which token matched.
         let ok = presented
             .map(|p| {
-                accepted.iter().any(|tok| {
-                    crate::config::constant_time_eq(p.as_bytes(), format!("Bearer {tok}").as_bytes())
+                accepted.iter().fold(false, |acc, tok| {
+                    acc | crate::config::constant_time_eq(p.as_bytes(), format!("Bearer {tok}").as_bytes())
                 })
             })
             .unwrap_or(false);
