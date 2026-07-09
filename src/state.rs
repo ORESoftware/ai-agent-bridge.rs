@@ -568,7 +568,7 @@ impl AppState {
                 meta,
                 created_at: now_ts(),
             };
-            ch.history_bytes += message.content.len();
+            ch.history_bytes += message_retained_bytes(&message);
             ch.messages.push_back(message.clone());
             // Evict oldest by count AND by total retained bytes (always keep >= 1),
             // so one hot channel can't hoard ~1 GiB of history.
@@ -576,7 +576,7 @@ impl AppState {
                 || (ch.history_bytes > budget && ch.messages.len() > 1)
             {
                 if let Some(old) = ch.messages.pop_front() {
-                    ch.history_bytes = ch.history_bytes.saturating_sub(old.content.len());
+                    ch.history_bytes = ch.history_bytes.saturating_sub(message_retained_bytes(&old));
                 }
             }
             // Broadcast under the write lock so live delivery order matches `seq`
