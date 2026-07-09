@@ -134,7 +134,35 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
     )
     .await?;
 
-    while let Some(line) = read_capped_line(&mut reader, max_line).await? {
+    loop {
+        // Read deadline: an unauthenticated connection must authenticate fast; an
+        // authed-but-idle connection that never subscribes can't squat a slot
+        // forever; a subscribed connection may idle (it receives events, not sends).
+        let deadline_secs = if !authed {
+            Some(15u64)
+        } else if subscribed.is_empty() {
+            Some(300)
+        } else {
+            None
+        };
+        let read = read_capped_line(&mut reader, max_line);
+        let line = match deadline_secs {
+            Some(secs) => match tokio::time::timeout(std::time::Duration::from_secs(secs), read).await {
+                Ok(r) => match r? {
+                    Some(l) => l,
+                    None => break,
+                },
+                Err(_) => {
+                    let err = if authed { "idle_timeout" } else { "auth_timeout" };
+                    let _ = write_line(&writer, &json!({ "ok": false, "error": err })).await;
+                    break;
+                }
+            },
+            None => match read.await? {
+                Some(l) => l,
+                None => break,
+            },
+        };
         let line = line.trim();
         if line.is_empty() {
             continue;
