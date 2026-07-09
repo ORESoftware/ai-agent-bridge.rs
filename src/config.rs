@@ -65,6 +65,7 @@ pub struct Config {
     pub max_tcp_line_bytes: usize,
     pub max_tcp_connections: usize,
     pub max_http_body_bytes: usize,
+    pub max_channel_history_bytes: usize,
 }
 
 /// Constant-time byte comparison for bearer tokens (avoids leaking a match
