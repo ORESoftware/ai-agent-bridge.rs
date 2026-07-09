@@ -217,7 +217,7 @@ impl AppState {
 
     /// Semantic search over topic embeddings, best score first.
     pub async fn search_channels(&self, query: &str, limit: usize) -> Vec<ScoredChannel> {
-        let qvec = self.embedder.embed(query).await;
+        let (qvec, _) = self.embedder.embed(query).await;
         let mut scored: Vec<ScoredChannel> = {
             let chans = self.channels.read();
             chans
