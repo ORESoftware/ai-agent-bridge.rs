@@ -269,18 +269,28 @@ impl AppState {
         Ok(ResolveOutcome { channel, score: 0.0, created: true })
     }
 
+    /// Returns `(channel, created)` — `created` is false when a concurrent creator
+    /// won the race (the caller gets the existing channel), so `resolve` reports
+    /// the truth instead of always claiming `created: true`.
     fn insert_channel(
         &self,
         slug: String,
-        topic: String,
+        mut topic: String,
         created_by: &str,
         embedding: Vec<f32>,
-    ) -> BridgeResult<Channel> {
-        let public = {
+        embedding_model: String,
+    ) -> BridgeResult<(Channel, bool)> {
+        truncate_bytes(&mut topic, MAX_TOPIC_BYTES);
+        let mut created_by = created_by.trim().to_string();
+        if created_by.is_empty() {
+            created_by = "system".to_string();
+        }
+        truncate_bytes(&mut created_by, MAX_KEY_BYTES);
+        let (public, created) = {
             let mut chans = self.channels.write();
             // Double-checked: a concurrent creator may have won the race.
             if let Some(existing) = chans.get(&slug) {
-                return Ok(existing.to_public());
+                return Ok((existing.to_public(), false));
             }
             // Bound total channels so an attacker cannot mint unbounded topics
             // (e.g. via `resolve`/`create`/`POST /claude` with fresh queries).
@@ -291,18 +301,18 @@ impl AppState {
                 });
             }
             let (tx, _rx) = broadcast::channel(256);
-            let created_by = if created_by.trim().is_empty() { "system" } else { created_by };
             let state = ChannelState {
                 slug: slug.clone(),
                 topic,
                 topic_summary: None,
                 embedding,
-                embedding_model: self.embedder.model_name().to_string(),
-                created_by: created_by.to_string(),
+                embedding_model,
+                created_by,
                 created_at: now_ts(),
                 meta: serde_json::json!({}),
                 members: HashMap::new(),
                 messages: VecDeque::new(),
+                history_bytes: 0,
                 next_seq: 1,
                 message_count: 0,
                 context: HashMap::new(),
@@ -311,10 +321,12 @@ impl AppState {
             };
             let public = state.to_public();
             chans.insert(slug, state);
-            public
+            (public, true)
         };
-        self.persist_channel(&public, &public.topic);
-        Ok(public)
+        if created {
+            self.persist_channel(&public, &public.topic);
+        }
+        Ok((public, created))
     }
 
     /// Reinstate a channel from persisted state on boot, using its stored
