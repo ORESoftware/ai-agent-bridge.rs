@@ -20,6 +20,8 @@ const MAX_KEY_BYTES: usize = 120;
 const MAX_CONTEXT_KEY_BYTES: usize = 200;
 /// Max distinct shared-context keys per channel.
 const MAX_CONTEXT_KEYS: usize = 10_000;
+/// Max bytes for a channel topic (matches the DB `octet_length` CHECK).
+const MAX_TOPIC_BYTES: usize = 8192;
 
 /// Truncate a `String` to at most `max` bytes without splitting a UTF-8 char.
 fn truncate_bytes(s: &mut String, max: usize) {
