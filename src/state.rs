@@ -416,7 +416,7 @@ impl AppState {
         if agent_key.len() > MAX_KEY_BYTES {
             return Err(BridgeError::PayloadTooLarge { what: "agent_key", limit: MAX_KEY_BYTES });
         }
-        let (outcome, event) = {
+        let (outcome, persist) = {
             let mut chans = self.channels.write();
             let ch = chans
                 .get_mut(slug)
@@ -425,10 +425,7 @@ impl AppState {
             if let Some(existing) = ch.members.get_mut(agent_key) {
                 existing.last_seen_at = now_ts();
                 let member = existing.clone();
-                (
-                    JoinOutcome { member, channel: ch.to_public(), newly_joined: false },
-                    None,
-                )
+                (JoinOutcome { member, channel: ch.to_public(), newly_joined: false }, false)
             } else {
                 if ch.members.len() >= MAX_MEMBERS {
                     return Err(BridgeError::ChannelFull {
@@ -446,21 +443,19 @@ impl AppState {
                     last_seen_at: now.clone(),
                 };
                 ch.members.insert(agent_key.to_string(), member.clone());
-                let event = Event::Presence {
+                // Broadcast presence under the write lock (like messages) so a join
+                // is causally ordered before any message that follows it.
+                let _ = ch.tx.send(Event::Presence {
                     channel: ch.slug.clone(),
                     agent_key: agent_key.to_string(),
                     event: PresenceKind::Joined,
                     member_count: ch.members.len(),
                     at: now,
-                };
-                (
-                    JoinOutcome { member, channel: ch.to_public(), newly_joined: true },
-                    Some((ch.tx.clone(), event)),
-                )
+                });
+                (JoinOutcome { member, channel: ch.to_public(), newly_joined: true }, true)
             }
         };
-        if let Some((tx, event)) = event {
-            let _ = tx.send(event);
+        if persist {
             self.persist_member(slug, &outcome.member);
         }
         Ok(outcome)
