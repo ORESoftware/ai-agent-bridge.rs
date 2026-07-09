@@ -852,6 +852,77 @@ mod tests {
         ));
     }
 
+    // ---- round-3 review fixes ------------------------------------------------
+
+    #[tokio::test]
+    async fn join_rejects_oversized_key() {
+        let s = state();
+        s.create_or_get_channel("room", "topic", "claude").await.unwrap();
+        let long = "k".repeat(121);
+        assert!(matches!(
+            s.join("room", &long, MemberRole::Member).unwrap_err(),
+            BridgeError::PayloadTooLarge { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn post_rejects_oversized_meta() {
+        let s = state_cfg(|c| c.max_content_bytes = 128);
+        s.create_or_get_channel("room", "topic", "claude").await.unwrap();
+        let big_meta = serde_json::json!({ "blob": "m".repeat(200) });
+        assert!(matches!(
+            s.post_message("room", "claude", Role::User, "hi", big_meta).unwrap_err(),
+            BridgeError::PayloadTooLarge { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn resolve_reports_created_honestly_and_reuses() {
+        let s = state();
+        let first = s.resolve_channel("brand new topic here", "claude", Some(0.99)).await.unwrap();
+        assert!(first.created);
+        // A near-identical query resolves back to the same channel, created=false.
+        let again = s.resolve_channel("brand new topic here", "codex", Some(0.2)).await.unwrap();
+        assert!(!again.created);
+        assert_eq!(again.channel.slug, first.channel.slug);
+    }
+
+    #[tokio::test]
+    async fn resolve_ignores_nan_threshold() {
+        let s = state();
+        s.create_or_get_channel("existing", "kubernetes rollout deploy", "claude").await.unwrap();
+        // A NaN threshold must not make every comparison false (which would mint a
+        // new channel); it falls back to the configured default and reuses.
+        let out = s.resolve_channel("kubernetes rollout deploy", "codex", Some(f32::NAN)).await.unwrap();
+        assert!(!out.created, "NaN threshold should fall back, not force-create");
+        assert_eq!(out.channel.slug, "existing");
+    }
+
+    #[tokio::test]
+    async fn local_embedding_model_label_is_honest() {
+        let s = state();
+        let ch = s.create_or_get_channel("room", "a topic", "claude").await.unwrap();
+        assert_eq!(ch.embedding_model, crate::embed::LOCAL_MODEL);
+    }
+
+    #[tokio::test]
+    async fn history_is_bounded_by_bytes_not_just_count() {
+        // Tiny byte budget, generous count limit -> eviction is driven by bytes.
+        let s = state_cfg(|c| {
+            c.max_channel_history_bytes = 120;
+            c.history_limit = 10_000;
+        });
+        s.create_or_get_channel("room", "topic", "claude").await.unwrap();
+        for i in 0..50 {
+            s.post_message("room", "claude", Role::User, &format!("message-{i:03}-payload"), serde_json::json!({})).unwrap();
+        }
+        let hist = s.history("room", None).unwrap();
+        // Each message is ~20 bytes; a 120-byte budget keeps only a handful.
+        assert!(hist.len() <= 8, "history should be byte-bounded, got {}", hist.len());
+        // The newest message is always retained.
+        assert_eq!(hist.last().unwrap().content, "message-049-payload");
+    }
+
     #[test]
     fn slugify_makes_clean_slugs() {
         assert_eq!(slugify("  Deploy the Soccer Policy!! "), "deploy-the-soccer-policy");
