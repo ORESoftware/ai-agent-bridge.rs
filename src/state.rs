@@ -1046,7 +1046,7 @@ mod tests {
     async fn leave_emits_presence_and_updates_count() {
         let s = state();
         s.create_or_get_channel("presence", "topic", "claude").await.unwrap();
-        let mut rx = s.subscribe("presence", None).unwrap();
+        let (mut rx, _) = s.subscribe("presence", None).unwrap();
         s.join("presence", "codex", MemberRole::Member).unwrap();
         // First event is the join presence.
         match rx.recv().await.unwrap() {
