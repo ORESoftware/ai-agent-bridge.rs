@@ -154,6 +154,10 @@ impl AppState {
         if let Some(h) = agent.host.as_mut() {
             truncate_bytes(h, 255);
         }
+        let meta_bytes = serde_json::to_vec(&agent.meta).map(|v| v.len()).unwrap_or(usize::MAX);
+        if meta_bytes > self.config.max_content_bytes {
+            return Err(BridgeError::PayloadTooLarge { what: "agent meta", limit: self.config.max_content_bytes });
+        }
         agent.registered_at = now_ts();
         {
             let mut agents = self.agents.write();
