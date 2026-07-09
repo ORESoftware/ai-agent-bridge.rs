@@ -8,7 +8,20 @@ use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
 use serde_json::Value;
+
+/// One `inbox.jsonl` line. A typed struct (not a `serde_json::Value`) so the key
+/// order is exactly `id, ts, from, topic, prompt` — a `Value` serializes with
+/// sorted keys by default, which would silently change the legacy line format.
+#[derive(Serialize)]
+pub struct InboxLine {
+    pub id: u64,
+    pub ts: String,
+    pub from: String,
+    pub topic: String,
+    pub prompt: String,
+}
 
 pub fn inbox_path(dir: &Path) -> PathBuf {
     dir.join("inbox.jsonl")
