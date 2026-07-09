@@ -194,6 +194,8 @@ impl Config {
             max_tcp_connections: DEFAULT_MAX_TCP_CONNECTIONS,
             max_http_body_bytes: DEFAULT_MAX_HTTP_BODY_BYTES,
             max_channel_history_bytes: DEFAULT_MAX_CHANNEL_HISTORY_BYTES,
+            tcp_auth_deadline_secs: DEFAULT_TCP_AUTH_DEADLINE_SECS,
+            tcp_idle_deadline_secs: DEFAULT_TCP_IDLE_DEADLINE_SECS,
         }
     }
 }
