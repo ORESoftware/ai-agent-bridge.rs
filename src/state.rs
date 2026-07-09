@@ -106,6 +106,10 @@ pub struct AppState {
     inbox_count: AtomicU64,
     #[cfg(feature = "postgres")]
     db: Option<crate::db::Db>,
+    /// Bounds concurrent best-effort persist tasks; excess writes are shed so a
+    /// write flood can't spawn unbounded tasks queued on the DB pool.
+    #[cfg(feature = "postgres")]
+    persist_sem: Arc<tokio::sync::Semaphore>,
 }
 
 impl AppState {
@@ -119,6 +123,8 @@ impl AppState {
             inbox_count,
             #[cfg(feature = "postgres")]
             db: None,
+            #[cfg(feature = "postgres")]
+            persist_sem: Arc::new(tokio::sync::Semaphore::new(256)),
         })
     }
 
@@ -687,8 +693,18 @@ impl AppState {
         F: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
     {
         if let Some(db) = &self.db {
+            // Shed (drop) the write under overload rather than queue an unbounded
+            // task on the 5-connection pool — this is a best-effort mirror.
+            let permit = match self.persist_sem.clone().try_acquire_owned() {
+                Ok(p) => p,
+                Err(_) => {
+                    tracing::debug!("persist queue full; dropping a best-effort write");
+                    return;
+                }
+            };
             let fut = fut(db.clone());
             tokio::spawn(async move {
+                let _permit = permit;
                 if let Err(e) = fut.await {
                     tracing::warn!(error = %e, "postgres persistence (best-effort) failed");
                 }

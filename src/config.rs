@@ -8,6 +8,9 @@ use std::net::{IpAddr, Ipv4Addr};
 /// gives us (see [`crate::embed`]). Cosine similarity is dimension-agnostic as
 /// long as both vectors in a comparison share a width.
 pub const DEFAULT_EMBED_DIM: usize = 256;
+/// Upper bound on the local embedding width, so a bogus `EMBED_DIM` env can't
+/// force a giant per-channel allocation.
+pub const MAX_EMBED_DIM: usize = 8192;
 
 /// Hard ceiling on chatroom participants. The 33rd join is bounced.
 pub const MAX_MEMBERS: usize = 32;
@@ -28,6 +31,11 @@ pub const DEFAULT_MAX_CONTENT_BYTES: usize = 1_048_576;
 pub const DEFAULT_MAX_TCP_LINE_BYTES: usize = 2_097_152;
 /// Max concurrent TCP connections (each is a task); excess are dropped.
 pub const DEFAULT_MAX_TCP_CONNECTIONS: usize = 4_096;
+/// Seconds an unauthenticated TCP connection has to present valid auth.
+pub const DEFAULT_TCP_AUTH_DEADLINE_SECS: u64 = 15;
+/// Seconds an authed-but-not-subscribed TCP connection may idle before it's
+/// dropped (a subscribed connection may idle indefinitely — it's receiving).
+pub const DEFAULT_TCP_IDLE_DEADLINE_SECS: u64 = 300;
 /// Max HTTP request body bytes (also guards `POST /claude`).
 pub const DEFAULT_MAX_HTTP_BODY_BYTES: usize = 2_097_152;
 /// Max retained message-content bytes per channel's in-memory history ring, so a
@@ -66,6 +74,8 @@ pub struct Config {
     pub max_tcp_connections: usize,
     pub max_http_body_bytes: usize,
     pub max_channel_history_bytes: usize,
+    pub tcp_auth_deadline_secs: u64,
+    pub tcp_idle_deadline_secs: u64,
 }
 
 /// Constant-time byte comparison for bearer tokens (avoids leaking a match
@@ -116,6 +126,7 @@ impl Config {
         let embed_dim = env_opt("EMBED_DIM")
             .and_then(|v| v.parse().ok())
             .filter(|d| *d > 0)
+            .map(|d: usize| d.min(MAX_EMBED_DIM))
             .unwrap_or(DEFAULT_EMBED_DIM);
 
         let history_limit = env_opt("HISTORY_LIMIT")
@@ -154,6 +165,8 @@ impl Config {
             max_tcp_connections: env_usize("MAX_TCP_CONNECTIONS", DEFAULT_MAX_TCP_CONNECTIONS),
             max_http_body_bytes: env_usize("MAX_HTTP_BODY_BYTES", DEFAULT_MAX_HTTP_BODY_BYTES),
             max_channel_history_bytes: env_usize("MAX_CHANNEL_HISTORY_BYTES", DEFAULT_MAX_CHANNEL_HISTORY_BYTES),
+            tcp_auth_deadline_secs: env_usize("TCP_AUTH_DEADLINE_SECS", DEFAULT_TCP_AUTH_DEADLINE_SECS as usize) as u64,
+            tcp_idle_deadline_secs: env_usize("TCP_IDLE_DEADLINE_SECS", DEFAULT_TCP_IDLE_DEADLINE_SECS as usize) as u64,
         })
     }
 
@@ -181,6 +194,8 @@ impl Config {
             max_tcp_connections: DEFAULT_MAX_TCP_CONNECTIONS,
             max_http_body_bytes: DEFAULT_MAX_HTTP_BODY_BYTES,
             max_channel_history_bytes: DEFAULT_MAX_CHANNEL_HISTORY_BYTES,
+            tcp_auth_deadline_secs: DEFAULT_TCP_AUTH_DEADLINE_SECS,
+            tcp_idle_deadline_secs: DEFAULT_TCP_IDLE_DEADLINE_SECS,
         }
     }
 }

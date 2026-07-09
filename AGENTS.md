@@ -15,17 +15,26 @@ Never run destructive or irreversible shell commands. To remove or move files,
 **always go through git** so the change is tracked and recoverable.
 
 **Blacklisted — do NOT run:**
-- `rm`, `rm -rf`, `rmdir`, `unlink` — never delete via raw `rm`.
-- raw `mv` of tracked files; truncating a tracked file with `>`.
-- `git reset --hard`, `git clean -fdx`, `git checkout -- .` / `git restore .` mass-discard.
-- `git push --force` / history rewrites on shared branches (esp. `main`).
-- `dd`, `mkfs`, `shred`, `find … -delete`, recursive `chmod -R`/`chown -R` on broad paths, fork bombs.
+- `rm`, `rm -rf`, `rmdir`, `unlink`; raw `mv` of tracked files; truncating a file with `>`;
+  `dd`, `mkfs`, `shred`, `find … -delete`, `… | xargs rm`, `rsync --delete`,
+  recursive `chmod -R` / `chown -R` on broad paths, fork bombs.
+- **`git stash` and all stash mutators** (`stash push`/`pop`/`apply`/`drop`/`clear`) — hidden,
+  unauditable state that has repeatedly lost work. Use a WIP commit instead
+  (`git stash list`/`show` for read-only audit only).
+- **Force-push / history rewrite on shared branches:** `git push --force` / `--force-with-lease`,
+  `+<refspec>`, `--mirror`, ref deletes; `git rebase`, `git commit --amend`,
+  `git filter-branch`, `git filter-repo`.
+- **Mass discards:** `git reset --hard`, any `git clean` except `-n`, `git checkout -f`,
+  `git checkout -- .`, `git restore .` / `git restore :/`.
 
-**Whitelisted — safe, prefer these:**
-- `git rm` / `git rm --cached` — remove files through git (recoverable via history).
-- `git mv` — rename/move through git.
-- `git restore <path>` (single file), `git revert`, `git stash` — reversible.
-- Editing via the editor tools, `git add`, `git commit`, `git switch -c`.
+**Whitelisted — path-scoped, prefer these:**
+- `git rm <path>` / `git rm --cached <path>` — remove through git (recoverable from history).
+- `git mv <src> <dst>` — rename/move through git.
+- `git restore <single-file>` / `git restore --staged <single-file>`, `git revert <sha>` — reversible.
+- `git add <path>`, `git commit`, read-only git (`status`/`log`/`diff`/`show`).
+- `git pull --ff-only` — only when the tree is clean and on the repo-approved branch.
+- Editor tools for edits. Branch creation (`git switch -c`) is repo-policy-specific — only where
+  that repo's AGENTS.md permits it.
 
 If a genuinely destructive action seems unavoidable, **STOP and ask the operator
 first** — do not improvise around this rule.

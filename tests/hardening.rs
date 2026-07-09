@@ -200,6 +200,30 @@ async fn claude_inbox_line_key_order_is_stable() {
 }
 
 #[tokio::test]
+async fn tcp_unauthenticated_connection_dropped_on_deadline() {
+    let mut cfg = common::base_config();
+    cfg.api_auth_bearer = Some("tok".into());
+    cfg.tcp_auth_deadline_secs = 1; // fast for the test
+    let addr = common::spawn_tcp(common::state_with(cfg)).await;
+    let (r, _w) = TcpStream::connect(addr).await.unwrap().into_split();
+    let mut reader = BufReader::new(r);
+    recv(&mut reader).await; // hello
+
+    // Send nothing. Within ~1s the server should warn and close the connection,
+    // so an idle unauthenticated socket can't squat a slot.
+    let frame = tokio::time::timeout(Duration::from_secs(5), recv(&mut reader))
+        .await
+        .expect("expected an auth_timeout frame");
+    assert_eq!(frame["error"], "auth_timeout");
+    let mut line = String::new();
+    let n = tokio::time::timeout(Duration::from_secs(3), reader.read_line(&mut line))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(n, 0, "connection should be closed after the auth deadline");
+}
+
+#[tokio::test]
 async fn tcp_auth_handshake_enforced() {
     let mut cfg = common::base_config();
     cfg.api_auth_bearer = Some("tok".into());
