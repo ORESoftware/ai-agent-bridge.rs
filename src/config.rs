@@ -31,6 +31,11 @@ pub const DEFAULT_MAX_CONTENT_BYTES: usize = 1_048_576;
 pub const DEFAULT_MAX_TCP_LINE_BYTES: usize = 2_097_152;
 /// Max concurrent TCP connections (each is a task); excess are dropped.
 pub const DEFAULT_MAX_TCP_CONNECTIONS: usize = 4_096;
+/// Seconds an unauthenticated TCP connection has to present valid auth.
+pub const DEFAULT_TCP_AUTH_DEADLINE_SECS: u64 = 15;
+/// Seconds an authed-but-not-subscribed TCP connection may idle before it's
+/// dropped (a subscribed connection may idle indefinitely — it's receiving).
+pub const DEFAULT_TCP_IDLE_DEADLINE_SECS: u64 = 300;
 /// Max HTTP request body bytes (also guards `POST /claude`).
 pub const DEFAULT_MAX_HTTP_BODY_BYTES: usize = 2_097_152;
 /// Max retained message-content bytes per channel's in-memory history ring, so a
