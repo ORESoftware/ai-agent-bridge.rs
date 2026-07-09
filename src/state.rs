@@ -916,6 +916,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn subscribe_high_water_splits_replay_and_live() {
+        let s = state();
+        s.create_or_get_channel("c", "t", "claude").await.unwrap();
+        s.post_message("c", "claude", Role::User, "old", serde_json::json!({})).unwrap(); // seq 1
+        let (mut rx, hw) = s.subscribe("c", None).unwrap();
+        assert_eq!(hw, 1, "high-water is the last existing seq");
+        s.post_message("c", "claude", Role::User, "new", serde_json::json!({})).unwrap(); // seq 2
+        // The live receiver yields ONLY seq > high_water (no duplicate of the replay).
+        match rx.recv().await.unwrap() {
+            Event::Message(m) => {
+                assert_eq!(m.seq, 2);
+                assert_eq!(m.content, "new");
+            }
+            other => panic!("expected the new message, got {other:?}"),
+        }
+        // Replay is exactly seq <= high_water — the two sets partition cleanly.
+        let replay: Vec<_> = s.history("c", None).unwrap().into_iter().filter(|m| m.seq <= hw).collect();
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].content, "old");
+    }
+
+    #[tokio::test]
     async fn history_is_bounded_by_bytes_not_just_count() {
         // Tiny byte budget, generous count limit -> eviction is driven by bytes.
         let s = state_cfg(|c| {
