@@ -367,6 +367,7 @@ impl AppState {
                 meta,
                 members: HashMap::new(),
                 messages: VecDeque::new(),
+                history_bytes: 0,
                 next_seq: 1,
                 message_count: 0,
                 context: HashMap::new(),
