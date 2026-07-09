@@ -119,6 +119,7 @@ impl Config {
         let embed_dim = env_opt("EMBED_DIM")
             .and_then(|v| v.parse().ok())
             .filter(|d| *d > 0)
+            .map(|d: usize| d.min(MAX_EMBED_DIM))
             .unwrap_or(DEFAULT_EMBED_DIM);
 
         let history_limit = env_opt("HISTORY_LIMIT")
