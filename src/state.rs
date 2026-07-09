@@ -592,17 +592,27 @@ impl AppState {
 
     /// Subscribe to the live event stream (messages + presence). Auto-joins the
     /// subscriber when `agent_key` is provided (bounced if the room is full).
+    ///
+    /// Returns `(receiver, high_water)`: the receiver only yields messages posted
+    /// after this call (seq > high_water), and `high_water` is the last seq that
+    /// already existed. A caller replaying history should replay only up to
+    /// `high_water`, so a message in the subscribe window is not delivered twice
+    /// (once as replay, once live). The receiver + high_water are captured under
+    /// the same read lock, and posts broadcast under the write lock, so the split
+    /// is exact — no duplicate, no gap.
     pub fn subscribe(
         &self,
         slug: &str,
         agent_key: Option<&str>,
-    ) -> BridgeResult<broadcast::Receiver<Event>> {
+    ) -> BridgeResult<(broadcast::Receiver<Event>, u64)> {
         if let Some(key) = agent_key.filter(|k| !k.trim().is_empty()) {
             self.join(slug, key, MemberRole::Member)?;
         }
         let chans = self.channels.read();
         let ch = chans.get(slug).ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
-        Ok(ch.tx.subscribe())
+        let rx = ch.tx.subscribe();
+        let high_water = ch.next_seq.saturating_sub(1);
+        Ok((rx, high_water))
     }
 
     // ---- shared context -------------------------------------------------------
