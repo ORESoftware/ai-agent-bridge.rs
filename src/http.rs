@@ -370,7 +370,8 @@ async fn stream_channel(
     Path(slug): Path<String>,
     Query(q): Query<StreamQuery>,
 ) -> Result<Sse<impl futures::Stream<Item = Result<SseEvent, Infallible>>>, ApiError> {
-    let rx = s.subscribe(&slug, q.agent_key.as_deref())?;
+    // SSE streams live only (no history replay), so the high-water mark is unused.
+    let (rx, _high_water) = s.subscribe(&slug, q.agent_key.as_deref())?;
     let stream = BroadcastStream::new(rx).filter_map(|item| async move {
         match item {
             Ok(event) => Some(Ok(SseEvent::default().json_data(&event).unwrap_or_default())),
