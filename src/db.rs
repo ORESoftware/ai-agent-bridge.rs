@@ -49,6 +49,11 @@ impl Db {
         let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
         let mut n = 0;
         for row in rows {
+            // Honor the in-memory channel cap even during a boot restore.
+            if n >= state.config.max_channels {
+                tracing::warn!(loaded = n, "reached max_channels during restore; skipping the rest");
+                break;
+            }
             let slug: String = row.try_get("slug")?;
             let topic: String = row.try_get("topic").unwrap_or_default();
             let embedding_model: String = row.try_get("embedding_model").unwrap_or_default();
