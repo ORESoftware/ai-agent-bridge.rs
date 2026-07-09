@@ -384,8 +384,11 @@ async fn stream_channel(
     let stream = BroadcastStream::new(rx).filter_map(|item| async move {
         match item {
             Ok(event) => Some(Ok(SseEvent::default().json_data(&event).unwrap_or_default())),
-            // A lagged subscriber just skips the dropped events.
-            Err(_) => None,
+            // Signal a lag (don't silently drop) so the client knows it missed
+            // messages and can reconcile via `GET /messages?since=`.
+            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => Some(Ok(
+                SseEvent::default().json_data(&json!({ "type": "lagged", "dropped": n })).unwrap_or_default(),
+            )),
         }
     });
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
