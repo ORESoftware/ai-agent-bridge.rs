@@ -153,6 +153,7 @@ impl Config {
             max_tcp_line_bytes: env_usize("MAX_TCP_LINE_BYTES", DEFAULT_MAX_TCP_LINE_BYTES),
             max_tcp_connections: env_usize("MAX_TCP_CONNECTIONS", DEFAULT_MAX_TCP_CONNECTIONS),
             max_http_body_bytes: env_usize("MAX_HTTP_BODY_BYTES", DEFAULT_MAX_HTTP_BODY_BYTES),
+            max_channel_history_bytes: env_usize("MAX_CHANNEL_HISTORY_BYTES", DEFAULT_MAX_CHANNEL_HISTORY_BYTES),
         })
     }
 
