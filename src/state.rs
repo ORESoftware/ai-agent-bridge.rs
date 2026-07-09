@@ -106,6 +106,10 @@ pub struct AppState {
     inbox_count: AtomicU64,
     #[cfg(feature = "postgres")]
     db: Option<crate::db::Db>,
+    /// Bounds concurrent best-effort persist tasks; excess writes are shed so a
+    /// write flood can't spawn unbounded tasks queued on the DB pool.
+    #[cfg(feature = "postgres")]
+    persist_sem: Arc<tokio::sync::Semaphore>,
 }
 
 impl AppState {
