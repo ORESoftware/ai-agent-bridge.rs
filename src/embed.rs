@@ -253,5 +253,12 @@ mod tests {
         assert_eq!(extract_embedding(&nested), Some(vec![4.0, 5.0]));
         let none = serde_json::json!({ "nope": true });
         assert_eq!(extract_embedding(&none), None);
+        // A non-numeric element rejects the whole vector (-> local fallback),
+        // rather than silently dropping it and shrinking the dimension.
+        let bad = serde_json::json!({ "embedding": [0.1, "x", 0.2] });
+        assert_eq!(extract_embedding(&bad), None);
+        // A non-finite element (huge magnitude -> f64 inf) is rejected too.
+        let inf: serde_json::Value = serde_json::from_str(r#"{"embedding":[1e400]}"#).unwrap();
+        assert_eq!(extract_embedding(&inf), None);
     }
 }
