@@ -9,28 +9,23 @@ Build/test: `cargo build --release --locked` and `cargo test` (in-memory, no DB
 needed). The optional `dd-pg-defs` path dep resolves in the `k8s-cluster`
 superproject; for a standalone checkout see the README's Development note.
 
-## Command safety — destructive-command policy
+## Command safety — STRICT (all agents MUST follow)
 
-Every agent working in this repo MUST follow this. Prefer version-controlled,
-reversible operations; never destroy work irrecoverably.
+Never run destructive or irreversible shell commands. To remove or move files,
+**always go through git** so the change is tracked and recoverable.
 
 **Blacklisted — do NOT run:**
-- `rm`, `rm -f`, `rm -rf`, `rmdir` — never delete with `rm` (`rm -rf` especially).
-- `git reset --hard`, `git clean -fd`/`-fdx`, `git checkout -- .`, `git restore .`
-  on a dirty tree — they silently discard uncommitted work.
-- `git push -f` / `--force` / `--force-with-lease` to shared branches; history
-  rewrites (`rebase`, `filter-branch`) on `main`/`dev`.
-- `> file`, `truncate`, `dd` on real files, `find … -delete`, `… | xargs rm`,
-  recursive `chmod`/`chown`.
-- `mv`-ing tracked files (loses history/staging) or moving paths out of the repo.
+- `rm`, `rm -rf`, `rmdir`, `unlink` — never delete via raw `rm`.
+- raw `mv` of tracked files; truncating a tracked file with `>`.
+- `git reset --hard`, `git clean -fdx`, `git checkout -- .` / `git restore .` mass-discard.
+- `git push --force` / history rewrites on shared branches (esp. `main`).
+- `dd`, `mkfs`, `shred`, `find … -delete`, recursive `chmod -R`/`chown -R` on broad paths, fork bombs.
 
-**Whitelisted — use these instead:**
-- `git rm <path>` / `git rm -r <dir>` instead of `rm` — staged + recoverable from history.
-- `git mv <src> <dst>` instead of `mv` for tracked files.
-- `git restore <path>` / `git restore --staged <path>` instead of `reset --hard`.
-- `git stash` to set changes aside; `git revert <sha>` to undo a commit (no rewrite).
-- To "remove" untracked files you didn't create, move them to a `.trash/` dir
-  rather than delete them.
+**Whitelisted — safe, prefer these:**
+- `git rm` / `git rm --cached` — remove files through git (recoverable via history).
+- `git mv` — rename/move through git.
+- `git restore <path>` (single file), `git revert`, `git stash` — reversible.
+- Editing via the editor tools, `git add`, `git commit`, `git switch -c`.
 
-If a destructive action truly seems necessary, STOP and ask the human first. Do
-not delete or overwrite anything you did not create without explicit confirmation.
+If a genuinely destructive action seems unavoidable, **STOP and ask the operator
+first** — do not improvise around this rule.
