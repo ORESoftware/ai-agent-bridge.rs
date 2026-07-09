@@ -139,9 +139,9 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
         // authed-but-idle connection that never subscribes can't squat a slot
         // forever; a subscribed connection may idle (it receives events, not sends).
         let deadline_secs = if !authed {
-            Some(15u64)
+            Some(state.config.tcp_auth_deadline_secs)
         } else if subscribed.is_empty() {
-            Some(300)
+            Some(state.config.tcp_idle_deadline_secs)
         } else {
             None
         };
