@@ -165,6 +165,8 @@ impl Config {
             max_tcp_connections: env_usize("MAX_TCP_CONNECTIONS", DEFAULT_MAX_TCP_CONNECTIONS),
             max_http_body_bytes: env_usize("MAX_HTTP_BODY_BYTES", DEFAULT_MAX_HTTP_BODY_BYTES),
             max_channel_history_bytes: env_usize("MAX_CHANNEL_HISTORY_BYTES", DEFAULT_MAX_CHANNEL_HISTORY_BYTES),
+            tcp_auth_deadline_secs: env_usize("TCP_AUTH_DEADLINE_SECS", DEFAULT_TCP_AUTH_DEADLINE_SECS as usize) as u64,
+            tcp_idle_deadline_secs: env_usize("TCP_IDLE_DEADLINE_SECS", DEFAULT_TCP_IDLE_DEADLINE_SECS as usize) as u64,
         })
     }
 
