@@ -137,10 +137,12 @@ async fn claude_inbox(
         let presented = headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok());
+        // Non-short-circuiting fold (`|`, not `any`): every candidate is compared
+        // so the check doesn't leak, via timing, which token matched.
         let ok = presented
             .map(|p| {
-                accepted.iter().any(|tok| {
-                    crate::config::constant_time_eq(p.as_bytes(), format!("Bearer {tok}").as_bytes())
+                accepted.iter().fold(false, |acc, tok| {
+                    acc | crate::config::constant_time_eq(p.as_bytes(), format!("Bearer {tok}").as_bytes())
                 })
             })
             .unwrap_or(false);
@@ -165,9 +167,16 @@ async fn claude_inbox(
     let from = crate::compat::field(&data, "from", "codex", 64);
     let topic = crate::compat::field(&data, "topic", "", 128);
     let prompt = data.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let msg = json!({ "id": id, "ts": crate::compat::iso8601_secs(), "from": from, "topic": topic, "prompt": prompt });
+    // Typed struct -> exact key order {id, ts, from, topic, prompt} in inbox.jsonl.
+    let entry = crate::compat::InboxLine {
+        id,
+        ts: crate::compat::iso8601_secs(),
+        from: from.clone(),
+        topic: topic.clone(),
+        prompt: prompt.clone(),
+    };
 
-    if let Err(e) = s.append_inbox(&msg) {
+    if let Err(e) = s.append_inbox(&entry) {
         tracing::warn!(error = %e, "inbox write failed");
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "inbox write failed" }))).into_response();
     }
@@ -370,12 +379,16 @@ async fn stream_channel(
     Path(slug): Path<String>,
     Query(q): Query<StreamQuery>,
 ) -> Result<Sse<impl futures::Stream<Item = Result<SseEvent, Infallible>>>, ApiError> {
-    let rx = s.subscribe(&slug, q.agent_key.as_deref())?;
+    // SSE streams live only (no history replay), so the high-water mark is unused.
+    let (rx, _high_water) = s.subscribe(&slug, q.agent_key.as_deref())?;
     let stream = BroadcastStream::new(rx).filter_map(|item| async move {
         match item {
             Ok(event) => Some(Ok(SseEvent::default().json_data(&event).unwrap_or_default())),
-            // A lagged subscriber just skips the dropped events.
-            Err(_) => None,
+            // Signal a lag (don't silently drop) so the client knows it missed
+            // messages and can reconcile via `GET /messages?since=`.
+            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => Some(Ok(
+                SseEvent::default().json_data(json!({ "type": "lagged", "dropped": n })).unwrap_or_default(),
+            )),
         }
     });
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))

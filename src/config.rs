@@ -30,6 +30,9 @@ pub const DEFAULT_MAX_TCP_LINE_BYTES: usize = 2_097_152;
 pub const DEFAULT_MAX_TCP_CONNECTIONS: usize = 4_096;
 /// Max HTTP request body bytes (also guards `POST /claude`).
 pub const DEFAULT_MAX_HTTP_BODY_BYTES: usize = 2_097_152;
+/// Max retained message-content bytes per channel's in-memory history ring, so a
+/// hot channel is bounded by size, not just `history_limit` * message size.
+pub const DEFAULT_MAX_CHANNEL_HISTORY_BYTES: usize = 8_388_608;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -62,6 +65,7 @@ pub struct Config {
     pub max_tcp_line_bytes: usize,
     pub max_tcp_connections: usize,
     pub max_http_body_bytes: usize,
+    pub max_channel_history_bytes: usize,
 }
 
 /// Constant-time byte comparison for bearer tokens (avoids leaking a match
@@ -120,7 +124,9 @@ impl Config {
             .unwrap_or(DEFAULT_HISTORY_LIMIT);
 
         let resolve_threshold = env_opt("RESOLVE_THRESHOLD")
-            .and_then(|v| v.parse().ok())
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|t| t.is_finite())
+            .map(|t| t.clamp(0.0, 1.0))
             .unwrap_or(0.72);
 
         Ok(Self {
@@ -147,6 +153,7 @@ impl Config {
             max_tcp_line_bytes: env_usize("MAX_TCP_LINE_BYTES", DEFAULT_MAX_TCP_LINE_BYTES),
             max_tcp_connections: env_usize("MAX_TCP_CONNECTIONS", DEFAULT_MAX_TCP_CONNECTIONS),
             max_http_body_bytes: env_usize("MAX_HTTP_BODY_BYTES", DEFAULT_MAX_HTTP_BODY_BYTES),
+            max_channel_history_bytes: env_usize("MAX_CHANNEL_HISTORY_BYTES", DEFAULT_MAX_CHANNEL_HISTORY_BYTES),
         })
     }
 
@@ -173,6 +180,7 @@ impl Config {
             max_tcp_line_bytes: DEFAULT_MAX_TCP_LINE_BYTES,
             max_tcp_connections: DEFAULT_MAX_TCP_CONNECTIONS,
             max_http_body_bytes: DEFAULT_MAX_HTTP_BODY_BYTES,
+            max_channel_history_bytes: DEFAULT_MAX_CHANNEL_HISTORY_BYTES,
         }
     }
 }

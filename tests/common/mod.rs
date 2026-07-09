@@ -22,7 +22,7 @@ pub fn state() -> Arc<AppState> {
 }
 
 pub fn state_with(cfg: Config) -> Arc<AppState> {
-    let embedder = Embedder::new(cfg.embed_dim, "local-hash-v1".into(), None, "local".into(), None);
+    let embedder = Embedder::new(cfg.embed_dim, None, "local".into(), None);
     AppState::new(cfg, embedder)
 }
 

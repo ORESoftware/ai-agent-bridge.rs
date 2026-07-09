@@ -23,7 +23,6 @@ async fn main() -> anyhow::Result<()> {
 
     let embedder = Embedder::new(
         config.embed_dim,
-        config.embeddings_model.clone(),
         config.embeddings_url.clone(),
         config.embeddings_model.clone(),
         config.embeddings_bearer.clone(),

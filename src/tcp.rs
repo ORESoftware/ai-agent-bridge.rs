@@ -60,7 +60,7 @@ async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
 ) -> std::io::Result<Option<String>> {
     let mut buf: Vec<u8> = Vec::new();
     loop {
-        let (upto, newline) = {
+        let (upto, newline, overflow) = {
             let available = reader.fill_buf().await?;
             if available.is_empty() {
                 return if buf.is_empty() {
@@ -70,21 +70,29 @@ async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
                 };
             }
             match available.iter().position(|&b| b == b'\n') {
+                // Check BEFORE copying so `buf` never exceeds `max`, even when a
+                // whole oversized line + newline arrives in one fill_buf chunk.
                 Some(pos) => {
-                    buf.extend_from_slice(&available[..pos]);
-                    (pos + 1, true)
+                    if buf.len() + pos > max {
+                        (pos + 1, true, true)
+                    } else {
+                        buf.extend_from_slice(&available[..pos]);
+                        (pos + 1, true, false)
+                    }
                 }
                 None => {
-                    buf.extend_from_slice(available);
-                    (available.len(), false)
+                    if buf.len() + available.len() > max {
+                        (available.len(), false, true)
+                    } else {
+                        let n = available.len();
+                        buf.extend_from_slice(available);
+                        (n, false, false)
+                    }
                 }
             }
         };
         reader.consume(upto);
-        // Enforce the cap in BOTH cases — a full oversized line plus its newline
-        // can arrive in a single fill_buf chunk, so checking only the no-newline
-        // path would let it through.
-        if buf.len() > max {
+        if overflow {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "tcp frame exceeds max size",
@@ -118,6 +126,7 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
     // works until the client presents it.
     let mut authed = state.config.api_auth_bearer.is_none();
     let mut sub_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let mut subscribed: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     write_line(
         &writer,
@@ -161,7 +170,7 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
             continue;
         }
 
-        let response = dispatch(&state, &writer, req, &mut sub_tasks).await;
+        let response = dispatch(&state, &writer, req, &mut sub_tasks, &mut subscribed).await;
         if let Some(resp) = response {
             write_line(&writer, &resp).await?;
         }
@@ -180,6 +189,7 @@ async fn dispatch(
     writer: &Writer,
     req: Req,
     sub_tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+    subscribed: &mut std::collections::HashSet<String>,
 ) -> Option<Value> {
     match req {
         Req::Auth { .. } | Req::Ping => None, // handled upstream
@@ -236,6 +246,11 @@ async fn dispatch(
             // Drop finished forwarders, then cap live subscriptions per connection
             // so a client cannot spawn unbounded tasks with repeated `subscribe`s.
             sub_tasks.retain(|t| !t.is_finished());
+            // One live stream per channel per connection: a second subscribe to the
+            // same channel would deliver every event twice (or 64x at the cap).
+            if subscribed.contains(&channel) {
+                return Some(json!({ "ok": false, "error": "already_subscribed", "channel": channel }));
+            }
             if sub_tasks.len() >= MAX_SUBS_PER_CONN {
                 return Some(json!({
                     "ok": false,
@@ -244,13 +259,19 @@ async fn dispatch(
                 }));
             }
             match state.subscribe(&channel, agent_key.as_deref()) {
-                Ok(mut rx) => {
-                    // Replay recent history first so a late joiner has context.
+                Ok((mut rx, high_water)) => {
+                    // Replay history only up to the subscribe high-water; the live
+                    // receiver yields strictly newer messages, so no message is
+                    // delivered twice (replay + live).
                     if let Ok(history) = state.history(&channel, since) {
                         for m in history {
-                            let _ = write_line(writer, &event_json(&Event::Message(m))).await;
+                            if m.seq <= high_water {
+                                let _ = write_line(writer, &event_json(&Event::Message(m))).await;
+                            }
                         }
                     }
+                    subscribed.insert(channel.clone());
+                    let ch_name = channel.clone();
                     let _ = write_line(writer, &json!({ "ok": true, "subscribed": channel })).await;
                     let writer = writer.clone();
                     let task = tokio::spawn(async move {
@@ -261,7 +282,15 @@ async fn dispatch(
                                         break;
                                     }
                                 }
-                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                    // Fell behind the broadcast ring: `n` messages were
+                                    // dropped. Signal it (don't silently gap) so the client
+                                    // can reconcile via `history` with `since`.
+                                    let notice = json!({ "type": "lagged", "channel": ch_name, "dropped": n });
+                                    if write_line(&writer, &notice).await.is_err() {
+                                        break;
+                                    }
+                                }
                                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                             }
                         }

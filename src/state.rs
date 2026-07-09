@@ -20,6 +20,15 @@ const MAX_KEY_BYTES: usize = 120;
 const MAX_CONTEXT_KEY_BYTES: usize = 200;
 /// Max distinct shared-context keys per channel.
 const MAX_CONTEXT_KEYS: usize = 10_000;
+/// Max bytes for a channel topic (matches the DB `octet_length` CHECK).
+const MAX_TOPIC_BYTES: usize = 8192;
+
+/// Retained size of a message for the per-channel byte budget: content + its
+/// serialized `meta` (the variable-size fields that actually accumulate), so a
+/// content-empty / meta-heavy message can't slip the budget.
+fn message_retained_bytes(m: &Message) -> usize {
+    m.content.len() + serde_json::to_vec(&m.meta).map(|v| v.len()).unwrap_or(0)
+}
 
 /// Truncate a `String` to at most `max` bytes without splitting a UTF-8 char.
 fn truncate_bytes(s: &mut String, max: usize) {
@@ -46,6 +55,9 @@ struct ChannelState {
     meta: serde_json::Value,
     members: HashMap<String, Member>,
     messages: VecDeque<Message>,
+    /// Running sum of retained message `content` bytes, to bound per-channel
+    /// memory by size (not just count) — one hot channel can't hoard ~1 GiB.
+    history_bytes: usize,
     next_seq: u64,
     message_count: u64,
     context: HashMap<String, ContextEntry>,
@@ -111,7 +123,7 @@ impl AppState {
     }
 
     /// Append a message to the claude-inbox `inbox.jsonl` and bump the counter.
-    pub fn append_inbox(&self, msg: &serde_json::Value) -> std::io::Result<()> {
+    pub fn append_inbox<T: serde::Serialize>(&self, msg: &T) -> std::io::Result<()> {
         crate::compat::append_inbox(&self.config.inbox_dir, msg)?;
         self.inbox_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
@@ -148,6 +160,10 @@ impl AppState {
         truncate_bytes(&mut agent.display_name, 200);
         if let Some(h) = agent.host.as_mut() {
             truncate_bytes(h, 255);
+        }
+        let meta_bytes = serde_json::to_vec(&agent.meta).map(|v| v.len()).unwrap_or(usize::MAX);
+        if meta_bytes > self.config.max_content_bytes {
+            return Err(BridgeError::PayloadTooLarge { what: "agent meta", limit: self.config.max_content_bytes });
         }
         agent.registered_at = now_ts();
         {
@@ -206,13 +222,13 @@ impl AppState {
             return Ok(ch.to_public());
         }
         let topic = if topic.trim().is_empty() { slug.replace('-', " ") } else { topic.to_string() };
-        let embedding = self.embedder.embed(&topic).await;
-        self.insert_channel(slug, topic, created_by, embedding)
+        let (embedding, model) = self.embedder.embed(&topic).await;
+        Ok(self.insert_channel(slug, topic, created_by, embedding, model)?.0)
     }
 
     /// Semantic search over topic embeddings, best score first.
     pub async fn search_channels(&self, query: &str, limit: usize) -> Vec<ScoredChannel> {
-        let qvec = self.embedder.embed(query).await;
+        let (qvec, _) = self.embedder.embed(query).await;
         let mut scored: Vec<ScoredChannel> = {
             let chans = self.channels.read();
             chans
@@ -240,8 +256,13 @@ impl AppState {
         if query.is_empty() {
             return Err(BridgeError::BadRequest("query is required".into()));
         }
-        let threshold = threshold.unwrap_or(self.config.resolve_threshold);
-        let qvec = self.embedder.embed(query).await;
+        // A NaN threshold makes every `score >= threshold` false (mint until
+        // capacity); out-of-range distorts routing. Require finite, clamp to [0,1].
+        let threshold = threshold
+            .filter(|t| t.is_finite())
+            .map(|t| t.clamp(0.0, 1.0))
+            .unwrap_or(self.config.resolve_threshold);
+        let (qvec, model) = self.embedder.embed(query).await;
 
         let best: Option<(String, f32)> = {
             let chans = self.channels.read();
@@ -260,22 +281,32 @@ impl AppState {
 
         // No sufficiently-close topic — create a new one, reusing the query vector.
         let slug = self.unique_slug(&slugify(query));
-        let channel = self.insert_channel(slug, query.to_string(), created_by, qvec)?;
-        Ok(ResolveOutcome { channel, score: 0.0, created: true })
+        let (channel, created) = self.insert_channel(slug, query.to_string(), created_by, qvec, model)?;
+        Ok(ResolveOutcome { channel, score: 0.0, created })
     }
 
+    /// Returns `(channel, created)` — `created` is false when a concurrent creator
+    /// won the race (the caller gets the existing channel), so `resolve` reports
+    /// the truth instead of always claiming `created: true`.
     fn insert_channel(
         &self,
         slug: String,
-        topic: String,
+        mut topic: String,
         created_by: &str,
         embedding: Vec<f32>,
-    ) -> BridgeResult<Channel> {
-        let public = {
+        embedding_model: String,
+    ) -> BridgeResult<(Channel, bool)> {
+        truncate_bytes(&mut topic, MAX_TOPIC_BYTES);
+        let mut created_by = created_by.trim().to_string();
+        if created_by.is_empty() {
+            created_by = "system".to_string();
+        }
+        truncate_bytes(&mut created_by, MAX_KEY_BYTES);
+        let (public, created) = {
             let mut chans = self.channels.write();
             // Double-checked: a concurrent creator may have won the race.
             if let Some(existing) = chans.get(&slug) {
-                return Ok(existing.to_public());
+                return Ok((existing.to_public(), false));
             }
             // Bound total channels so an attacker cannot mint unbounded topics
             // (e.g. via `resolve`/`create`/`POST /claude` with fresh queries).
@@ -286,18 +317,18 @@ impl AppState {
                 });
             }
             let (tx, _rx) = broadcast::channel(256);
-            let created_by = if created_by.trim().is_empty() { "system" } else { created_by };
             let state = ChannelState {
                 slug: slug.clone(),
                 topic,
                 topic_summary: None,
                 embedding,
-                embedding_model: self.embedder.model_name().to_string(),
-                created_by: created_by.to_string(),
+                embedding_model,
+                created_by,
                 created_at: now_ts(),
                 meta: serde_json::json!({}),
                 members: HashMap::new(),
                 messages: VecDeque::new(),
+                history_bytes: 0,
                 next_seq: 1,
                 message_count: 0,
                 context: HashMap::new(),
@@ -306,10 +337,12 @@ impl AppState {
             };
             let public = state.to_public();
             chans.insert(slug, state);
-            public
+            (public, true)
         };
-        self.persist_channel(&public, &public.topic);
-        Ok(public)
+        if created {
+            self.persist_channel(&public, &public.topic);
+        }
+        Ok((public, created))
     }
 
     /// Reinstate a channel from persisted state on boot, using its stored
@@ -345,6 +378,7 @@ impl AppState {
                 meta,
                 members: HashMap::new(),
                 messages: VecDeque::new(),
+                history_bytes: 0,
                 next_seq: 1,
                 message_count: 0,
                 context: HashMap::new(),
@@ -377,7 +411,12 @@ impl AppState {
         if agent_key.is_empty() {
             return Err(BridgeError::BadRequest("agent_key is required".into()));
         }
-        let (outcome, event) = {
+        // Same cap as register/post so join/subscribe can't smuggle an oversized
+        // key into membership + presence broadcasts (and break PG persistence).
+        if agent_key.len() > MAX_KEY_BYTES {
+            return Err(BridgeError::PayloadTooLarge { what: "agent_key", limit: MAX_KEY_BYTES });
+        }
+        let (outcome, persist) = {
             let mut chans = self.channels.write();
             let ch = chans
                 .get_mut(slug)
@@ -386,10 +425,7 @@ impl AppState {
             if let Some(existing) = ch.members.get_mut(agent_key) {
                 existing.last_seen_at = now_ts();
                 let member = existing.clone();
-                (
-                    JoinOutcome { member, channel: ch.to_public(), newly_joined: false },
-                    None,
-                )
+                (JoinOutcome { member, channel: ch.to_public(), newly_joined: false }, false)
             } else {
                 if ch.members.len() >= MAX_MEMBERS {
                     return Err(BridgeError::ChannelFull {
@@ -407,21 +443,19 @@ impl AppState {
                     last_seen_at: now.clone(),
                 };
                 ch.members.insert(agent_key.to_string(), member.clone());
-                let event = Event::Presence {
+                // Broadcast presence under the write lock (like messages) so a join
+                // is causally ordered before any message that follows it.
+                let _ = ch.tx.send(Event::Presence {
                     channel: ch.slug.clone(),
                     agent_key: agent_key.to_string(),
                     event: PresenceKind::Joined,
                     member_count: ch.members.len(),
                     at: now,
-                };
-                (
-                    JoinOutcome { member, channel: ch.to_public(), newly_joined: true },
-                    Some((ch.tx.clone(), event)),
-                )
+                });
+                (JoinOutcome { member, channel: ch.to_public(), newly_joined: true }, true)
             }
         };
-        if let Some((tx, event)) = event {
-            let _ = tx.send(event);
+        if persist {
             self.persist_member(slug, &outcome.member);
         }
         Ok(outcome)
@@ -429,26 +463,26 @@ impl AppState {
 
     /// Leave a chatroom. Returns whether the agent had been a member.
     pub fn leave(&self, slug: &str, agent_key: &str) -> BridgeResult<bool> {
-        let (removed, event) = {
+        let removed = {
             let mut chans = self.channels.write();
             let ch = chans
                 .get_mut(slug)
                 .ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
             if ch.members.remove(agent_key).is_none() {
-                (false, None)
+                false
             } else {
-                let event = Event::Presence {
+                // Under the lock, like join/messages, for causal ordering.
+                let _ = ch.tx.send(Event::Presence {
                     channel: ch.slug.clone(),
                     agent_key: agent_key.to_string(),
                     event: PresenceKind::Left,
                     member_count: ch.members.len(),
                     at: now_ts(),
-                };
-                (true, Some((ch.tx.clone(), event)))
+                });
+                true
             }
         };
-        if let Some((tx, event)) = event {
-            let _ = tx.send(event);
+        if removed {
             self.persist_member_removal(slug, agent_key);
         }
         Ok(removed)
@@ -498,10 +532,17 @@ impl AppState {
                 limit: self.config.max_content_bytes,
             });
         }
+        // Cap `meta` too, else 1 byte of content + megabytes of JSON meta bypasses
+        // the content cap and accumulates in the history ring.
+        let meta_bytes = serde_json::to_vec(&meta).map(|v| v.len()).unwrap_or(usize::MAX);
+        if meta_bytes > self.config.max_content_bytes {
+            return Err(BridgeError::PayloadTooLarge { what: "message meta", limit: self.config.max_content_bytes });
+        }
         // Ensure a seat (enforces the cap for first-time posters).
         self.join(slug, from, MemberRole::Member)?;
 
-        let (message, tx) = {
+        let budget = self.config.max_channel_history_bytes;
+        let message = {
             let mut chans = self.channels.write();
             let ch = chans
                 .get_mut(slug)
@@ -522,13 +563,23 @@ impl AppState {
                 meta,
                 created_at: now_ts(),
             };
+            ch.history_bytes += message_retained_bytes(&message);
             ch.messages.push_back(message.clone());
-            while ch.messages.len() > ch.history_limit {
-                ch.messages.pop_front();
+            // Evict oldest by count AND by total retained bytes (always keep >= 1),
+            // so one hot channel can't hoard ~1 GiB of history.
+            while ch.messages.len() > ch.history_limit
+                || (ch.history_bytes > budget && ch.messages.len() > 1)
+            {
+                if let Some(old) = ch.messages.pop_front() {
+                    ch.history_bytes = ch.history_bytes.saturating_sub(message_retained_bytes(&old));
+                }
             }
-            (message, ch.tx.clone())
+            // Broadcast under the write lock so live delivery order matches `seq`
+            // (two concurrent posts can't be observed out of order). send is
+            // non-blocking, so holding the lock across it is safe and brief.
+            let _ = ch.tx.send(Event::Message(message.clone()));
+            message
         };
-        let _ = tx.send(Event::Message(message.clone()));
         self.persist_message(&message);
         Ok(message)
     }
@@ -543,17 +594,27 @@ impl AppState {
 
     /// Subscribe to the live event stream (messages + presence). Auto-joins the
     /// subscriber when `agent_key` is provided (bounced if the room is full).
+    ///
+    /// Returns `(receiver, high_water)`: the receiver only yields messages posted
+    /// after this call (seq > high_water), and `high_water` is the last seq that
+    /// already existed. A caller replaying history should replay only up to
+    /// `high_water`, so a message in the subscribe window is not delivered twice
+    /// (once as replay, once live). The receiver + high_water are captured under
+    /// the same read lock, and posts broadcast under the write lock, so the split
+    /// is exact — no duplicate, no gap.
     pub fn subscribe(
         &self,
         slug: &str,
         agent_key: Option<&str>,
-    ) -> BridgeResult<broadcast::Receiver<Event>> {
+    ) -> BridgeResult<(broadcast::Receiver<Event>, u64)> {
         if let Some(key) = agent_key.filter(|k| !k.trim().is_empty()) {
             self.join(slug, key, MemberRole::Member)?;
         }
         let chans = self.channels.read();
         let ch = chans.get(slug).ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
-        Ok(ch.tx.subscribe())
+        let rx = ch.tx.subscribe();
+        let high_water = ch.next_seq.saturating_sub(1);
+        Ok((rx, high_water))
     }
 
     // ---- shared context -------------------------------------------------------
@@ -588,11 +649,13 @@ impl AppState {
                 return Err(BridgeError::CapacityExceeded { what: "context keys", limit: MAX_CONTEXT_KEYS });
             }
             let version = ch.context.get(key).map(|e| e.version.saturating_add(1)).unwrap_or(1);
+            let mut updated_by = updated_by.to_string();
+            truncate_bytes(&mut updated_by, MAX_KEY_BYTES);
             let entry = ContextEntry {
                 key: key.to_string(),
                 value,
                 version,
-                updated_by: updated_by.to_string(),
+                updated_by,
                 updated_at: now_ts(),
             };
             ch.context.insert(key.to_string(), entry.clone());
@@ -728,7 +791,7 @@ mod tests {
     fn state_cfg(f: impl FnOnce(&mut Config)) -> Arc<AppState> {
         let mut cfg = Config::in_memory();
         f(&mut cfg);
-        let embedder = Embedder::new(cfg.embed_dim, "local-hash-v1".into(), None, "local".into(), None);
+        let embedder = Embedder::new(cfg.embed_dim, None, "local".into(), None);
         AppState::new(cfg, embedder)
     }
 
@@ -799,6 +862,99 @@ mod tests {
             s.set_context("room", "k", serde_json::json!(big), "claude").unwrap_err(),
             BridgeError::PayloadTooLarge { .. }
         ));
+    }
+
+    // ---- round-3 review fixes ------------------------------------------------
+
+    #[tokio::test]
+    async fn join_rejects_oversized_key() {
+        let s = state();
+        s.create_or_get_channel("room", "topic", "claude").await.unwrap();
+        let long = "k".repeat(121);
+        assert!(matches!(
+            s.join("room", &long, MemberRole::Member).unwrap_err(),
+            BridgeError::PayloadTooLarge { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn post_rejects_oversized_meta() {
+        let s = state_cfg(|c| c.max_content_bytes = 128);
+        s.create_or_get_channel("room", "topic", "claude").await.unwrap();
+        let big_meta = serde_json::json!({ "blob": "m".repeat(200) });
+        assert!(matches!(
+            s.post_message("room", "claude", Role::User, "hi", big_meta).unwrap_err(),
+            BridgeError::PayloadTooLarge { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn resolve_reports_created_honestly_and_reuses() {
+        let s = state();
+        let first = s.resolve_channel("brand new topic here", "claude", Some(0.99)).await.unwrap();
+        assert!(first.created);
+        // A near-identical query resolves back to the same channel, created=false.
+        let again = s.resolve_channel("brand new topic here", "codex", Some(0.2)).await.unwrap();
+        assert!(!again.created);
+        assert_eq!(again.channel.slug, first.channel.slug);
+    }
+
+    #[tokio::test]
+    async fn resolve_ignores_nan_threshold() {
+        let s = state();
+        s.create_or_get_channel("existing", "kubernetes rollout deploy", "claude").await.unwrap();
+        // A NaN threshold must not make every comparison false (which would mint a
+        // new channel); it falls back to the configured default and reuses.
+        let out = s.resolve_channel("kubernetes rollout deploy", "codex", Some(f32::NAN)).await.unwrap();
+        assert!(!out.created, "NaN threshold should fall back, not force-create");
+        assert_eq!(out.channel.slug, "existing");
+    }
+
+    #[tokio::test]
+    async fn local_embedding_model_label_is_honest() {
+        let s = state();
+        let ch = s.create_or_get_channel("room", "a topic", "claude").await.unwrap();
+        assert_eq!(ch.embedding_model, crate::embed::LOCAL_MODEL);
+    }
+
+    #[tokio::test]
+    async fn subscribe_high_water_splits_replay_and_live() {
+        let s = state();
+        s.create_or_get_channel("c", "t", "claude").await.unwrap();
+        s.post_message("c", "claude", Role::User, "old", serde_json::json!({})).unwrap(); // seq 1
+        let (mut rx, hw) = s.subscribe("c", None).unwrap();
+        assert_eq!(hw, 1, "high-water is the last existing seq");
+        s.post_message("c", "claude", Role::User, "new", serde_json::json!({})).unwrap(); // seq 2
+        // The live receiver yields ONLY seq > high_water (no duplicate of the replay).
+        match rx.recv().await.unwrap() {
+            Event::Message(m) => {
+                assert_eq!(m.seq, 2);
+                assert_eq!(m.content, "new");
+            }
+            other => panic!("expected the new message, got {other:?}"),
+        }
+        // Replay is exactly seq <= high_water — the two sets partition cleanly.
+        let replay: Vec<_> = s.history("c", None).unwrap().into_iter().filter(|m| m.seq <= hw).collect();
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].content, "old");
+    }
+
+    #[tokio::test]
+    async fn history_is_bounded_by_bytes_not_just_count() {
+        // Tiny byte budget, generous count limit -> eviction is driven by bytes.
+        let s = state_cfg(|c| {
+            c.max_channel_history_bytes = 120;
+            c.history_limit = 10_000;
+        });
+        s.create_or_get_channel("room", "topic", "claude").await.unwrap();
+        for i in 0..50 {
+            s.post_message("room", "claude", Role::User, &format!("message-{i:03}-payload"), serde_json::json!({})).unwrap();
+        }
+        let hist = s.history("room", None).unwrap();
+        // Each message is ~20 bytes; a 120-byte budget keeps only a handful.
+        assert!(hist.len() <= 8, "history should be byte-bounded, got {}", hist.len());
+        // The newest message is always retained.
+        assert_eq!(hist.last().unwrap().content, "message-049-payload");
     }
 
     #[test]
@@ -901,7 +1057,7 @@ mod tests {
         s.create_or_get_channel("live", "topic", "claude").await.unwrap();
         // Join before subscribing so no presence event precedes the message.
         s.join("live", "claude", MemberRole::Member).unwrap();
-        let mut rx = s.subscribe("live", None).unwrap();
+        let (mut rx, _) = s.subscribe("live", None).unwrap();
         s.post_message("live", "claude", Role::Assistant, "ping", serde_json::json!({})).unwrap();
         let ev = rx.recv().await.unwrap();
         match ev {
@@ -914,7 +1070,7 @@ mod tests {
     async fn leave_emits_presence_and_updates_count() {
         let s = state();
         s.create_or_get_channel("presence", "topic", "claude").await.unwrap();
-        let mut rx = s.subscribe("presence", None).unwrap();
+        let (mut rx, _) = s.subscribe("presence", None).unwrap();
         s.join("presence", "codex", MemberRole::Member).unwrap();
         // First event is the join presence.
         match rx.recv().await.unwrap() {
