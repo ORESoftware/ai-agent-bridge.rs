@@ -66,7 +66,25 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/channels/{slug}/context", get(get_context).put(put_context).post(put_context))
         .layer(from_fn_with_state(state.clone(), auth));
 
-    public.merge(api).layer(DefaultBodyLimit::max(body_limit)).with_state(state)
+    public
+        .merge(api)
+        .layer(DefaultBodyLimit::max(body_limit))
+        .layer(from_fn(request_timeout))
+        .with_state(state)
+}
+
+/// Bound how long a single request may take to produce a response, so a hung
+/// handler can't pin a request forever. SSE is unaffected: its handler returns
+/// the stream object immediately, and this times the handler, not the stream.
+async fn request_timeout(req: axum::extract::Request, next: Next) -> Response {
+    match tokio::time::timeout(Duration::from_secs(30), next.run(req)).await {
+        Ok(resp) => resp,
+        Err(_) => (
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(json!({ "ok": false, "error": "request_timeout" })),
+        )
+            .into_response(),
+    }
 }
 
 /// Bearer-token gate. No-op when `API_AUTH_BEARER` is unset. Health/index live
