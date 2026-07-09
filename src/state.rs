@@ -48,6 +48,9 @@ struct ChannelState {
     meta: serde_json::Value,
     members: HashMap<String, Member>,
     messages: VecDeque<Message>,
+    /// Running sum of retained message `content` bytes, to bound per-channel
+    /// memory by size (not just count) — one hot channel can't hoard ~1 GiB.
+    history_bytes: usize,
     next_seq: u64,
     message_count: u64,
     context: HashMap<String, ContextEntry>,
