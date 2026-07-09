@@ -156,6 +156,50 @@ async fn recv(reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>) -> Value {
 }
 
 #[tokio::test]
+async fn tcp_duplicate_subscribe_to_same_channel_rejected() {
+    let addr = common::spawn_tcp(common::state()).await;
+    let (r, mut w) = TcpStream::connect(addr).await.unwrap().into_split();
+    let mut reader = BufReader::new(r);
+    recv(&mut reader).await; // hello
+
+    send(&mut w, json!({ "op": "create_channel", "slug": "room", "topic": "t" })).await;
+    recv(&mut reader).await;
+
+    send(&mut w, json!({ "op": "subscribe", "channel": "room" })).await;
+    // No history, so the first frame back is the subscribed ack.
+    assert_eq!(recv(&mut reader).await["subscribed"], "room");
+
+    // A second subscribe to the same channel on this connection is rejected
+    // (would otherwise duplicate every live event).
+    send(&mut w, json!({ "op": "subscribe", "channel": "room" })).await;
+    assert_eq!(recv(&mut reader).await["error"], "already_subscribed");
+}
+
+#[tokio::test]
+async fn claude_inbox_line_key_order_is_stable() {
+    let mut cfg = common::base_config();
+    let dir = cfg.inbox_dir.clone();
+    cfg.inbox_dir = dir.clone();
+    let base = common::spawn_http(common::state_with(cfg)).await;
+    let c = reqwest::Client::new();
+    c.post(format!("{base}/claude"))
+        .json(&json!({ "prompt": "hello", "from": "codex", "topic": "t" }))
+        .send()
+        .await
+        .unwrap();
+
+    let contents = std::fs::read_to_string(dir.join("inbox.jsonl")).unwrap();
+    let line = contents.lines().next().unwrap();
+    // Typed struct -> exact order id, ts, from, topic, prompt (a Value would sort).
+    let pos = |k: &str| line.find(k).unwrap_or(usize::MAX);
+    assert!(line.starts_with(r#"{"id":"#), "unexpected inbox line: {line}");
+    assert!(pos("\"id\"") < pos("\"ts\""));
+    assert!(pos("\"ts\"") < pos("\"from\""));
+    assert!(pos("\"from\"") < pos("\"topic\""));
+    assert!(pos("\"topic\"") < pos("\"prompt\""));
+}
+
+#[tokio::test]
 async fn tcp_auth_handshake_enforced() {
     let mut cfg = common::base_config();
     cfg.api_auth_bearer = Some("tok".into());
