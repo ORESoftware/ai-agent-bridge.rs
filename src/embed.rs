@@ -8,10 +8,14 @@
 
 use tracing::{debug, warn};
 
+/// Label recorded on channels embedded by the built-in hasher. Kept honest: even
+/// when a remote embedder is configured, a fallback vector is labeled local (not
+/// the remote model) so an operator can detect a mixed embedding space.
+pub const LOCAL_MODEL: &str = "local-hash-v1";
+
 #[derive(Clone)]
 pub struct Embedder {
     dim: usize,
-    model: String,
     remote: Option<RemoteEmbedder>,
 }
 
@@ -24,13 +28,7 @@ struct RemoteEmbedder {
 }
 
 impl Embedder {
-    pub fn new(
-        dim: usize,
-        model: String,
-        url: Option<String>,
-        remote_model: String,
-        bearer: Option<String>,
-    ) -> Self {
+    pub fn new(dim: usize, url: Option<String>, remote_model: String, bearer: Option<String>) -> Self {
         let remote = url.map(|url| RemoteEmbedder {
             url,
             model: remote_model,
@@ -40,16 +38,7 @@ impl Embedder {
                 .build()
                 .unwrap_or_default(),
         });
-        Self { dim, model, remote }
-    }
-
-    /// The model label recorded on channels. Reflects whichever backend actually
-    /// produced the vector on the last successful remote call, else the local id.
-    pub fn model_name(&self) -> &str {
-        match &self.remote {
-            Some(r) => &r.model,
-            None => &self.model,
-        }
+        Self { dim, remote }
     }
 
     pub fn dim(&self) -> usize {
@@ -57,8 +46,9 @@ impl Embedder {
     }
 
     /// Embed text, preferring the remote backend and falling back to local on any
-    /// error (network, non-2xx, or an unrecognized response shape).
-    pub async fn embed(&self, text: &str) -> Vec<f32> {
+    /// error. Returns the vector **and the model that actually produced it**, so
+    /// the channel records the truth even after a remote outage.
+    pub async fn embed(&self, text: &str) -> (Vec<f32>, String) {
         // Cap the embedded prefix: topic routing gains nothing from megabytes of
         // input, and the local hasher's per-trigram work would otherwise stall the
         // async worker on a hostile query. 16 KiB is far more than any real topic.
@@ -76,13 +66,13 @@ impl Embedder {
             match remote.embed(text).await {
                 Ok(v) if !v.is_empty() => {
                     debug!(dim = v.len(), "remote embedding");
-                    return normalize(v);
+                    return (normalize(v), remote.model.clone());
                 }
                 Ok(_) => warn!("remote embedder returned an empty vector; using local fallback"),
                 Err(e) => warn!(error = %e, "remote embedder failed; using local fallback"),
             }
         }
-        local_embed(text, self.dim)
+        (local_embed(text, self.dim), LOCAL_MODEL.to_string())
     }
 }
 
