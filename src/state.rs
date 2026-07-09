@@ -245,8 +245,13 @@ impl AppState {
         if query.is_empty() {
             return Err(BridgeError::BadRequest("query is required".into()));
         }
-        let threshold = threshold.unwrap_or(self.config.resolve_threshold);
-        let qvec = self.embedder.embed(query).await;
+        // A NaN threshold makes every `score >= threshold` false (mint until
+        // capacity); out-of-range distorts routing. Require finite, clamp to [0,1].
+        let threshold = threshold
+            .filter(|t| t.is_finite())
+            .map(|t| t.clamp(0.0, 1.0))
+            .unwrap_or(self.config.resolve_threshold);
+        let (qvec, model) = self.embedder.embed(query).await;
 
         let best: Option<(String, f32)> = {
             let chans = self.channels.read();
