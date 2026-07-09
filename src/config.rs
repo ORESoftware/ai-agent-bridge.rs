@@ -8,6 +8,9 @@ use std::net::{IpAddr, Ipv4Addr};
 /// gives us (see [`crate::embed`]). Cosine similarity is dimension-agnostic as
 /// long as both vectors in a comparison share a width.
 pub const DEFAULT_EMBED_DIM: usize = 256;
+/// Upper bound on the local embedding width, so a bogus `EMBED_DIM` env can't
+/// force a giant per-channel allocation.
+pub const MAX_EMBED_DIM: usize = 8192;
 
 /// Hard ceiling on chatroom participants. The 33rd join is bounced.
 pub const MAX_MEMBERS: usize = 32;
