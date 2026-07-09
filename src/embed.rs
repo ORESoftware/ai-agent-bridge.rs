@@ -93,10 +93,23 @@ impl RemoteEmbedder {
 /// Pull a vector out of the common embedding-response shapes:
 /// OpenAI (`data[0].embedding`), `{embedding:[…]}`, or `{embeddings:[[…]]}`.
 fn extract_embedding(json: &serde_json::Value) -> Option<Vec<f32>> {
+    // Reject the whole vector (-> local fallback) if any element is non-numeric
+    // or non-finite, rather than silently dropping/poisoning it: a malformed
+    // element must not shrink the vector or feed NaN/inf into cosine.
     let as_vec = |v: &serde_json::Value| -> Option<Vec<f32>> {
-        v.as_array()
-            .map(|a| a.iter().filter_map(|x| x.as_f64().map(|f| f as f32)).collect::<Vec<_>>())
-            .filter(|v: &Vec<f32>| !v.is_empty())
+        let arr = v.as_array()?;
+        if arr.is_empty() {
+            return None;
+        }
+        let mut out = Vec::with_capacity(arr.len());
+        for x in arr {
+            let f = x.as_f64()? as f32;
+            if !f.is_finite() {
+                return None;
+            }
+            out.push(f);
+        }
+        Some(out)
     };
     if let Some(v) = json.get("embedding").and_then(as_vec) {
         return Some(v);
