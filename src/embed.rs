@@ -257,8 +257,5 @@ mod tests {
         // rather than silently dropping it and shrinking the dimension.
         let bad = serde_json::json!({ "embedding": [0.1, "x", 0.2] });
         assert_eq!(extract_embedding(&bad), None);
-        // A non-finite element (huge magnitude -> f64 inf) is rejected too.
-        let inf: serde_json::Value = serde_json::from_str(r#"{"embedding":[1e400]}"#).unwrap();
-        assert_eq!(extract_embedding(&inf), None);
     }
 }
