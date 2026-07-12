@@ -9,6 +9,13 @@ Build/test: `cargo build --release --locked` and `cargo test` (in-memory, no DB
 needed). The optional `dd-pg-defs` path dep resolves in the `k8s-cluster`
 superproject; for a standalone checkout see the README's Development note.
 
+## Git branch policy — temporary
+
+Work directly on the `main` branch. Do not create or use feature branches,
+topic branches, or git worktrees. Before making changes, switch to `main` and
+confirm it is the checked-out branch. Preserve existing uncommitted work and
+stop for operator guidance if switching to `main` cannot be done safely.
+
 ## Command safety — STRICT (all agents MUST follow)
 
 Never run destructive or irreversible shell commands. To remove or move files,
