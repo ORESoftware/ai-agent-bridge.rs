@@ -1,3 +1,7 @@
+# flags-2-env config: maps CLI flags to the environment variables the service
+# reads, so operators can pass `--http-port` etc. without exporting env by hand.
+# Secrets (tokens, DB URLs) are listed under [env].ignore so they stay env-only.
+
 [help]
 url = "https://github.com/fiducia-cloud/fiducia-ai-agent-bridge.rs"
 columns = ["options", "env", "type", "description"]

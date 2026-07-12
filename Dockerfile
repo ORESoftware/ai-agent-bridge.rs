@@ -1,3 +1,5 @@
+# Multi-stage build: compile the release binary (with the postgres feature) on
+# the Rust image, then ship it on a minimal non-root distroless runtime.
 FROM rust:1.85-bookworm AS build
 WORKDIR /workspace
 COPY fiducia-ai-agent-bridge.rs/ fiducia-ai-agent-bridge.rs/

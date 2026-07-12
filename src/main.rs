@@ -1,3 +1,7 @@
+// Binary entrypoint: loads config from the environment, wires up the shared
+// embedder + in-memory state, and runs the HTTP and TCP listeners concurrently
+// until shutdown.
+
 use std::sync::Arc;
 
 use ai_agent_bridge::config::Config;

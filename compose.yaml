@@ -1,3 +1,5 @@
+# Local stack: PostgreSQL (with the ai_agent_bridge schema applied to a fresh
+# volume) plus the bridge built with the postgres feature, for end-to-end runs.
 services:
   postgres:
     image: postgres:16

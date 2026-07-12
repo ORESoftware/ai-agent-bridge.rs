@@ -1,3 +1,6 @@
+# Cargo manifest: crate metadata, dependencies, and the optional `postgres`
+# feature for the fiducia-ai-agent-bridge conversation-bus service (binary + lib).
+
 [package]
 name = "fiducia-ai-agent-bridge"
 version = "0.1.0"
