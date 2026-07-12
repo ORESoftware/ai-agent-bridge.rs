@@ -15,7 +15,14 @@ async fn post(client: &reqwest::Client, url: String, body: Value) -> (reqwest::S
 }
 
 async fn get(client: &reqwest::Client, url: String) -> Value {
-    client.get(url).send().await.unwrap().json::<Value>().await.unwrap()
+    client
+        .get(url)
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -25,7 +32,12 @@ async fn full_rest_flow_register_create_search_post_context() {
 
     // Register two agents.
     for (key, kind) in [("claude", "claude"), ("codex", "codex")] {
-        let (st, body) = post(&c, format!("{base}/agents/register"), json!({ "agent_key": key, "kind": kind })).await;
+        let (st, body) = post(
+            &c,
+            format!("{base}/agents/register"),
+            json!({ "agent_key": key, "kind": kind }),
+        )
+        .await;
         assert!(st.is_success());
         assert_eq!(body["agent"]["agent_key"], key);
     }
@@ -35,8 +47,16 @@ async fn full_rest_flow_register_create_search_post_context() {
     post(&c, format!("{base}/channels"), json!({ "slug": "k8s-deploys", "topic": "kubernetes deployment rollouts and argocd sync", "created_by": "codex" })).await;
 
     // Semantic search routes to the right topic.
-    let (_, search) = post(&c, format!("{base}/channels/search"), json!({ "query": "kubernetes rollout argocd", "limit": 5 })).await;
-    assert_eq!(search["results"][0]["slug"], "k8s-deploys", "search should rank the deploy channel first: {search}");
+    let (_, search) = post(
+        &c,
+        format!("{base}/channels/search"),
+        json!({ "query": "kubernetes rollout argocd", "limit": 5 }),
+    )
+    .await;
+    assert_eq!(
+        search["results"][0]["slug"], "k8s-deploys",
+        "search should rank the deploy channel first: {search}"
+    );
 
     // Resolve reuses a close topic rather than minting a new one.
     let (_, resolved) = post(&c, format!("{base}/channels/resolve"), json!({ "query": "sprint backlog grooming session", "created_by": "claude", "threshold": 0.2 })).await;
@@ -44,7 +64,12 @@ async fn full_rest_flow_register_create_search_post_context() {
     assert_eq!(resolved["channel"]["slug"], "sprint-planning");
 
     // Post + read back.
-    let (st, posted) = post(&c, format!("{base}/channels/k8s-deploys/messages"), json!({ "from": "claude", "role": "assistant", "content": "rolling out v2 now" })).await;
+    let (st, posted) = post(
+        &c,
+        format!("{base}/channels/k8s-deploys/messages"),
+        json!({ "from": "claude", "role": "assistant", "content": "rolling out v2 now" }),
+    )
+    .await;
     assert!(st.is_success());
     assert_eq!(posted["message"]["seq"], 1);
     let msgs = get(&c, format!("{base}/channels/k8s-deploys/messages")).await;
@@ -55,9 +80,19 @@ async fn full_rest_flow_register_create_search_post_context() {
     assert_eq!(members["members"].as_array().unwrap().len(), 1);
 
     // Shared context round-trips and versions.
-    post(&c, format!("{base}/channels/k8s-deploys/context"), json!({ "key": "status", "value": { "phase": "rollout" }, "updated_by": "codex" })).await;
+    post(
+        &c,
+        format!("{base}/channels/k8s-deploys/context"),
+        json!({ "key": "status", "value": { "phase": "rollout" }, "updated_by": "codex" }),
+    )
+    .await;
     // PUT is the documented verb; ensure it works too.
-    let put = c.put(format!("{base}/channels/k8s-deploys/context")).json(&json!({ "key": "status", "value": { "phase": "done" }, "updated_by": "codex" })).send().await.unwrap();
+    let put = c
+        .put(format!("{base}/channels/k8s-deploys/context"))
+        .json(&json!({ "key": "status", "value": { "phase": "done" }, "updated_by": "codex" }))
+        .send()
+        .await
+        .unwrap();
     assert!(put.status().is_success());
     let ctx = get(&c, format!("{base}/channels/k8s-deploys/context")).await;
     let entry = &ctx["context"][0];
@@ -93,7 +128,10 @@ async fn claude_inbox_backward_compat() {
 
     // Superset: the same message is also live on the chat bus.
     let msgs = get(&c, format!("{base}/channels/soccer-plateau/messages")).await;
-    assert_eq!(msgs["messages"][0]["content"], "the plateau broke at gen 291");
+    assert_eq!(
+        msgs["messages"][0]["content"],
+        "the plateau broke at gen 291"
+    );
     assert_eq!(msgs["messages"][0]["from"], "codex");
 }
 
@@ -101,30 +139,58 @@ async fn claude_inbox_backward_compat() {
 async fn thirty_third_member_gets_409_channel_full() {
     let base = common::spawn_http(common::state()).await;
     let c = reqwest::Client::new();
-    post(&c, format!("{base}/channels"), json!({ "slug": "capped", "topic": "a small room", "created_by": "claude" })).await;
+    post(
+        &c,
+        format!("{base}/channels"),
+        json!({ "slug": "capped", "topic": "a small room", "created_by": "claude" }),
+    )
+    .await;
 
     for i in 0..32 {
-        let (st, _) = post(&c, format!("{base}/channels/capped/join"), json!({ "agent_key": format!("agent-{i}") })).await;
+        let (st, _) = post(
+            &c,
+            format!("{base}/channels/capped/join"),
+            json!({ "agent_key": format!("agent-{i}") }),
+        )
+        .await;
         assert!(st.is_success(), "join {i} should succeed");
     }
-    let (st, body) = post(&c, format!("{base}/channels/capped/join"), json!({ "agent_key": "agent-33" })).await;
+    let (st, body) = post(
+        &c,
+        format!("{base}/channels/capped/join"),
+        json!({ "agent_key": "agent-33" }),
+    )
+    .await;
     assert_eq!(st.as_u16(), 409, "33rd join must be 409");
     assert_eq!(body["error"], "channel_full");
     assert_eq!(body["limit"], 32);
     assert_eq!(body["current"], 32);
 
     let members = get(&c, format!("{base}/channels/capped/members")).await;
-    assert_eq!(members["members"].as_array().unwrap().len(), 32, "roster stays at the cap");
+    assert_eq!(
+        members["members"].as_array().unwrap().len(),
+        32,
+        "roster stays at the cap"
+    );
 }
 
 #[tokio::test]
 async fn sse_stream_delivers_presence_and_messages() {
     let base = common::spawn_http(common::state()).await;
     let c = reqwest::Client::new();
-    post(&c, format!("{base}/channels"), json!({ "slug": "live", "topic": "live streaming room", "created_by": "claude" })).await;
+    post(
+        &c,
+        format!("{base}/channels"),
+        json!({ "slug": "live", "topic": "live streaming room", "created_by": "claude" }),
+    )
+    .await;
 
     // Open the SSE stream as an observer.
-    let resp = c.get(format!("{base}/channels/live/stream")).send().await.unwrap();
+    let resp = c
+        .get(format!("{base}/channels/live/stream"))
+        .send()
+        .await
+        .unwrap();
     assert!(resp.status().is_success());
     let mut stream = resp.bytes_stream();
 
@@ -133,7 +199,11 @@ async fn sse_stream_delivers_presence_and_messages() {
     tokio::spawn(async move {
         let c2 = reqwest::Client::new();
         tokio::time::sleep(Duration::from_millis(150)).await;
-        let _ = c2.post(format!("{base2}/channels/live/messages")).json(&json!({ "from": "codex", "content": "hello stream" })).send().await;
+        let _ = c2
+            .post(format!("{base2}/channels/live/messages"))
+            .json(&json!({ "from": "codex", "content": "hello stream" }))
+            .send()
+            .await;
     });
 
     // Read the stream until we observe the message (bounded).

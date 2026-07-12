@@ -34,7 +34,8 @@ impl From<BridgeError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let status = StatusCode::from_u16(self.0.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let status =
+            StatusCode::from_u16(self.0.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         (status, Json(self.0.payload())).into_response()
     }
 }
@@ -61,9 +62,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/channels/{slug}/join", post(join_channel))
         .route("/channels/{slug}/leave", post(leave_channel))
         .route("/channels/{slug}/members", get(list_members))
-        .route("/channels/{slug}/messages", get(list_messages).post(post_message))
+        .route(
+            "/channels/{slug}/messages",
+            get(list_messages).post(post_message),
+        )
         .route("/channels/{slug}/stream", get(stream_channel))
-        .route("/channels/{slug}/context", get(get_context).put(put_context).post(put_context))
+        .route(
+            "/channels/{slug}/context",
+            get(get_context).put(put_context).post(put_context),
+        )
         .layer(from_fn_with_state(state.clone(), auth));
 
     public
@@ -148,10 +155,13 @@ async fn claude_inbox(
     // global API bearer. If neither is configured, /claude is open (legacy
     // default). This closes the bypass where API_AUTH_BEARER locked the rest of
     // the API but left /claude reachable.
-    let accepted: Vec<&String> = [s.config.inbox_token.as_ref(), s.config.api_auth_bearer.as_ref()]
-        .into_iter()
-        .flatten()
-        .collect();
+    let accepted: Vec<&String> = [
+        s.config.inbox_token.as_ref(),
+        s.config.api_auth_bearer.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     if !accepted.is_empty() {
         let presented = headers
             .get(axum::http::header::AUTHORIZATION)
@@ -161,12 +171,19 @@ async fn claude_inbox(
         let ok = presented
             .map(|p| {
                 accepted.iter().fold(false, |acc, tok| {
-                    acc | crate::config::constant_time_eq(p.as_bytes(), format!("Bearer {tok}").as_bytes())
+                    acc | crate::config::constant_time_eq(
+                        p.as_bytes(),
+                        format!("Bearer {tok}").as_bytes(),
+                    )
                 })
             })
             .unwrap_or(false);
         if !ok {
-            return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" }))).into_response();
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "unauthorized" })),
+            )
+                .into_response();
         }
     }
 
@@ -177,7 +194,11 @@ async fn claude_inbox(
             Ok(v) => v,
             // Don't echo parser offsets back to the client.
             Err(_) => {
-                return (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid json body" }))).into_response()
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "invalid json body" })),
+                )
+                    .into_response()
             }
         }
     };
@@ -185,7 +206,11 @@ async fn claude_inbox(
     let id = crate::compat::now_millis();
     let from = crate::compat::field(&data, "from", "codex", 64);
     let topic = crate::compat::field(&data, "topic", "", 128);
-    let prompt = data.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let prompt = data
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     // Typed struct -> exact key order {id, ts, from, topic, prompt} in inbox.jsonl.
     let entry = crate::compat::InboxLine {
         id,
@@ -197,17 +222,38 @@ async fn claude_inbox(
 
     if let Err(e) = s.append_inbox(&entry) {
         tracing::warn!(error = %e, "inbox write failed");
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "inbox write failed" }))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "inbox write failed" })),
+        )
+            .into_response();
     }
 
     // Superset bonus: surface it on the chat bus too, so subscribed agents see it
     // live. Never fails the inbox contract.
     if !prompt.is_empty() {
         let slug = crate::state::slugify(&topic);
-        let slug = if slug.is_empty() { "claude-inbox".to_string() } else { slug };
-        let topic_text = if topic.trim().is_empty() { "claude inbox" } else { &topic };
-        if s.create_or_get_channel(&slug, topic_text, &from).await.is_ok() {
-            let _ = s.post_message(&slug, &from, Role::User, &prompt, json!({ "via": "claude-inbox", "id": id }));
+        let slug = if slug.is_empty() {
+            "claude-inbox".to_string()
+        } else {
+            slug
+        };
+        let topic_text = if topic.trim().is_empty() {
+            "claude inbox"
+        } else {
+            &topic
+        };
+        if s.create_or_get_channel(&slug, topic_text, &from)
+            .await
+            .is_ok()
+        {
+            let _ = s.post_message(
+                &slug,
+                &from,
+                Role::User,
+                &prompt,
+                json!({ "via": "claude-inbox", "id": id }),
+            );
         }
     }
 
@@ -264,8 +310,13 @@ struct CreateChannelReq {
     created_by: String,
 }
 
-async fn create_channel(State(s): State<Arc<AppState>>, Json(req): Json<CreateChannelReq>) -> ApiResult {
-    let ch = s.create_or_get_channel(&req.slug, &req.topic, &req.created_by).await?;
+async fn create_channel(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<CreateChannelReq>,
+) -> ApiResult {
+    let ch = s
+        .create_or_get_channel(&req.slug, &req.topic, &req.created_by)
+        .await?;
     Ok(Json(json!({ "ok": true, "channel": ch })))
 }
 
@@ -274,7 +325,9 @@ async fn list_channels(State(s): State<Arc<AppState>>) -> ApiResult {
 }
 
 async fn get_channel(State(s): State<Arc<AppState>>, Path(slug): Path<String>) -> ApiResult {
-    Ok(Json(json!({ "ok": true, "channel": s.get_channel(&slug)? })))
+    Ok(Json(
+        json!({ "ok": true, "channel": s.get_channel(&slug)? }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -302,7 +355,9 @@ struct ResolveReq {
 }
 
 async fn resolve_channel(State(s): State<Arc<AppState>>, Json(req): Json<ResolveReq>) -> ApiResult {
-    let out = s.resolve_channel(&req.query, &req.created_by, req.threshold).await?;
+    let out = s
+        .resolve_channel(&req.query, &req.created_by, req.threshold)
+        .await?;
     Ok(Json(json!({
         "ok": true,
         "channel": out.channel,
@@ -384,7 +439,9 @@ async fn list_messages(
     Path(slug): Path<String>,
     Query(q): Query<MessagesQuery>,
 ) -> ApiResult {
-    Ok(Json(json!({ "ok": true, "messages": s.history(&slug, q.since)? })))
+    Ok(Json(
+        json!({ "ok": true, "messages": s.history(&slug, q.since)? }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -402,12 +459,16 @@ async fn stream_channel(
     let (rx, _high_water) = s.subscribe(&slug, q.agent_key.as_deref())?;
     let stream = BroadcastStream::new(rx).filter_map(|item| async move {
         match item {
-            Ok(event) => Some(Ok(SseEvent::default().json_data(&event).unwrap_or_default())),
+            Ok(event) => Some(Ok(SseEvent::default()
+                .json_data(&event)
+                .unwrap_or_default())),
             // Signal a lag (don't silently drop) so the client knows it missed
             // messages and can reconcile via `GET /messages?since=`.
-            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => Some(Ok(
-                SseEvent::default().json_data(json!({ "type": "lagged", "dropped": n })).unwrap_or_default(),
-            )),
+            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+                Some(Ok(SseEvent::default()
+                    .json_data(json!({ "type": "lagged", "dropped": n }))
+                    .unwrap_or_default()))
+            }
         }
     });
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
@@ -416,7 +477,9 @@ async fn stream_channel(
 // ---- shared context ---------------------------------------------------------
 
 async fn get_context(State(s): State<Arc<AppState>>, Path(slug): Path<String>) -> ApiResult {
-    Ok(Json(json!({ "ok": true, "context": s.get_context(&slug)? })))
+    Ok(Json(
+        json!({ "ok": true, "context": s.get_context(&slug)? }),
+    ))
 }
 
 #[derive(Deserialize)]

@@ -25,7 +25,9 @@ pub async fn serve(state: Arc<AppState>, listener: TcpListener) -> anyhow::Resul
     info!(addr = %listener.local_addr()?, "tcp listener up");
     // Bound concurrent connections; excess are dropped (load shed) rather than
     // spawning unbounded tasks.
-    let conns = Arc::new(tokio::sync::Semaphore::new(state.config.max_tcp_connections));
+    let conns = Arc::new(tokio::sync::Semaphore::new(
+        state.config.max_tcp_connections,
+    ));
     loop {
         let (socket, peer) = match listener.accept().await {
             Ok(v) => v,
@@ -108,7 +110,8 @@ async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
 }
 
 async fn write_line(writer: &Writer, value: &Value) -> std::io::Result<()> {
-    let mut line = serde_json::to_vec(value).unwrap_or_else(|_| b"{\"ok\":false,\"error\":\"serialize\"}".to_vec());
+    let mut line = serde_json::to_vec(value)
+        .unwrap_or_else(|_| b"{\"ok\":false,\"error\":\"serialize\"}".to_vec());
     line.push(b'\n');
     let mut w = writer.lock().await;
     w.write_all(&line).await?;
@@ -147,17 +150,23 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
         };
         let read = read_capped_line(&mut reader, max_line);
         let line = match deadline_secs {
-            Some(secs) => match tokio::time::timeout(std::time::Duration::from_secs(secs), read).await {
-                Ok(r) => match r? {
-                    Some(l) => l,
-                    None => break,
-                },
-                Err(_) => {
-                    let err = if authed { "idle_timeout" } else { "auth_timeout" };
-                    let _ = write_line(&writer, &json!({ "ok": false, "error": err })).await;
-                    break;
+            Some(secs) => {
+                match tokio::time::timeout(std::time::Duration::from_secs(secs), read).await {
+                    Ok(r) => match r? {
+                        Some(l) => l,
+                        None => break,
+                    },
+                    Err(_) => {
+                        let err = if authed {
+                            "idle_timeout"
+                        } else {
+                            "auth_timeout"
+                        };
+                        let _ = write_line(&writer, &json!({ "ok": false, "error": err })).await;
+                        break;
+                    }
                 }
-            },
+            }
             None => match read.await? {
                 Some(l) => l,
                 None => break,
@@ -170,14 +179,20 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
         let req: Req = match serde_json::from_str(line) {
             Ok(r) => r,
             Err(e) => {
-                write_line(&writer, &json!({ "ok": false, "error": "bad_request", "message": e.to_string() })).await?;
+                write_line(
+                    &writer,
+                    &json!({ "ok": false, "error": "bad_request", "message": e.to_string() }),
+                )
+                .await?;
                 continue;
             }
         };
 
         if let Req::Auth { token } = &req {
             authed = match state.config.api_auth_bearer.as_deref() {
-                Some(expected) => crate::config::constant_time_eq(expected.as_bytes(), token.as_bytes()),
+                Some(expected) => {
+                    crate::config::constant_time_eq(expected.as_bytes(), token.as_bytes())
+                }
                 None => true,
             };
             // Exactly one response frame per request: ok=false here already means
@@ -221,21 +236,40 @@ async fn dispatch(
 ) -> Option<Value> {
     match req {
         Req::Auth { .. } | Req::Ping => None, // handled upstream
-        Req::Register { agent_key, display_name, kind, host, meta } => {
-            Some(reply(state.register_agent(Agent {
-                agent_key,
-                display_name,
-                kind,
-                host,
-                meta,
-                registered_at: crate::types::now_ts(),
-            }).map(|a| json!({ "agent": a }))))
-        }
-        Req::ListChannels => Some(json!({ "ok": true, "channels": state.list_channels() })),
-        Req::CreateChannel { slug, topic, created_by } => Some(reply(
-            state.create_or_get_channel(&slug, &topic, &created_by).await.map(|c| json!({ "channel": c })),
+        Req::Register {
+            agent_key,
+            display_name,
+            kind,
+            host,
+            meta,
+        } => Some(reply(
+            state
+                .register_agent(Agent {
+                    agent_key,
+                    display_name,
+                    kind,
+                    host,
+                    meta,
+                    registered_at: crate::types::now_ts(),
+                })
+                .map(|a| json!({ "agent": a })),
         )),
-        Req::Resolve { query, created_by, threshold } => Some(reply(
+        Req::ListChannels => Some(json!({ "ok": true, "channels": state.list_channels() })),
+        Req::CreateChannel {
+            slug,
+            topic,
+            created_by,
+        } => Some(reply(
+            state
+                .create_or_get_channel(&slug, &topic, &created_by)
+                .await
+                .map(|c| json!({ "channel": c })),
+        )),
+        Req::Resolve {
+            query,
+            created_by,
+            threshold,
+        } => Some(reply(
             state
                 .resolve_channel(&query, &created_by, threshold)
                 .await
@@ -245,39 +279,70 @@ async fn dispatch(
             let results = state.search_channels(&query, limit).await;
             Some(json!({ "ok": true, "results": results }))
         }
-        Req::Join { channel, agent_key, role } => Some(reply(
+        Req::Join {
+            channel,
+            agent_key,
+            role,
+        } => Some(reply(state.join(&channel, &agent_key, role).map(
+            |o| json!({ "member": o.member, "channel": o.channel, "newly_joined": o.newly_joined }),
+        ))),
+        Req::Leave { channel, agent_key } => Some(reply(
             state
-                .join(&channel, &agent_key, role)
-                .map(|o| json!({ "member": o.member, "channel": o.channel, "newly_joined": o.newly_joined })),
+                .leave(&channel, &agent_key)
+                .map(|removed| json!({ "removed": removed })),
         )),
-        Req::Leave { channel, agent_key } => {
-            Some(reply(state.leave(&channel, &agent_key).map(|removed| json!({ "removed": removed }))))
-        }
-        Req::Members { channel } => Some(reply(state.members(&channel).map(|m| json!({ "members": m })))),
-        Req::Post { channel, from, content, role, meta } => Some(reply(
-            state.post_message(&channel, &from, role, &content, meta).map(|m| json!({ "message": m })),
+        Req::Members { channel } => Some(reply(
+            state.members(&channel).map(|m| json!({ "members": m })),
         )),
-        Req::History { channel, since } => {
-            Some(reply(state.history(&channel, since).map(|m| json!({ "messages": m }))))
-        }
+        Req::Post {
+            channel,
+            from,
+            content,
+            role,
+            meta,
+        } => Some(reply(
+            state
+                .post_message(&channel, &from, role, &content, meta)
+                .map(|m| json!({ "message": m })),
+        )),
+        Req::History { channel, since } => Some(reply(
+            state
+                .history(&channel, since)
+                .map(|m| json!({ "messages": m })),
+        )),
         Req::GetContext { channel, key } => {
             let result = match key {
-                Some(k) => state.get_context_key(&channel, &k).map(|e| json!({ "entry": e })),
+                Some(k) => state
+                    .get_context_key(&channel, &k)
+                    .map(|e| json!({ "entry": e })),
                 None => state.get_context(&channel).map(|c| json!({ "context": c })),
             };
             Some(reply(result))
         }
-        Req::SetContext { channel, key, value, updated_by } => {
-            Some(reply(state.set_context(&channel, &key, value, &updated_by).map(|e| json!({ "entry": e }))))
-        }
-        Req::Subscribe { channel, agent_key, since } => {
+        Req::SetContext {
+            channel,
+            key,
+            value,
+            updated_by,
+        } => Some(reply(
+            state
+                .set_context(&channel, &key, value, &updated_by)
+                .map(|e| json!({ "entry": e })),
+        )),
+        Req::Subscribe {
+            channel,
+            agent_key,
+            since,
+        } => {
             // Drop finished forwarders, then cap live subscriptions per connection
             // so a client cannot spawn unbounded tasks with repeated `subscribe`s.
             sub_tasks.retain(|t| !t.is_finished());
             // One live stream per channel per connection: a second subscribe to the
             // same channel would deliver every event twice (or 64x at the cap).
             if subscribed.contains(&channel) {
-                return Some(json!({ "ok": false, "error": "already_subscribed", "channel": channel }));
+                return Some(
+                    json!({ "ok": false, "error": "already_subscribed", "channel": channel }),
+                );
             }
             if sub_tasks.len() >= MAX_SUBS_PER_CONN {
                 return Some(json!({
@@ -370,7 +435,9 @@ fn default_limit() -> usize {
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 enum Req {
-    Auth { token: String },
+    Auth {
+        token: String,
+    },
     Ping,
     Register {
         agent_key: String,

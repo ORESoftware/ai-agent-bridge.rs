@@ -96,7 +96,10 @@ fn init_tracing() {
         .unwrap_or_else(|_| EnvFilter::new("info,ai_agent_bridge=info"));
     let builder = tracing_subscriber::fmt().with_env_filter(filter);
     // JSON logs in-cluster (matches the other services), pretty logs locally.
-    if std::env::var("LOG_FORMAT").map(|v| v == "json").unwrap_or(false) {
+    if std::env::var("LOG_FORMAT")
+        .map(|v| v == "json")
+        .unwrap_or(false)
+    {
         builder.json().init();
     } else {
         builder.init();
@@ -109,7 +112,9 @@ async fn shutdown_signal() {
     };
     #[cfg(unix)]
     let terminate = async {
-        if let Ok(mut sig) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        if let Ok(mut sig) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
             sig.recv().await;
         }
     };

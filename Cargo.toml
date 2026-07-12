@@ -38,17 +38,13 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # into every later request), and no Result to unwrap.
 parking_lot = "0.12"
 
-# Postgres persistence is OFF by default so the in-memory core builds and tests
-# anywhere (laptop / CI) without the pg-defs path dep. The cluster build turns it
-# on with `--features postgres`, mirroring soccer_engine's `postgres-persistence`.
-# `macros` is required so the generated dd-pg-defs crate's `#[derive(sqlx::FromRow)]`
-# resolves (its own sqlx dep does not enable it); feature-unified across the graph.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "macros"], optional = true }
-dd-pg-defs = { path = "../../libs/pg-defs/generated/rust", features = ["sqlx"], optional = true }
+# PostgreSQL persistence is optional. Its canonical DDL lives in
+# fiducia-interfaces/sql/ai_agent_bridge.sql.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json"], optional = true }
 
 [features]
 default = []
-postgres = ["dep:sqlx", "dep:dd-pg-defs"]
+postgres = ["dep:sqlx"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }

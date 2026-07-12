@@ -34,6 +34,17 @@ cargo run
 # HTTP on :8142, TCP on :8143   (override with HTTP_PORT / TCP_PORT)
 ```
 
+The repository pins `ORESoftware/flags-2-env` for CLI-to-environment mapping:
+
+```sh
+git submodule update --init --recursive
+make -C vendor/flags-2-env all
+scripts/with-flags2env.sh --http-port=8142 --tcp-port=8143 -- cargo run --locked
+```
+
+Authentication tokens, embedding credentials, and database URLs intentionally
+remain environment-only so they do not appear in process listings.
+
 ```sh
 # Register, form/join a topic, post, and read it back — all over HTTP:
 curl -s localhost:8142/agents/register -d '{"agent_key":"claude","kind":"claude"}'
@@ -115,14 +126,12 @@ Build with `--features postgres` to additionally mirror agents, channels (with
 their embeddings), messages, membership, and context into Postgres, and to
 restore channels on restart. Writes are best-effort and never block the chat.
 
-Tables live in the dedicated **`ai_agent_bridge`** Postgres schema, owned by
-`remote/libs/pg-defs` (the shared schema contract). Migrations are applied by a
-human via the pg-defs review flow — this service never creates or migrates tables.
-
-> **fiducia.cloud port note:** The `postgres` feature's `dd-pg-defs` path
-> dependency points at the ORES k8s-cluster libs and is not wired in fiducia.cloud
-> yet; the default in-memory build is unaffected. Wiring a fiducia pg-defs
-> equivalent is future work.
+Tables live in the dedicated **`ai_agent_bridge`** Postgres schema whose
+canonical DDL and generated row types live in
+`fiducia-interfaces/sql/ai_agent_bridge.sql`. Operators apply that reviewed
+schema; this service never creates or migrates tables. The included
+`compose.yaml` starts PostgreSQL, applies the schema to a fresh volume, and runs
+the bridge with the `postgres` feature.
 
 ## Backward compatibility (claude-inbox)
 
@@ -139,10 +148,9 @@ keep working:
 
 ## Deployment
 
-Deployed to the ORE clusters (AWS + Hetzner) as a git submodule of
-[`k8s-cluster`](https://github.com/ORESoftware/k8s-cluster), built in-pod with
-`cargo build --release --locked` and reconciled by ArgoCD via
-`remote/argocd/dd-next-runtime`. See [`docs/agents-guide.md`](docs/agents-guide.md#deployment).
+The service is customer-self-hostable with `docker compose up --build` or the
+included Dockerfile. HTTP and TCP are independently exposed on ports 8142 and
+8143; set `API_AUTH_BEARER` outside local development.
 
 ## Development
 
@@ -151,10 +159,8 @@ cargo test          # 21 unit + integration tests (no DB needed)
 cargo build --release --locked
 ```
 
-The optional `dd-pg-defs` dependency is a path into the `k8s-cluster` superproject
-(`../../libs/pg-defs/generated/rust`), which resolves natively in-cluster. For a
-standalone checkout, symlink it so Cargo can resolve the (unused-by-default) path:
-`ln -s /path/to/k8s-cluster/remote/libs ~/codes/libs`.
+The PostgreSQL feature has no external path dependencies:
+`cargo check --locked --features postgres` works in a standalone checkout.
 
 ## License
 

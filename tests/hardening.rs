@@ -18,12 +18,32 @@ async fn bearer_auth_gates_the_api_but_not_health() {
     let c = reqwest::Client::new();
 
     // Health is exempt.
-    assert!(c.get(format!("{base}/healthz")).send().await.unwrap().status().is_success());
+    assert!(c
+        .get(format!("{base}/healthz"))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
 
     // API requires the bearer.
-    assert_eq!(c.get(format!("{base}/channels")).send().await.unwrap().status().as_u16(), 401);
     assert_eq!(
-        c.get(format!("{base}/channels")).bearer_auth("wrong").send().await.unwrap().status().as_u16(),
+        c.get(format!("{base}/channels"))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        401
+    );
+    assert_eq!(
+        c.get(format!("{base}/channels"))
+            .bearer_auth("wrong")
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
         401
     );
     assert!(c
@@ -51,7 +71,11 @@ async fn claude_route_respects_global_bearer_when_no_inbox_token() {
         .send()
         .await
         .unwrap();
-    assert_eq!(un.status().as_u16(), 401, "/claude must not bypass the global bearer");
+    assert_eq!(
+        un.status().as_u16(),
+        401,
+        "/claude must not bypass the global bearer"
+    );
 
     let ok = c
         .post(format!("{base}/claude"))
@@ -92,7 +116,12 @@ async fn unknown_channel_is_404_and_bad_json_is_generic() {
     let c = reqwest::Client::new();
 
     assert_eq!(
-        c.get(format!("{base}/channels/nope/members")).send().await.unwrap().status().as_u16(),
+        c.get(format!("{base}/channels/nope/members"))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
         404
     );
 
@@ -111,7 +140,12 @@ async fn unknown_channel_is_404_and_bad_json_is_generic() {
 
 // ---- TCP --------------------------------------------------------------------
 
-async fn tcp_line(addr: std::net::SocketAddr) -> (BufReader<tokio::net::tcp::OwnedReadHalf>, tokio::net::tcp::OwnedWriteHalf) {
+async fn tcp_line(
+    addr: std::net::SocketAddr,
+) -> (
+    BufReader<tokio::net::tcp::OwnedReadHalf>,
+    tokio::net::tcp::OwnedWriteHalf,
+) {
     let (r, w) = TcpStream::connect(addr).await.unwrap().into_split();
     let mut reader = BufReader::new(r);
     let mut hello = String::new();
@@ -162,7 +196,11 @@ async fn tcp_duplicate_subscribe_to_same_channel_rejected() {
     let mut reader = BufReader::new(r);
     recv(&mut reader).await; // hello
 
-    send(&mut w, json!({ "op": "create_channel", "slug": "room", "topic": "t" })).await;
+    send(
+        &mut w,
+        json!({ "op": "create_channel", "slug": "room", "topic": "t" }),
+    )
+    .await;
     recv(&mut reader).await;
 
     send(&mut w, json!({ "op": "subscribe", "channel": "room" })).await;
@@ -192,7 +230,10 @@ async fn claude_inbox_line_key_order_is_stable() {
     let line = contents.lines().next().unwrap();
     // Typed struct -> exact order id, ts, from, topic, prompt (a Value would sort).
     let pos = |k: &str| line.find(k).unwrap_or(usize::MAX);
-    assert!(line.starts_with(r#"{"id":"#), "unexpected inbox line: {line}");
+    assert!(
+        line.starts_with(r#"{"id":"#),
+        "unexpected inbox line: {line}"
+    );
     assert!(pos("\"id\"") < pos("\"ts\""));
     assert!(pos("\"ts\"") < pos("\"from\""));
     assert!(pos("\"from\"") < pos("\"topic\""));

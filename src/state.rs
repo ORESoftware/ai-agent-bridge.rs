@@ -156,7 +156,10 @@ impl AppState {
             return Err(BridgeError::BadRequest("agent_key is required".into()));
         }
         if key.len() > MAX_KEY_BYTES {
-            return Err(BridgeError::PayloadTooLarge { what: "agent_key", limit: MAX_KEY_BYTES });
+            return Err(BridgeError::PayloadTooLarge {
+                what: "agent_key",
+                limit: MAX_KEY_BYTES,
+            });
         }
         agent.agent_key = key.clone();
         if agent.display_name.trim().is_empty() {
@@ -167,15 +170,23 @@ impl AppState {
         if let Some(h) = agent.host.as_mut() {
             truncate_bytes(h, 255);
         }
-        let meta_bytes = serde_json::to_vec(&agent.meta).map(|v| v.len()).unwrap_or(usize::MAX);
+        let meta_bytes = serde_json::to_vec(&agent.meta)
+            .map(|v| v.len())
+            .unwrap_or(usize::MAX);
         if meta_bytes > self.config.max_content_bytes {
-            return Err(BridgeError::PayloadTooLarge { what: "agent meta", limit: self.config.max_content_bytes });
+            return Err(BridgeError::PayloadTooLarge {
+                what: "agent meta",
+                limit: self.config.max_content_bytes,
+            });
         }
         agent.registered_at = now_ts();
         {
             let mut agents = self.agents.write();
             if !agents.contains_key(&key) && agents.len() >= self.config.max_agents {
-                return Err(BridgeError::CapacityExceeded { what: "agents", limit: self.config.max_agents });
+                return Err(BridgeError::CapacityExceeded {
+                    what: "agents",
+                    limit: self.config.max_agents,
+                });
             }
             agents.insert(key, agent.clone());
         }
@@ -227,9 +238,15 @@ impl AppState {
         if let Some(ch) = self.channels.read().get(&slug) {
             return Ok(ch.to_public());
         }
-        let topic = if topic.trim().is_empty() { slug.replace('-', " ") } else { topic.to_string() };
+        let topic = if topic.trim().is_empty() {
+            slug.replace('-', " ")
+        } else {
+            topic.to_string()
+        };
         let (embedding, model) = self.embedder.embed(&topic).await;
-        Ok(self.insert_channel(slug, topic, created_by, embedding, model)?.0)
+        Ok(self
+            .insert_channel(slug, topic, created_by, embedding, model)?
+            .0)
     }
 
     /// Semantic search over topic embeddings, best score first.
@@ -245,7 +262,11 @@ impl AppState {
                 })
                 .collect()
         };
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         scored.truncate(limit.max(1));
         scored
     }
@@ -281,14 +302,23 @@ impl AppState {
         if let Some((slug, score)) = best {
             if score >= threshold {
                 let channel = self.get_channel(&slug)?;
-                return Ok(ResolveOutcome { channel, score, created: false });
+                return Ok(ResolveOutcome {
+                    channel,
+                    score,
+                    created: false,
+                });
             }
         }
 
         // No sufficiently-close topic — create a new one, reusing the query vector.
         let slug = self.unique_slug(&slugify(query));
-        let (channel, created) = self.insert_channel(slug, query.to_string(), created_by, qvec, model)?;
-        Ok(ResolveOutcome { channel, score: 0.0, created })
+        let (channel, created) =
+            self.insert_channel(slug, query.to_string(), created_by, qvec, model)?;
+        Ok(ResolveOutcome {
+            channel,
+            score: 0.0,
+            created,
+        })
     }
 
     /// Returns `(channel, created)` — `created` is false when a concurrent creator
@@ -356,6 +386,7 @@ impl AppState {
     /// chat state is ephemeral; the durable value is the topic + its vector so
     /// semantic routing survives a restart. Idempotent: skips if already present.
     #[cfg(feature = "postgres")]
+    #[allow(clippy::too_many_arguments)] // Mirrors one complete persisted channel row.
     pub fn restore_channel(
         &self,
         slug: &str,
@@ -380,7 +411,11 @@ impl AppState {
                 embedding,
                 embedding_model: embedding_model.to_string(),
                 created_by: created_by.to_string(),
-                created_at: if created_at.is_empty() { now_ts() } else { created_at.to_string() },
+                created_at: if created_at.is_empty() {
+                    now_ts()
+                } else {
+                    created_at.to_string()
+                },
                 meta,
                 members: HashMap::new(),
                 messages: VecDeque::new(),
@@ -395,7 +430,11 @@ impl AppState {
     }
 
     fn unique_slug(&self, base: &str) -> String {
-        let base = if base.is_empty() { format!("topic-{}", &new_id()[..8]) } else { base.to_string() };
+        let base = if base.is_empty() {
+            format!("topic-{}", &new_id()[..8])
+        } else {
+            base.to_string()
+        };
         if !self.channel_exists(&base) {
             return base;
         }
@@ -420,7 +459,10 @@ impl AppState {
         // Same cap as register/post so join/subscribe can't smuggle an oversized
         // key into membership + presence broadcasts (and break PG persistence).
         if agent_key.len() > MAX_KEY_BYTES {
-            return Err(BridgeError::PayloadTooLarge { what: "agent_key", limit: MAX_KEY_BYTES });
+            return Err(BridgeError::PayloadTooLarge {
+                what: "agent_key",
+                limit: MAX_KEY_BYTES,
+            });
         }
         let (outcome, persist) = {
             let mut chans = self.channels.write();
@@ -431,7 +473,14 @@ impl AppState {
             if let Some(existing) = ch.members.get_mut(agent_key) {
                 existing.last_seen_at = now_ts();
                 let member = existing.clone();
-                (JoinOutcome { member, channel: ch.to_public(), newly_joined: false }, false)
+                (
+                    JoinOutcome {
+                        member,
+                        channel: ch.to_public(),
+                        newly_joined: false,
+                    },
+                    false,
+                )
             } else {
                 if ch.members.len() >= MAX_MEMBERS {
                     return Err(BridgeError::ChannelFull {
@@ -458,7 +507,14 @@ impl AppState {
                     member_count: ch.members.len(),
                     at: now,
                 });
-                (JoinOutcome { member, channel: ch.to_public(), newly_joined: true }, true)
+                (
+                    JoinOutcome {
+                        member,
+                        channel: ch.to_public(),
+                        newly_joined: true,
+                    },
+                    true,
+                )
             }
         };
         if persist {
@@ -496,9 +552,15 @@ impl AppState {
 
     pub fn members(&self, slug: &str) -> BridgeResult<Vec<Member>> {
         let chans = self.channels.read();
-        let ch = chans.get(slug).ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
+        let ch = chans
+            .get(slug)
+            .ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
         let mut v: Vec<Member> = ch.members.values().cloned().collect();
-        v.sort_by(|a, b| a.joined_at.cmp(&b.joined_at).then(a.agent_key.cmp(&b.agent_key)));
+        v.sort_by(|a, b| {
+            a.joined_at
+                .cmp(&b.joined_at)
+                .then(a.agent_key.cmp(&b.agent_key))
+        });
         Ok(v)
     }
 
@@ -524,10 +586,15 @@ impl AppState {
     ) -> BridgeResult<Message> {
         let from = from.trim();
         if from.is_empty() {
-            return Err(BridgeError::BadRequest("`from` (agent_key) is required".into()));
+            return Err(BridgeError::BadRequest(
+                "`from` (agent_key) is required".into(),
+            ));
         }
         if from.len() > MAX_KEY_BYTES {
-            return Err(BridgeError::PayloadTooLarge { what: "agent_key", limit: MAX_KEY_BYTES });
+            return Err(BridgeError::PayloadTooLarge {
+                what: "agent_key",
+                limit: MAX_KEY_BYTES,
+            });
         }
         if content.is_empty() {
             return Err(BridgeError::BadRequest("`content` is required".into()));
@@ -540,9 +607,14 @@ impl AppState {
         }
         // Cap `meta` too, else 1 byte of content + megabytes of JSON meta bypasses
         // the content cap and accumulates in the history ring.
-        let meta_bytes = serde_json::to_vec(&meta).map(|v| v.len()).unwrap_or(usize::MAX);
+        let meta_bytes = serde_json::to_vec(&meta)
+            .map(|v| v.len())
+            .unwrap_or(usize::MAX);
         if meta_bytes > self.config.max_content_bytes {
-            return Err(BridgeError::PayloadTooLarge { what: "message meta", limit: self.config.max_content_bytes });
+            return Err(BridgeError::PayloadTooLarge {
+                what: "message meta",
+                limit: self.config.max_content_bytes,
+            });
         }
         // Ensure a seat (enforces the cap for first-time posters).
         self.join(slug, from, MemberRole::Member)?;
@@ -577,7 +649,9 @@ impl AppState {
                 || (ch.history_bytes > budget && ch.messages.len() > 1)
             {
                 if let Some(old) = ch.messages.pop_front() {
-                    ch.history_bytes = ch.history_bytes.saturating_sub(message_retained_bytes(&old));
+                    ch.history_bytes = ch
+                        .history_bytes
+                        .saturating_sub(message_retained_bytes(&old));
                 }
             }
             // Broadcast under the write lock so live delivery order matches `seq`
@@ -593,9 +667,16 @@ impl AppState {
     /// Recent messages, optionally only those with `seq > since`.
     pub fn history(&self, slug: &str, since: Option<u64>) -> BridgeResult<Vec<Message>> {
         let chans = self.channels.read();
-        let ch = chans.get(slug).ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
+        let ch = chans
+            .get(slug)
+            .ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
         let since = since.unwrap_or(0);
-        Ok(ch.messages.iter().filter(|m| m.seq > since).cloned().collect())
+        Ok(ch
+            .messages
+            .iter()
+            .filter(|m| m.seq > since)
+            .cloned()
+            .collect())
     }
 
     /// Subscribe to the live event stream (messages + presence). Auto-joins the
@@ -617,7 +698,9 @@ impl AppState {
             self.join(slug, key, MemberRole::Member)?;
         }
         let chans = self.channels.read();
-        let ch = chans.get(slug).ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
+        let ch = chans
+            .get(slug)
+            .ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
         let rx = ch.tx.subscribe();
         let high_water = ch.next_seq.saturating_sub(1);
         Ok((rx, high_water))
@@ -637,9 +720,14 @@ impl AppState {
             return Err(BridgeError::BadRequest("context key is required".into()));
         }
         if key.len() > MAX_CONTEXT_KEY_BYTES {
-            return Err(BridgeError::PayloadTooLarge { what: "context key", limit: MAX_CONTEXT_KEY_BYTES });
+            return Err(BridgeError::PayloadTooLarge {
+                what: "context key",
+                limit: MAX_CONTEXT_KEY_BYTES,
+            });
         }
-        let value_bytes = serde_json::to_vec(&value).map(|v| v.len()).unwrap_or(usize::MAX);
+        let value_bytes = serde_json::to_vec(&value)
+            .map(|v| v.len())
+            .unwrap_or(usize::MAX);
         if value_bytes > self.config.max_content_bytes {
             return Err(BridgeError::PayloadTooLarge {
                 what: "context value",
@@ -652,9 +740,16 @@ impl AppState {
                 .get_mut(slug)
                 .ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
             if !ch.context.contains_key(key) && ch.context.len() >= MAX_CONTEXT_KEYS {
-                return Err(BridgeError::CapacityExceeded { what: "context keys", limit: MAX_CONTEXT_KEYS });
+                return Err(BridgeError::CapacityExceeded {
+                    what: "context keys",
+                    limit: MAX_CONTEXT_KEYS,
+                });
             }
-            let version = ch.context.get(key).map(|e| e.version.saturating_add(1)).unwrap_or(1);
+            let version = ch
+                .context
+                .get(key)
+                .map(|e| e.version.saturating_add(1))
+                .unwrap_or(1);
             let mut updated_by = updated_by.to_string();
             truncate_bytes(&mut updated_by, MAX_KEY_BYTES);
             let entry = ContextEntry {
@@ -673,7 +768,9 @@ impl AppState {
 
     pub fn get_context(&self, slug: &str) -> BridgeResult<Vec<ContextEntry>> {
         let chans = self.channels.read();
-        let ch = chans.get(slug).ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
+        let ch = chans
+            .get(slug)
+            .ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
         let mut v: Vec<ContextEntry> = ch.context.values().cloned().collect();
         v.sort_by(|a, b| a.key.cmp(&b.key));
         Ok(v)
@@ -681,7 +778,9 @@ impl AppState {
 
     pub fn get_context_key(&self, slug: &str, key: &str) -> BridgeResult<Option<ContextEntry>> {
         let chans = self.channels.read();
-        let ch = chans.get(slug).ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
+        let ch = chans
+            .get(slug)
+            .ok_or_else(|| BridgeError::ChannelNotFound(slug.to_string()))?;
         Ok(ch.context.get(key).cloned())
     }
 
@@ -721,11 +820,16 @@ impl AppState {
     fn persist_channel(&self, channel: &Channel, topic: &str) {
         let c = channel.clone();
         let embedding = {
-            self.channels.read().get(&channel.slug).map(|s| s.embedding.clone())
+            self.channels
+                .read()
+                .get(&channel.slug)
+                .map(|s| s.embedding.clone())
         };
         let topic = topic.to_string();
         if let Some(embedding) = embedding {
-            self.spawn_persist(move |db| async move { db.upsert_channel(&c, &topic, &embedding).await });
+            self.spawn_persist(
+                move |db| async move { db.upsert_channel(&c, &topic, &embedding).await },
+            );
         }
     }
     #[cfg(feature = "postgres")]
@@ -833,49 +937,89 @@ mod tests {
     #[tokio::test]
     async fn channel_cap_is_enforced() {
         let s = state_cfg(|c| c.max_channels = 2);
-        s.create_or_get_channel("a", "topic a", "claude").await.unwrap();
-        s.create_or_get_channel("b", "topic b", "claude").await.unwrap();
+        s.create_or_get_channel("a", "topic a", "claude")
+            .await
+            .unwrap();
+        s.create_or_get_channel("b", "topic b", "claude")
+            .await
+            .unwrap();
         // Re-getting an existing channel is fine even at the cap.
-        assert!(s.create_or_get_channel("a", "topic a", "claude").await.is_ok());
+        assert!(s
+            .create_or_get_channel("a", "topic a", "claude")
+            .await
+            .is_ok());
         // A third distinct channel is rejected.
-        let err = s.create_or_get_channel("c", "topic c", "claude").await.unwrap_err();
-        assert!(matches!(err, BridgeError::CapacityExceeded { .. }), "got {err:?}");
+        let err = s
+            .create_or_get_channel("c", "topic c", "claude")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, BridgeError::CapacityExceeded { .. }),
+            "got {err:?}"
+        );
         // resolve also refuses to mint past the cap.
-        let err = s.resolve_channel("something entirely new", "codex", Some(0.99)).await.unwrap_err();
+        let err = s
+            .resolve_channel("something entirely new", "codex", Some(0.99))
+            .await
+            .unwrap_err();
         assert!(matches!(err, BridgeError::CapacityExceeded { .. }));
     }
 
     #[test]
     fn agent_cap_is_enforced_but_updates_are_free() {
         let s = state_cfg(|c| c.max_agents = 2);
-        let mk = |k: &str| Agent { agent_key: k.into(), display_name: String::new(), kind: AgentKind::Other, host: None, meta: serde_json::json!({}), registered_at: String::new() };
+        let mk = |k: &str| Agent {
+            agent_key: k.into(),
+            display_name: String::new(),
+            kind: AgentKind::Other,
+            host: None,
+            meta: serde_json::json!({}),
+            registered_at: String::new(),
+        };
         s.register_agent(mk("a")).unwrap();
         s.register_agent(mk("b")).unwrap();
         // Updating an existing agent stays allowed at the cap.
         assert!(s.register_agent(mk("a")).is_ok());
         // A third distinct agent is rejected.
-        assert!(matches!(s.register_agent(mk("c")).unwrap_err(), BridgeError::CapacityExceeded { .. }));
+        assert!(matches!(
+            s.register_agent(mk("c")).unwrap_err(),
+            BridgeError::CapacityExceeded { .. }
+        ));
     }
 
     #[test]
     fn agent_key_over_120_bytes_rejected() {
         let s = state();
         let long = "x".repeat(121);
-        let a = Agent { agent_key: long, display_name: String::new(), kind: AgentKind::Other, host: None, meta: serde_json::json!({}), registered_at: String::new() };
-        assert!(matches!(s.register_agent(a).unwrap_err(), BridgeError::PayloadTooLarge { .. }));
+        let a = Agent {
+            agent_key: long,
+            display_name: String::new(),
+            kind: AgentKind::Other,
+            host: None,
+            meta: serde_json::json!({}),
+            registered_at: String::new(),
+        };
+        assert!(matches!(
+            s.register_agent(a).unwrap_err(),
+            BridgeError::PayloadTooLarge { .. }
+        ));
     }
 
     #[tokio::test]
     async fn oversized_message_and_context_rejected() {
         let s = state_cfg(|c| c.max_content_bytes = 64);
-        s.create_or_get_channel("room", "topic", "claude").await.unwrap();
+        s.create_or_get_channel("room", "topic", "claude")
+            .await
+            .unwrap();
         let big = "z".repeat(65);
         assert!(matches!(
-            s.post_message("room", "claude", Role::User, &big, serde_json::json!({})).unwrap_err(),
+            s.post_message("room", "claude", Role::User, &big, serde_json::json!({}))
+                .unwrap_err(),
             BridgeError::PayloadTooLarge { .. }
         ));
         assert!(matches!(
-            s.set_context("room", "k", serde_json::json!(big), "claude").unwrap_err(),
+            s.set_context("room", "k", serde_json::json!(big), "claude")
+                .unwrap_err(),
             BridgeError::PayloadTooLarge { .. }
         ));
     }
@@ -885,7 +1029,9 @@ mod tests {
     #[tokio::test]
     async fn join_rejects_oversized_key() {
         let s = state();
-        s.create_or_get_channel("room", "topic", "claude").await.unwrap();
+        s.create_or_get_channel("room", "topic", "claude")
+            .await
+            .unwrap();
         let long = "k".repeat(121);
         assert!(matches!(
             s.join("room", &long, MemberRole::Member).unwrap_err(),
@@ -896,10 +1042,13 @@ mod tests {
     #[tokio::test]
     async fn post_rejects_oversized_meta() {
         let s = state_cfg(|c| c.max_content_bytes = 128);
-        s.create_or_get_channel("room", "topic", "claude").await.unwrap();
+        s.create_or_get_channel("room", "topic", "claude")
+            .await
+            .unwrap();
         let big_meta = serde_json::json!({ "blob": "m".repeat(200) });
         assert!(matches!(
-            s.post_message("room", "claude", Role::User, "hi", big_meta).unwrap_err(),
+            s.post_message("room", "claude", Role::User, "hi", big_meta)
+                .unwrap_err(),
             BridgeError::PayloadTooLarge { .. }
         ));
     }
@@ -907,10 +1056,16 @@ mod tests {
     #[tokio::test]
     async fn resolve_reports_created_honestly_and_reuses() {
         let s = state();
-        let first = s.resolve_channel("brand new topic here", "claude", Some(0.99)).await.unwrap();
+        let first = s
+            .resolve_channel("brand new topic here", "claude", Some(0.99))
+            .await
+            .unwrap();
         assert!(first.created);
         // A near-identical query resolves back to the same channel, created=false.
-        let again = s.resolve_channel("brand new topic here", "codex", Some(0.2)).await.unwrap();
+        let again = s
+            .resolve_channel("brand new topic here", "codex", Some(0.2))
+            .await
+            .unwrap();
         assert!(!again.created);
         assert_eq!(again.channel.slug, first.channel.slug);
     }
@@ -918,18 +1073,29 @@ mod tests {
     #[tokio::test]
     async fn resolve_ignores_nan_threshold() {
         let s = state();
-        s.create_or_get_channel("existing", "kubernetes rollout deploy", "claude").await.unwrap();
+        s.create_or_get_channel("existing", "kubernetes rollout deploy", "claude")
+            .await
+            .unwrap();
         // A NaN threshold must not make every comparison false (which would mint a
         // new channel); it falls back to the configured default and reuses.
-        let out = s.resolve_channel("kubernetes rollout deploy", "codex", Some(f32::NAN)).await.unwrap();
-        assert!(!out.created, "NaN threshold should fall back, not force-create");
+        let out = s
+            .resolve_channel("kubernetes rollout deploy", "codex", Some(f32::NAN))
+            .await
+            .unwrap();
+        assert!(
+            !out.created,
+            "NaN threshold should fall back, not force-create"
+        );
         assert_eq!(out.channel.slug, "existing");
     }
 
     #[tokio::test]
     async fn local_embedding_model_label_is_honest() {
         let s = state();
-        let ch = s.create_or_get_channel("room", "a topic", "claude").await.unwrap();
+        let ch = s
+            .create_or_get_channel("room", "a topic", "claude")
+            .await
+            .unwrap();
         assert_eq!(ch.embedding_model, crate::embed::LOCAL_MODEL);
     }
 
@@ -937,11 +1103,13 @@ mod tests {
     async fn subscribe_high_water_splits_replay_and_live() {
         let s = state();
         s.create_or_get_channel("c", "t", "claude").await.unwrap();
-        s.post_message("c", "claude", Role::User, "old", serde_json::json!({})).unwrap(); // seq 1
+        s.post_message("c", "claude", Role::User, "old", serde_json::json!({}))
+            .unwrap(); // seq 1
         let (mut rx, hw) = s.subscribe("c", None).unwrap();
         assert_eq!(hw, 1, "high-water is the last existing seq");
-        s.post_message("c", "claude", Role::User, "new", serde_json::json!({})).unwrap(); // seq 2
-        // The live receiver yields ONLY seq > high_water (no duplicate of the replay).
+        s.post_message("c", "claude", Role::User, "new", serde_json::json!({}))
+            .unwrap(); // seq 2
+                       // The live receiver yields ONLY seq > high_water (no duplicate of the replay).
         match rx.recv().await.unwrap() {
             Event::Message(m) => {
                 assert_eq!(m.seq, 2);
@@ -950,7 +1118,12 @@ mod tests {
             other => panic!("expected the new message, got {other:?}"),
         }
         // Replay is exactly seq <= high_water — the two sets partition cleanly.
-        let replay: Vec<_> = s.history("c", None).unwrap().into_iter().filter(|m| m.seq <= hw).collect();
+        let replay: Vec<_> = s
+            .history("c", None)
+            .unwrap()
+            .into_iter()
+            .filter(|m| m.seq <= hw)
+            .collect();
         assert_eq!(replay.len(), 1);
         assert_eq!(replay[0].content, "old");
     }
@@ -962,20 +1135,36 @@ mod tests {
             c.max_channel_history_bytes = 120;
             c.history_limit = 10_000;
         });
-        s.create_or_get_channel("room", "topic", "claude").await.unwrap();
+        s.create_or_get_channel("room", "topic", "claude")
+            .await
+            .unwrap();
         for i in 0..50 {
-            s.post_message("room", "claude", Role::User, &format!("message-{i:03}-payload"), serde_json::json!({})).unwrap();
+            s.post_message(
+                "room",
+                "claude",
+                Role::User,
+                &format!("message-{i:03}-payload"),
+                serde_json::json!({}),
+            )
+            .unwrap();
         }
         let hist = s.history("room", None).unwrap();
         // Each message is ~20 bytes; a 120-byte budget keeps only a handful.
-        assert!(hist.len() <= 8, "history should be byte-bounded, got {}", hist.len());
+        assert!(
+            hist.len() <= 8,
+            "history should be byte-bounded, got {}",
+            hist.len()
+        );
         // The newest message is always retained.
         assert_eq!(hist.last().unwrap().content, "message-049-payload");
     }
 
     #[test]
     fn slugify_makes_clean_slugs() {
-        assert_eq!(slugify("  Deploy the Soccer Policy!! "), "deploy-the-soccer-policy");
+        assert_eq!(
+            slugify("  Deploy the Soccer Policy!! "),
+            "deploy-the-soccer-policy"
+        );
         assert_eq!(slugify("a///b"), "a-b");
         assert!(!slugify("").contains(' '));
     }
@@ -983,17 +1172,28 @@ mod tests {
     #[tokio::test]
     async fn create_is_idempotent_by_slug() {
         let s = state();
-        let a = s.create_or_get_channel("ops", "cluster operations", "claude").await.unwrap();
-        let b = s.create_or_get_channel("ops", "something else", "codex").await.unwrap();
+        let a = s
+            .create_or_get_channel("ops", "cluster operations", "claude")
+            .await
+            .unwrap();
+        let b = s
+            .create_or_get_channel("ops", "something else", "codex")
+            .await
+            .unwrap();
         assert_eq!(a.slug, b.slug);
-        assert_eq!(a.created_at, b.created_at, "second create must not replace the channel");
+        assert_eq!(
+            a.created_at, b.created_at,
+            "second create must not replace the channel"
+        );
         assert_eq!(s.list_channels().len(), 1);
     }
 
     #[tokio::test]
     async fn join_is_idempotent_and_counts_once() {
         let s = state();
-        s.create_or_get_channel("room", "topic", "claude").await.unwrap();
+        s.create_or_get_channel("room", "topic", "claude")
+            .await
+            .unwrap();
         let first = s.join("room", "claude", MemberRole::Member).unwrap();
         assert!(first.newly_joined);
         let again = s.join("room", "claude", MemberRole::Member).unwrap();
@@ -1004,14 +1204,24 @@ mod tests {
     #[tokio::test]
     async fn thirty_third_member_is_bounced() {
         let s = state();
-        s.create_or_get_channel("crowded", "topic", "claude").await.unwrap();
+        s.create_or_get_channel("crowded", "topic", "claude")
+            .await
+            .unwrap();
         for i in 0..MAX_MEMBERS {
-            s.join("crowded", &format!("agent-{i}"), MemberRole::Member).unwrap();
+            s.join("crowded", &format!("agent-{i}"), MemberRole::Member)
+                .unwrap();
         }
         assert_eq!(s.members("crowded").unwrap().len(), MAX_MEMBERS);
-        let err = s.join("crowded", "agent-32", MemberRole::Member).unwrap_err();
+        let err = s
+            .join("crowded", "agent-32", MemberRole::Member)
+            .unwrap_err();
         match err {
-            BridgeError::ChannelFull { current, limit, next, .. } => {
+            BridgeError::ChannelFull {
+                current,
+                limit,
+                next,
+                ..
+            } => {
                 assert_eq!(current, 32);
                 assert_eq!(limit, 32);
                 assert_eq!(next, 33);
@@ -1025,9 +1235,27 @@ mod tests {
     #[tokio::test]
     async fn post_assigns_monotonic_seq_and_auto_joins() {
         let s = state();
-        s.create_or_get_channel("chat", "topic", "claude").await.unwrap();
-        let m1 = s.post_message("chat", "claude", Role::Assistant, "hello", serde_json::json!({})).unwrap();
-        let m2 = s.post_message("chat", "codex", Role::Assistant, "hi back", serde_json::json!({})).unwrap();
+        s.create_or_get_channel("chat", "topic", "claude")
+            .await
+            .unwrap();
+        let m1 = s
+            .post_message(
+                "chat",
+                "claude",
+                Role::Assistant,
+                "hello",
+                serde_json::json!({}),
+            )
+            .unwrap();
+        let m2 = s
+            .post_message(
+                "chat",
+                "codex",
+                Role::Assistant,
+                "hi back",
+                serde_json::json!({}),
+            )
+            .unwrap();
         assert_eq!(m1.seq, 1);
         assert_eq!(m2.seq, 2);
         // Both posters became members automatically.
@@ -1037,9 +1265,13 @@ mod tests {
     #[tokio::test]
     async fn resolve_reuses_close_topic_and_mints_distant_one() {
         let s = state();
-        s.create_or_get_channel("kubernetes-rollouts", "kubernetes deployment rollouts and argocd sync", "claude")
-            .await
-            .unwrap();
+        s.create_or_get_channel(
+            "kubernetes-rollouts",
+            "kubernetes deployment rollouts and argocd sync",
+            "claude",
+        )
+        .await
+        .unwrap();
         // Close query resolves to the existing channel.
         let close = s
             .resolve_channel("argocd kubernetes rollout deployment", "codex", Some(0.2))
@@ -1059,22 +1291,40 @@ mod tests {
     #[tokio::test]
     async fn context_versions_bump() {
         let s = state();
-        s.create_or_get_channel("ctx", "topic", "claude").await.unwrap();
-        let v1 = s.set_context("ctx", "plan", serde_json::json!({"step": 1}), "claude").unwrap();
+        s.create_or_get_channel("ctx", "topic", "claude")
+            .await
+            .unwrap();
+        let v1 = s
+            .set_context("ctx", "plan", serde_json::json!({"step": 1}), "claude")
+            .unwrap();
         assert_eq!(v1.version, 1);
-        let v2 = s.set_context("ctx", "plan", serde_json::json!({"step": 2}), "codex").unwrap();
+        let v2 = s
+            .set_context("ctx", "plan", serde_json::json!({"step": 2}), "codex")
+            .unwrap();
         assert_eq!(v2.version, 2);
-        assert_eq!(s.get_context_key("ctx", "plan").unwrap().unwrap().value, serde_json::json!({"step": 2}));
+        assert_eq!(
+            s.get_context_key("ctx", "plan").unwrap().unwrap().value,
+            serde_json::json!({"step": 2})
+        );
     }
 
     #[tokio::test]
     async fn subscribe_receives_posted_message() {
         let s = state();
-        s.create_or_get_channel("live", "topic", "claude").await.unwrap();
+        s.create_or_get_channel("live", "topic", "claude")
+            .await
+            .unwrap();
         // Join before subscribing so no presence event precedes the message.
         s.join("live", "claude", MemberRole::Member).unwrap();
         let (mut rx, _) = s.subscribe("live", None).unwrap();
-        s.post_message("live", "claude", Role::Assistant, "ping", serde_json::json!({})).unwrap();
+        s.post_message(
+            "live",
+            "claude",
+            Role::Assistant,
+            "ping",
+            serde_json::json!({}),
+        )
+        .unwrap();
         let ev = rx.recv().await.unwrap();
         match ev {
             Event::Message(m) => assert_eq!(m.content, "ping"),
@@ -1085,12 +1335,18 @@ mod tests {
     #[tokio::test]
     async fn leave_emits_presence_and_updates_count() {
         let s = state();
-        s.create_or_get_channel("presence", "topic", "claude").await.unwrap();
+        s.create_or_get_channel("presence", "topic", "claude")
+            .await
+            .unwrap();
         let (mut rx, _) = s.subscribe("presence", None).unwrap();
         s.join("presence", "codex", MemberRole::Member).unwrap();
         // First event is the join presence.
         match rx.recv().await.unwrap() {
-            Event::Presence { event, member_count, .. } => {
+            Event::Presence {
+                event,
+                member_count,
+                ..
+            } => {
                 assert_eq!(event, PresenceKind::Joined);
                 assert_eq!(member_count, 1);
             }
@@ -1098,7 +1354,11 @@ mod tests {
         }
         s.leave("presence", "codex").unwrap();
         match rx.recv().await.unwrap() {
-            Event::Presence { event, member_count, .. } => {
+            Event::Presence {
+                event,
+                member_count,
+                ..
+            } => {
                 assert_eq!(event, PresenceKind::Left);
                 assert_eq!(member_count, 0);
             }

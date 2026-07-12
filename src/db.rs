@@ -2,12 +2,12 @@
 //!
 //! This is a *best-effort mirror* of the in-memory state, never on the request
 //! hot path (see [`crate::state::AppState`]'s persist shims, which spawn these).
-//! Tables live in the `ai_agent_bridge` schema owned by `remote/libs/pg-defs`;
+//! Tables live in the `ai_agent_bridge` schema defined by `fiducia-interfaces`;
 //! we never create or migrate them here — migrations are human-approved. If the
 //! schema has not been applied yet, writes simply error and are logged.
 //!
-//! Table names come from the generated `dd_pg_defs` contract so this file tracks
-//! the canonical schema.
+//! Constants stay schema-qualified so the service does not depend on a mutable
+//! PostgreSQL search path.
 
 use std::sync::Arc;
 
@@ -22,10 +22,11 @@ pub struct Db {
     pool: PgPool,
 }
 
-// Schema-qualified table names, sourced from the pg-defs contract.
-use dd_pg_defs::{
-    AGENTS_TABLE, CHANNELS_TABLE, CHANNEL_MEMBERS_TABLE, MESSAGES_TABLE, SHARED_CONTEXT_TABLE,
-};
+const AGENTS_TABLE: &str = "ai_agent_bridge.agents";
+const CHANNELS_TABLE: &str = "ai_agent_bridge.channels";
+const CHANNEL_MEMBERS_TABLE: &str = "ai_agent_bridge.channel_members";
+const MESSAGES_TABLE: &str = "ai_agent_bridge.messages";
+const SHARED_CONTEXT_TABLE: &str = "ai_agent_bridge.shared_context";
 
 impl Db {
     pub async fn connect(url: &str) -> anyhow::Result<Self> {
@@ -51,7 +52,10 @@ impl Db {
         for row in rows {
             // Honor the in-memory channel cap even during a boot restore.
             if n >= state.config.max_channels {
-                tracing::warn!(loaded = n, "reached max_channels during restore; skipping the rest");
+                tracing::warn!(
+                    loaded = n,
+                    "reached max_channels during restore; skipping the rest"
+                );
                 break;
             }
             let slug: String = row.try_get("slug")?;
@@ -59,13 +63,29 @@ impl Db {
             let embedding_model: String = row.try_get("embedding_model").unwrap_or_default();
             let created_by: String = row.try_get("created_by").unwrap_or_default();
             let created_at: String = row.try_get("created_at").unwrap_or_default();
-            let meta: serde_json::Value = row.try_get("meta_data").unwrap_or_else(|_| serde_json::json!({}));
-            let embedding_json: serde_json::Value = row.try_get("embedding").unwrap_or_else(|_| serde_json::json!([]));
+            let meta: serde_json::Value = row
+                .try_get("meta_data")
+                .unwrap_or_else(|_| serde_json::json!({}));
+            let embedding_json: serde_json::Value = row
+                .try_get("embedding")
+                .unwrap_or_else(|_| serde_json::json!([]));
             let embedding: Vec<f32> = embedding_json
                 .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_f64().map(|f| f as f32))
+                        .collect()
+                })
                 .unwrap_or_default();
-            state.restore_channel(&slug, &topic, embedding, &embedding_model, &created_by, &created_at, meta);
+            state.restore_channel(
+                &slug,
+                &topic,
+                embedding,
+                &embedding_model,
+                &created_by,
+                &created_at,
+                meta,
+            );
             n += 1;
         }
         Ok(n)
@@ -125,7 +145,10 @@ impl Db {
     }
 
     pub async fn insert_message(&self, msg: &Message) -> anyhow::Result<()> {
-        let role = serde_json::to_value(msg.role)?.as_str().unwrap_or("user").to_string();
+        let role = serde_json::to_value(msg.role)?
+            .as_str()
+            .unwrap_or("user")
+            .to_string();
         let sql = format!(
             "insert into {MESSAGES_TABLE} \
                (channel_slug, channel_id, seq, from_agent_key, role, content, meta_data) \
@@ -145,7 +168,10 @@ impl Db {
     }
 
     pub async fn upsert_member(&self, slug: &str, member: &Member) -> anyhow::Result<()> {
-        let role = serde_json::to_value(member.role)?.as_str().unwrap_or("member").to_string();
+        let role = serde_json::to_value(member.role)?
+            .as_str()
+            .unwrap_or("member")
+            .to_string();
         let sql = format!(
             "insert into {CHANNEL_MEMBERS_TABLE} \
                (channel_slug, channel_id, agent_key, role) \
@@ -163,8 +189,14 @@ impl Db {
     }
 
     pub async fn remove_member(&self, slug: &str, agent_key: &str) -> anyhow::Result<()> {
-        let sql = format!("delete from {CHANNEL_MEMBERS_TABLE} where channel_slug = $1 and agent_key = $2");
-        sqlx::query(&sql).bind(slug).bind(agent_key).execute(&self.pool).await?;
+        let sql = format!(
+            "delete from {CHANNEL_MEMBERS_TABLE} where channel_slug = $1 and agent_key = $2"
+        );
+        sqlx::query(&sql)
+            .bind(slug)
+            .bind(agent_key)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 

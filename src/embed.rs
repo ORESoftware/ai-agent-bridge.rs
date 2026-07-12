@@ -28,7 +28,12 @@ struct RemoteEmbedder {
 }
 
 impl Embedder {
-    pub fn new(dim: usize, url: Option<String>, remote_model: String, bearer: Option<String>) -> Self {
+    pub fn new(
+        dim: usize,
+        url: Option<String>,
+        remote_model: String,
+        bearer: Option<String>,
+    ) -> Self {
         let remote = url.map(|url| RemoteEmbedder {
             url,
             model: remote_model,
@@ -85,8 +90,7 @@ impl RemoteEmbedder {
         }
         let resp = req.send().await?.error_for_status()?;
         let json: serde_json::Value = resp.json().await?;
-        extract_embedding(&json)
-            .ok_or_else(|| anyhow::anyhow!("no embedding field in response"))
+        extract_embedding(&json).ok_or_else(|| anyhow::anyhow!("no embedding field in response"))
     }
 }
 
@@ -157,7 +161,10 @@ pub fn local_embed(text: &str, dim: usize) -> Vec<f32> {
 
     // Character 3-grams add robustness to word-boundary and morphology noise
     // (e.g. "deploy" vs "deployment" share most trigrams).
-    let chars: Vec<char> = lower.chars().filter(|c| c.is_alphanumeric() || *c == ' ').collect();
+    let chars: Vec<char> = lower
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == ' ')
+        .collect();
     for window in chars.windows(3) {
         let gram: String = window.iter().collect();
         let h = fnv1a(gram.as_bytes());
@@ -234,7 +241,10 @@ mod tests {
         let unrelated = local_embed("baking sourdough bread at home", 256);
         let s_rel = cosine(&query, &related);
         let s_unrel = cosine(&query, &unrelated);
-        assert!(s_rel > s_unrel, "related {s_rel} should beat unrelated {s_unrel}");
+        assert!(
+            s_rel > s_unrel,
+            "related {s_rel} should beat unrelated {s_unrel}"
+        );
     }
 
     #[test]
