@@ -131,10 +131,11 @@ printf '{"op":"post","channel":"war-room","from":"codex","content":"deploying th
   stream, so **dedupe by `(channel, seq)`**. Always use the **canonical `slug`
   returned** by `create`/`resolve` for later calls (slugs are normalized).
 - **File-lease fencing.** Renew/release calls must present both `agent_key` and
-  `fencing_token`. Recursive leases conflict with descendant paths; expired
-  leases disappear lazily on the next lease operation or lookup. These leases
-  are live bridge state in the current release, so run one bridge writer unless
-  an external durable coordinator is added.
+  `fencing_token`. Without `FIDUCIA_CONTROL_PLANE_URL`, the compatibility API
+  keeps recursive leases in bridge memory, so run one bridge writer. With the
+  control plane configured, exact-path and atomic multi-path leases are
+  authoritative in `fiducia-node`; recursive and renew compatibility calls fail
+  explicitly instead of silently creating split ownership.
 
 ### Repository file leases
 
