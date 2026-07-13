@@ -102,6 +102,116 @@ async fn full_rest_flow_register_create_search_post_context() {
 }
 
 #[tokio::test]
+async fn file_leases_fence_writers_and_join_agents_to_paths() {
+    let base = common::spawn_http(common::state()).await;
+    let c = reqwest::Client::new();
+    for key in ["codex", "claude"] {
+        let (status, _) = post(
+            &c,
+            format!("{base}/agents/register"),
+            json!({ "agent_key": key, "kind": key }),
+        )
+        .await;
+        assert!(status.is_success());
+    }
+
+    let (status, acquired) = post(
+        &c,
+        format!("{base}/file-leases"),
+        json!({
+            "repository": "fiducia-cloud/fiducia-ai-agent-bridge.rs",
+            "path": "src",
+            "recursive": true,
+            "agent_key": "codex",
+            "purpose": "implement file ownership API",
+            "ttl_ms": 30_000
+        }),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 200);
+    let lease_id = acquired["lease"]["id"].as_str().unwrap();
+    let token = acquired["lease"]["fencing_token"].as_u64().unwrap();
+
+    // A recursive directory lease blocks a different agent on any child file.
+    let (status, conflict) = post(
+        &c,
+        format!("{base}/file-leases"),
+        json!({
+            "repository": "fiducia-cloud/fiducia-ai-agent-bridge.rs",
+            "path": "src/http.rs",
+            "agent_key": "claude",
+            "ttl_ms": 30_000
+        }),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 409);
+    assert_eq!(conflict["error"], "file_lease_conflict");
+
+    // File lookup returns the active lease and the full registered agent record.
+    let lookup = c
+        .get(format!("{base}/agents/by-file"))
+        .query(&[
+            ("repository", "fiducia-cloud/fiducia-ai-agent-bridge.rs"),
+            ("path", "src/http.rs"),
+        ])
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(lookup["assignments"][0]["agent"]["agent_key"], "codex");
+    assert_eq!(lookup["assignments"][0]["lease"]["path"], "src");
+
+    let (status, stale) = post(
+        &c,
+        format!("{base}/file-leases/{lease_id}/renew"),
+        json!({ "agent_key": "codex", "fencing_token": token + 1, "ttl_ms": 30_000 }),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 409);
+    assert_eq!(stale["error"], "stale_fencing_token");
+
+    let (status, _) = post(
+        &c,
+        format!("{base}/file-leases/{lease_id}/release"),
+        json!({ "agent_key": "codex", "fencing_token": token }),
+    )
+    .await;
+    assert!(status.is_success());
+
+    let (status, successor) = post(
+        &c,
+        format!("{base}/file-leases"),
+        json!({
+            "repository": "fiducia-cloud/fiducia-ai-agent-bridge.rs",
+            "path": "src/http.rs",
+            "agent_key": "claude",
+            "ttl_ms": 100
+        }),
+    )
+    .await;
+    assert!(status.is_success());
+    assert!(successor["lease"]["fencing_token"].as_u64().unwrap() > token);
+
+    // Expired leases disappear from file ownership lookups.
+    tokio::time::sleep(Duration::from_millis(125)).await;
+    let lookup = c
+        .get(format!("{base}/agents/by-file"))
+        .query(&[
+            ("repository", "fiducia-cloud/fiducia-ai-agent-bridge.rs"),
+            ("path", "src/http.rs"),
+        ])
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(lookup["assignments"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
 async fn claude_inbox_backward_compat() {
     let base = common::spawn_http(common::state()).await;
     let c = reqwest::Client::new();

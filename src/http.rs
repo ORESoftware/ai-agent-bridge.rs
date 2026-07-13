@@ -55,6 +55,13 @@ pub fn router(state: Arc<AppState>) -> Router {
     let api = Router::new()
         .route("/agents/register", post(register_agent))
         .route("/agents", get(list_agents))
+        .route("/agents/by-file", get(list_file_lease_holders))
+        .route(
+            "/file-leases",
+            get(list_file_lease_holders).post(acquire_file_lease),
+        )
+        .route("/file-leases/{lease_id}/renew", post(renew_file_lease))
+        .route("/file-leases/{lease_id}/release", post(release_file_lease))
         .route("/channels", get(list_channels).post(create_channel))
         .route("/channels/search", post(search_channels))
         .route("/channels/resolve", post(resolve_channel))
@@ -297,6 +304,93 @@ async fn register_agent(State(s): State<Arc<AppState>>, Json(req): Json<Register
 
 async fn list_agents(State(s): State<Arc<AppState>>) -> ApiResult {
     Ok(Json(json!({ "ok": true, "agents": s.list_agents() })))
+}
+
+// ---- repository path leases ------------------------------------------------
+
+fn default_file_lease_ttl_ms() -> u64 {
+    30_000
+}
+
+#[derive(Deserialize)]
+struct AcquireFileLeaseReq {
+    repository: String,
+    path: String,
+    agent_key: String,
+    #[serde(default = "default_file_lease_ttl_ms")]
+    ttl_ms: u64,
+    #[serde(default)]
+    recursive: bool,
+    #[serde(default)]
+    purpose: String,
+    #[serde(default)]
+    meta: serde_json::Value,
+}
+
+async fn acquire_file_lease(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<AcquireFileLeaseReq>,
+) -> ApiResult {
+    let lease = s.acquire_file_lease(
+        &req.repository,
+        &req.path,
+        &req.agent_key,
+        req.ttl_ms,
+        req.recursive,
+        &req.purpose,
+        req.meta,
+    )?;
+    Ok(Json(json!({ "ok": true, "lease": lease })))
+}
+
+#[derive(Deserialize)]
+struct MutateFileLeaseReq {
+    agent_key: String,
+    fencing_token: u64,
+    #[serde(default = "default_file_lease_ttl_ms")]
+    ttl_ms: u64,
+}
+
+async fn renew_file_lease(
+    State(s): State<Arc<AppState>>,
+    Path(lease_id): Path<String>,
+    Json(req): Json<MutateFileLeaseReq>,
+) -> ApiResult {
+    let lease = s.renew_file_lease(&lease_id, &req.agent_key, req.fencing_token, req.ttl_ms)?;
+    Ok(Json(json!({ "ok": true, "lease": lease })))
+}
+
+async fn release_file_lease(
+    State(s): State<Arc<AppState>>,
+    Path(lease_id): Path<String>,
+    Json(req): Json<MutateFileLeaseReq>,
+) -> ApiResult {
+    let lease = s.release_file_lease(&lease_id, &req.agent_key, req.fencing_token)?;
+    Ok(Json(
+        json!({ "ok": true, "released": true, "lease": lease }),
+    ))
+}
+
+#[derive(Deserialize, Default)]
+struct FileLeaseQuery {
+    repository: Option<String>,
+    path: Option<String>,
+    agent_key: Option<String>,
+    #[serde(default)]
+    include_descendants: bool,
+}
+
+async fn list_file_lease_holders(
+    State(s): State<Arc<AppState>>,
+    Query(query): Query<FileLeaseQuery>,
+) -> ApiResult {
+    let holders = s.file_lease_holders(
+        query.repository.as_deref(),
+        query.path.as_deref(),
+        query.agent_key.as_deref(),
+        query.include_descendants,
+    )?;
+    Ok(Json(json!({ "ok": true, "assignments": holders })))
 }
 
 // ---- channels ---------------------------------------------------------------

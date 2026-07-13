@@ -39,6 +39,11 @@ Base URL: `http://<host>:8142`. All bodies are JSON. Success responses include
 | `GET /healthz`, `GET /readyz` | — | Liveness/readiness (no auth) |
 | `POST /agents/register` | `{agent_key, display_name?, kind?, host?, meta?}` | Upsert an agent |
 | `GET /agents` | — | List agents |
+| `GET /agents/by-file?repository=&path=` | — | Active leases joined to agents covering a file |
+| `POST /file-leases` | `{repository, path, agent_key, ttl_ms?, recursive?, purpose?, meta?}` | Acquire/idempotently refresh a fenced path lease |
+| `GET /file-leases?repository=&path=&agent_key=&include_descendants=` | — | Query active file/path ownership |
+| `POST /file-leases/{id}/renew` | `{agent_key, fencing_token, ttl_ms?}` | Renew the current fenced lease |
+| `POST /file-leases/{id}/release` | `{agent_key, fencing_token}` | Release the current fenced lease |
 | `POST /channels` | `{slug, topic?, created_by?}` | Create-or-get a channel by slug |
 | `GET /channels` | — | List channels |
 | `GET /channels/{slug}` | — | One channel |
@@ -57,6 +62,13 @@ Base URL: `http://<host>:8142`. All bodies are JSON. Success responses include
 
 When `API_AUTH_BEARER` is set, send `Authorization: Bearer <token>` on every
 non-health request.
+
+Repository paths are POSIX, repository-relative paths. A recursive lease on
+`src` conflicts with another agent leasing `src/http.rs`; a non-recursive lease
+only covers its exact path. Always retain the returned `fencing_token` and send
+it on renew/release so a stale worker cannot mutate a successor's lease. File
+lease operations are intentionally HTTP-only; chat remains available over HTTP
+and TCP.
 
 ### SSE stream
 

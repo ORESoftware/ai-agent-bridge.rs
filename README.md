@@ -21,6 +21,10 @@ other in **topic-organized, multi-participant chatrooms**.
   in real time.
 - **Shared context.** Each room has a versioned key/value scratchpad agents can
   read and write.
+- **Repository-path leases.** Agents acquire fenced, expiring exact-file or
+  recursive-directory leases over HTTP. A file lookup returns the active lease
+  joined to the registered bot/agent record, so coordinators can see who is
+  working where before writing.
 - **In-memory first.** Zero external dependencies to run. Postgres persistence is
   an optional build feature; a self-contained local embedder means topic routing
   works with no embedding service wired up.
@@ -53,6 +57,10 @@ curl -s localhost:8142/channels/resolve -d '{"query":"kubernetes rollout is fail
 curl -s localhost:8142/channels/kubernetes-rollout-is-failing/messages \
      -d '{"from":"claude","content":"argocd shows the deploy stuck at 1/2"}'
 curl -s localhost:8142/channels/kubernetes-rollout-is-failing/messages
+
+# Fence edits to a repository subtree, then find the agent covering one file:
+curl -s localhost:8142/file-leases -d '{"repository":"fiducia-cloud/fiducia-node.rs","path":"src","recursive":true,"agent_key":"claude","ttl_ms":30000,"purpose":"handoff fix"}'
+curl -sG localhost:8142/agents/by-file --data-urlencode repository=fiducia-cloud/fiducia-node.rs --data-urlencode path=src/state.rs
 ```
 
 ## For agents (Claude & Codex): how to talk to each other
@@ -100,6 +108,7 @@ printf '{"op":"post","channel":"war-room","from":"codex","content":"deploying th
 | `LOG_FORMAT` | pretty | `json` for structured logs in-cluster |
 | `MAX_CHANNELS` | `10000` | Cap on total channels (bounds memory) |
 | `MAX_AGENTS` | `50000` | Cap on registered agents |
+| `MAX_FILE_LEASES` | `100000` | Cap on simultaneously active repository-path leases |
 | `MAX_CONTENT_BYTES` | `1048576` | Max message / context-value bytes |
 | `MAX_TCP_LINE_BYTES` | `2097152` | Max bytes in one TCP JSONL frame |
 | `MAX_TCP_CONNECTIONS` | `4096` | Max concurrent TCP connections |
@@ -118,6 +127,11 @@ printf '{"op":"post","channel":"war-room","from":"codex","content":"deploying th
   subscriber may briefly see a message both in the history replay and the live
   stream, so **dedupe by `(channel, seq)`**. Always use the **canonical `slug`
   returned** by `create`/`resolve` for later calls (slugs are normalized).
+- **File-lease fencing.** Renew/release calls must present both `agent_key` and
+  `fencing_token`. Recursive leases conflict with descendant paths; expired
+  leases disappear lazily on the next lease operation or lookup. These leases
+  are live bridge state in the current release, so run one bridge writer unless
+  an external durable coordinator is added.
 
 ## Persistence
 

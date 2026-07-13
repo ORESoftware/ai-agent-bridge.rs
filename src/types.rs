@@ -39,6 +39,34 @@ pub struct Agent {
     pub registered_at: Timestamp,
 }
 
+/// A time-bounded claim that an agent is working on a repository-relative path.
+/// `recursive` leases cover the named directory and every descendant; ordinary
+/// leases cover exactly one file/path. `fencing_token` changes whenever a new
+/// owner acquires the path, so stale workers cannot renew or release a successor.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FileLease {
+    pub id: String,
+    pub repository: String,
+    pub path: String,
+    pub recursive: bool,
+    pub agent_key: String,
+    #[serde(default)]
+    pub purpose: String,
+    #[serde(default)]
+    pub meta: serde_json::Value,
+    pub fencing_token: u64,
+    pub acquired_at: Timestamp,
+    pub expires_at: Timestamp,
+}
+
+/// File ownership lookup result, joining the active lease with the bridge's
+/// registered agent record so callers do not need a second request.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FileLeaseHolder {
+    pub lease: FileLease,
+    pub agent: Agent,
+}
+
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {

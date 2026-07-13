@@ -5,6 +5,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
 use tokio::sync::broadcast;
@@ -22,6 +23,11 @@ const MAX_CONTEXT_KEY_BYTES: usize = 200;
 const MAX_CONTEXT_KEYS: usize = 10_000;
 /// Max bytes for a channel topic (matches the DB `octet_length` CHECK).
 const MAX_TOPIC_BYTES: usize = 8192;
+const MAX_REPOSITORY_BYTES: usize = 512;
+const MAX_FILE_PATH_BYTES: usize = 4096;
+const MAX_FILE_PURPOSE_BYTES: usize = 1024;
+const MIN_FILE_LEASE_TTL_MS: u64 = 100;
+const MAX_FILE_LEASE_TTL_MS: u64 = 3_600_000;
 
 /// Retained size of a message for the per-channel byte budget: content + its
 /// serialized `meta` (the variable-size fields that actually accumulate), so a
@@ -65,6 +71,11 @@ struct ChannelState {
     history_limit: usize,
 }
 
+struct FileLeaseState {
+    lease: FileLease,
+    expires_at: Instant,
+}
+
 impl ChannelState {
     fn to_public(&self) -> Channel {
         Channel {
@@ -100,6 +111,8 @@ pub struct AppState {
     pub config: Config,
     pub embedder: Embedder,
     agents: RwLock<HashMap<String, Agent>>,
+    file_leases: RwLock<HashMap<String, FileLeaseState>>,
+    next_file_fencing_token: AtomicU64,
     channels: RwLock<HashMap<String, ChannelState>>,
     /// Live count of `inbox.jsonl` lines, so `GET /health` is O(1) instead of
     /// re-scanning the whole file on every (unauthenticated) request.
@@ -119,6 +132,8 @@ impl AppState {
             config,
             embedder,
             agents: RwLock::new(HashMap::new()),
+            file_leases: RwLock::new(HashMap::new()),
+            next_file_fencing_token: AtomicU64::new(0),
             channels: RwLock::new(HashMap::new()),
             inbox_count,
             #[cfg(feature = "postgres")]
@@ -196,6 +211,199 @@ impl AppState {
 
     pub fn list_agents(&self) -> Vec<Agent> {
         self.agents.read().values().cloned().collect()
+    }
+
+    // ---- repository path leases ---------------------------------------------
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn acquire_file_lease(
+        &self,
+        repository: &str,
+        path: &str,
+        agent_key: &str,
+        ttl_ms: u64,
+        recursive: bool,
+        purpose: &str,
+        meta: serde_json::Value,
+    ) -> BridgeResult<FileLease> {
+        let repository = normalize_repository(repository)?;
+        let path = normalize_file_path(path)?;
+        let agent_key = agent_key.trim().to_string();
+        if !self.agents.read().contains_key(&agent_key) {
+            return Err(BridgeError::AgentNotFound(agent_key));
+        }
+        let meta_bytes = serde_json::to_vec(&meta)
+            .map(|value| value.len())
+            .unwrap_or(usize::MAX);
+        if meta_bytes > self.config.max_content_bytes {
+            return Err(BridgeError::PayloadTooLarge {
+                what: "file lease meta",
+                limit: self.config.max_content_bytes,
+            });
+        }
+        let ttl_ms = normalize_file_lease_ttl(ttl_ms)?;
+        let now = Instant::now();
+        let mut leases = self.file_leases.write();
+        leases.retain(|_, value| value.expires_at > now);
+
+        if let Some(conflict) = leases.values().find(|value| {
+            value.lease.repository == repository
+                && value.lease.agent_key != agent_key
+                && lease_scopes_overlap(&value.lease.path, value.lease.recursive, &path, recursive)
+        }) {
+            return Err(BridgeError::FileLeaseConflict {
+                repository,
+                path,
+                holder: conflict.lease.agent_key.clone(),
+            });
+        }
+
+        if let Some(existing) = leases.values_mut().find(|value| {
+            value.lease.repository == repository
+                && value.lease.path == path
+                && value.lease.agent_key == agent_key
+        }) {
+            existing.expires_at = now + Duration::from_millis(ttl_ms);
+            existing.lease.expires_at = file_lease_expiry_ts(ttl_ms);
+            existing.lease.recursive = recursive;
+            existing.lease.purpose = normalized_purpose(purpose);
+            existing.lease.meta = meta;
+            return Ok(existing.lease.clone());
+        }
+
+        if leases.len() >= self.config.max_file_leases {
+            return Err(BridgeError::CapacityExceeded {
+                what: "file leases",
+                limit: self.config.max_file_leases,
+            });
+        }
+        let lease = FileLease {
+            id: new_id(),
+            repository,
+            path,
+            recursive,
+            agent_key,
+            purpose: normalized_purpose(purpose),
+            meta,
+            fencing_token: self
+                .next_file_fencing_token
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1),
+            acquired_at: now_ts(),
+            expires_at: file_lease_expiry_ts(ttl_ms),
+        };
+        leases.insert(
+            lease.id.clone(),
+            FileLeaseState {
+                lease: lease.clone(),
+                expires_at: now + Duration::from_millis(ttl_ms),
+            },
+        );
+        Ok(lease)
+    }
+
+    pub fn renew_file_lease(
+        &self,
+        lease_id: &str,
+        agent_key: &str,
+        fencing_token: u64,
+        ttl_ms: u64,
+    ) -> BridgeResult<FileLease> {
+        let ttl_ms = normalize_file_lease_ttl(ttl_ms)?;
+        let now = Instant::now();
+        let mut leases = self.file_leases.write();
+        leases.retain(|_, value| value.expires_at > now);
+        let value = leases
+            .get_mut(lease_id)
+            .ok_or_else(|| BridgeError::FileLeaseNotFound(lease_id.to_string()))?;
+        if value.lease.agent_key != agent_key.trim() {
+            return Err(BridgeError::FileLeaseOwnerMismatch {
+                lease_id: lease_id.to_string(),
+                agent: agent_key.trim().to_string(),
+            });
+        }
+        if value.lease.fencing_token != fencing_token {
+            return Err(BridgeError::StaleFencingToken(lease_id.to_string()));
+        }
+        value.expires_at = now + Duration::from_millis(ttl_ms);
+        value.lease.expires_at = file_lease_expiry_ts(ttl_ms);
+        Ok(value.lease.clone())
+    }
+
+    pub fn release_file_lease(
+        &self,
+        lease_id: &str,
+        agent_key: &str,
+        fencing_token: u64,
+    ) -> BridgeResult<FileLease> {
+        let now = Instant::now();
+        let mut leases = self.file_leases.write();
+        leases.retain(|_, value| value.expires_at > now);
+        let value = leases
+            .get(lease_id)
+            .ok_or_else(|| BridgeError::FileLeaseNotFound(lease_id.to_string()))?;
+        if value.lease.agent_key != agent_key.trim() {
+            return Err(BridgeError::FileLeaseOwnerMismatch {
+                lease_id: lease_id.to_string(),
+                agent: agent_key.trim().to_string(),
+            });
+        }
+        if value.lease.fencing_token != fencing_token {
+            return Err(BridgeError::StaleFencingToken(lease_id.to_string()));
+        }
+        Ok(leases
+            .remove(lease_id)
+            .expect("validated file lease exists")
+            .lease)
+    }
+
+    pub fn file_lease_holders(
+        &self,
+        repository: Option<&str>,
+        path: Option<&str>,
+        agent_key: Option<&str>,
+        include_descendants: bool,
+    ) -> BridgeResult<Vec<FileLeaseHolder>> {
+        let repository = repository.map(normalize_repository).transpose()?;
+        let path = path.map(normalize_file_path).transpose()?;
+        let now = Instant::now();
+        let mut leases = self.file_leases.write();
+        leases.retain(|_, value| value.expires_at > now);
+        let agents = self.agents.read();
+        let mut holders: Vec<FileLeaseHolder> = leases
+            .values()
+            .filter(|value| {
+                repository
+                    .as_ref()
+                    .is_none_or(|repo| value.lease.repository == *repo)
+                    && path.as_ref().is_none_or(|query| {
+                        lease_scopes_overlap(
+                            &value.lease.path,
+                            value.lease.recursive,
+                            query,
+                            include_descendants,
+                        )
+                    })
+                    && agent_key.is_none_or(|agent| value.lease.agent_key == agent)
+            })
+            .filter_map(|value| {
+                agents
+                    .get(&value.lease.agent_key)
+                    .cloned()
+                    .map(|agent| FileLeaseHolder {
+                        lease: value.lease.clone(),
+                        agent,
+                    })
+            })
+            .collect();
+        holders.sort_by(|a, b| {
+            (&a.lease.repository, &a.lease.path, &a.lease.agent_key).cmp(&(
+                &b.lease.repository,
+                &b.lease.path,
+                &b.lease.agent_key,
+            ))
+        });
+        Ok(holders)
     }
 
     // ---- channels -------------------------------------------------------------
@@ -866,6 +1074,85 @@ impl AppState {
     fn persist_message(&self, _message: &Message) {}
     #[cfg(not(feature = "postgres"))]
     fn persist_context(&self, _slug: &str, _entry: &ContextEntry) {}
+}
+
+fn normalize_repository(value: &str) -> BridgeResult<String> {
+    let value = value.trim().trim_end_matches('/');
+    if value.is_empty() {
+        return Err(BridgeError::BadRequest("repository is required".into()));
+    }
+    if value.len() > MAX_REPOSITORY_BYTES {
+        return Err(BridgeError::PayloadTooLarge {
+            what: "repository",
+            limit: MAX_REPOSITORY_BYTES,
+        });
+    }
+    if value.chars().any(char::is_control) {
+        return Err(BridgeError::BadRequest(
+            "repository contains control characters".into(),
+        ));
+    }
+    Ok(value.to_string())
+}
+
+fn normalize_file_path(value: &str) -> BridgeResult<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(BridgeError::BadRequest("path is required".into()));
+    }
+    if value.len() > MAX_FILE_PATH_BYTES {
+        return Err(BridgeError::PayloadTooLarge {
+            what: "file path",
+            limit: MAX_FILE_PATH_BYTES,
+        });
+    }
+    if value.starts_with('/') || value.contains('\\') || value.chars().any(char::is_control) {
+        return Err(BridgeError::BadRequest(
+            "path must be a repository-relative POSIX path".into(),
+        ));
+    }
+    let mut parts = Vec::new();
+    for part in value.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                return Err(BridgeError::BadRequest(
+                    "path must not traverse outside the repository".into(),
+                ))
+            }
+            other => parts.push(other),
+        }
+    }
+    if parts.is_empty() {
+        return Err(BridgeError::BadRequest("path is required".into()));
+    }
+    Ok(parts.join("/"))
+}
+
+fn normalize_file_lease_ttl(ttl_ms: u64) -> BridgeResult<u64> {
+    if !(MIN_FILE_LEASE_TTL_MS..=MAX_FILE_LEASE_TTL_MS).contains(&ttl_ms) {
+        return Err(BridgeError::BadRequest(format!(
+            "ttl_ms must be between {MIN_FILE_LEASE_TTL_MS} and {MAX_FILE_LEASE_TTL_MS}"
+        )));
+    }
+    Ok(ttl_ms)
+}
+
+fn normalized_purpose(value: &str) -> String {
+    let mut value = value.trim().to_string();
+    truncate_bytes(&mut value, MAX_FILE_PURPOSE_BYTES);
+    value
+}
+
+fn file_lease_expiry_ts(ttl_ms: u64) -> Timestamp {
+    (chrono::Utc::now() + chrono::Duration::milliseconds(ttl_ms as i64))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+fn lease_scopes_overlap(a_path: &str, a_recursive: bool, b_path: &str, b_recursive: bool) -> bool {
+    a_path == b_path
+        || (a_recursive && b_path.starts_with(&format!("{a_path}/")))
+        || (b_recursive && a_path.starts_with(&format!("{b_path}/")))
 }
 
 /// Lowercase, hyphenate, and trim a free-text topic into a slug.
