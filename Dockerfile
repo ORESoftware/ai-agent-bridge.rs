@@ -1,6 +1,6 @@
 # Multi-stage build: compile the release binary (with the postgres feature) on
 # the Rust image, then ship it on a minimal non-root distroless runtime.
-FROM rust:1.95.0-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS build
+FROM rust:1.97.0-bookworm@sha256:7d0723df719e7f213b69dc7c8c595985c3f4b060cfbee4f7bc0e347a86fe3b6a AS build
 WORKDIR /workspace
 COPY fiducia-ai-agent-bridge.rs/ fiducia-ai-agent-bridge.rs/
 RUN cargo build --release --locked --features postgres --manifest-path fiducia-ai-agent-bridge.rs/Cargo.toml
