@@ -23,9 +23,7 @@ pub struct ControlPlaneResponse {
 
 impl ControlPlaneClient {
     pub fn from_config(config: &Config) -> Option<Self> {
-        let Some(base_url) = config.control_plane_url.as_deref() else {
-            return None;
-        };
+        let base_url = config.control_plane_url.as_deref()?;
         let base_url = base_url.trim().trim_end_matches('/');
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(config.control_plane_timeout_secs))

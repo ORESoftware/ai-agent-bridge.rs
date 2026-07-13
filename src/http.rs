@@ -370,8 +370,8 @@ async fn acquire_file_leases(
     State(s): State<Arc<AppState>>,
     Json(req): Json<AcquireFileLeasesReq>,
 ) -> Response {
-    if let Err(response) = require_registered_agent(&s, &req.agent_key) {
-        return response;
+    if let Err(error) = require_registered_agent(&s, &req.agent_key) {
+        return error.into_response();
     }
     let Some(control_plane) = &s.control_plane else {
         return ApiError(BridgeError::ControlPlaneNotConfigured).into_response();
@@ -393,8 +393,8 @@ async fn acquire_compatible_file_lease(
     State(s): State<Arc<AppState>>,
     Json(req): Json<AcquireCompatibleFileLeaseReq>,
 ) -> Response {
-    if let Err(response) = require_registered_agent(&s, &req.agent_key) {
-        return response;
+    if let Err(error) = require_registered_agent(&s, &req.agent_key) {
+        return error.into_response();
     }
     if let Some(control_plane) = &s.control_plane {
         if req.recursive {
@@ -512,11 +512,13 @@ async fn get_or_list_file_lease_holders(
     }
 }
 
-fn require_registered_agent(state: &AppState, agent_key: &str) -> Result<(), Response> {
+fn require_registered_agent(state: &AppState, agent_key: &str) -> Result<(), ApiError> {
     if state.get_agent(agent_key.trim()).is_some() {
         Ok(())
     } else {
-        Err(ApiError(BridgeError::AgentNotFound(agent_key.trim().to_string())).into_response())
+        Err(ApiError(BridgeError::AgentNotFound(
+            agent_key.trim().to_string(),
+        )))
     }
 }
 
