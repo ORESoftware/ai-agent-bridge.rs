@@ -20,3 +20,11 @@ target/
 
 # Logs
 *.log
+
+# --- hardened baseline (auto) ---
+Thumbs.db
+tmp/
+.direnv/
+*.pdb
+.cargo-target-*/
+**/.gradle/
