@@ -22,8 +22,14 @@ pub fn state() -> Arc<AppState> {
 }
 
 pub fn state_with(cfg: Config) -> Arc<AppState> {
-    let embedder = Embedder::new(cfg.embed_dim, None, "local".into(), None);
-    AppState::new(cfg, embedder)
+    let embedder = Embedder::new(
+        cfg.embed_dim,
+        None,
+        "local".into(),
+        None,
+        cfg.max_embedding_response_bytes,
+    );
+    AppState::new(cfg, embedder).unwrap()
 }
 
 pub fn unique_tmp_dir() -> std::path::PathBuf {

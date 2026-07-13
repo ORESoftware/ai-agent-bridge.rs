@@ -127,10 +127,11 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(config: Config, embedder: Embedder) -> Arc<Self> {
-        let inbox_count = AtomicU64::new(crate::compat::inbox_count(&config.inbox_dir) as u64);
+    pub fn new(config: Config, embedder: Embedder) -> std::io::Result<Arc<Self>> {
+        crate::compat::prepare_inbox(&config.inbox_dir)?;
+        let inbox_count = AtomicU64::new(crate::compat::inbox_count(&config.inbox_dir)? as u64);
         let control_plane = crate::control_plane::ControlPlaneClient::from_config(&config);
-        Arc::new(Self {
+        Ok(Arc::new(Self {
             config,
             embedder,
             control_plane,
@@ -143,7 +144,7 @@ impl AppState {
             db: None,
             #[cfg(feature = "postgres")]
             persist_sem: Arc::new(tokio::sync::Semaphore::new(256)),
-        })
+        }))
     }
 
     /// Append a message to the claude-inbox `inbox.jsonl` and bump the counter.
@@ -1205,8 +1206,14 @@ mod tests {
     fn state_cfg(f: impl FnOnce(&mut Config)) -> Arc<AppState> {
         let mut cfg = Config::in_memory();
         f(&mut cfg);
-        let embedder = Embedder::new(cfg.embed_dim, None, "local".into(), None);
-        AppState::new(cfg, embedder)
+        let embedder = Embedder::new(
+            cfg.embed_dim,
+            None,
+            "local".into(),
+            None,
+            cfg.max_embedding_response_bytes,
+        );
+        AppState::new(cfg, embedder).unwrap()
     }
 
     // Exercises the file-lease coordination the control-plane proxies to (an

@@ -34,9 +34,12 @@ other in **topic-organized, multi-participant chatrooms**.
 ## Quickstart
 
 ```sh
-cargo run
+HOST=127.0.0.1 cargo run --locked
 # HTTP on :8142, TCP on :8143   (override with HTTP_PORT / TCP_PORT)
 ```
+
+The explicit loopback bind is intentional: the service refuses a non-loopback
+listener unless `API_AUTH_BEARER` is configured.
 
 The repository pins `ORESoftware/flags-2-env` for CLI-to-environment mapping:
 
@@ -108,7 +111,8 @@ in a process listing.
 | `EMBEDDINGS_URL` | _(unset)_ | Optional OpenAI-style embeddings endpoint; falls back to the built-in deterministic local embedder |
 | `EMBEDDINGS_MODEL` | `local-hash-v1` | Model label / remote model name |
 | `EMBEDDINGS_API_AUTH_BEARER` (alias `EMBEDDINGS_BEARER`) | _(unset)_ | **Secret.** Bearer token for the remote embeddings endpoint |
-| `EMBED_DIM` | `256` | Local embedding width (capped at 8192) |
+| `EMBED_DIM` | `256` | Local and required remote embedding width (capped at 8192) |
+| `MAX_EMBEDDING_RESPONSE_BYTES` | `1048576` | Max remote embedding response bytes before local fallback (capped at 16777216) |
 | `RESOLVE_THRESHOLD` | `0.72` | Cosine below which `resolve` mints a new topic (clamped to 0.0–1.0) |
 | `HISTORY_LIMIT` | `1000` | Recent messages retained per channel in memory |
 | `DATABASE_URL` (alias `RDS_DATABASE_URL`) | _(unset)_ | **Secret.** Postgres URL; only used when built `--features postgres` |
@@ -116,7 +120,7 @@ in a process listing.
 | `FIDUCIA_CONTROL_PLANE_SECRET` (alias `FIDUCIA_INTERNAL_SECRET`) | _(unset)_ | **Secret.** Shared secret sent to the control plane as `x-internal-auth`. Must be set together with `FIDUCIA_CONTROL_PLANE_URL` |
 | `CONTROL_PLANE_TIMEOUT_SECS` | `10` | Timeout for bridge-to-control-plane HTTP requests |
 | `AI_AGENT_BRIDGE_TOKEN` (alias `CLAUDE_INBOX_TOKEN`) | _(unset)_ | **Secret.** Bearer for the legacy `POST /claude` inbox route |
-| `AI_AGENT_BRIDGE_DIR` (alias `CLAUDE_INBOX_DIR`) | `/tmp/claude_bridge` | Directory holding `inbox.jsonl` for the legacy claude-inbox contract |
+| `AI_AGENT_BRIDGE_DIR` (alias `CLAUDE_INBOX_DIR`) | `$XDG_STATE_HOME/fiducia-ai-agent-bridge/claude-inbox` or `$HOME/.local/state/fiducia-ai-agent-bridge/claude-inbox` | Absolute private directory holding `inbox.jsonl` for the legacy claude-inbox contract |
 | `LOG_FORMAT` | pretty | `json` for structured logs in-cluster |
 | `MAX_CHANNELS` | `10000` | Cap on total channels (bounds memory) |
 | `MAX_AGENTS` | `50000` | Cap on registered agents |
@@ -154,6 +158,16 @@ env-only and never appear in a process's argument list.
   TCP frame length, and TCP connection count are all bounded (see the table) so a
   hostile or buggy client cannot exhaust memory. Over-limit requests get `413`
   (`payload_too_large`) or `429` (`capacity_exceeded`).
+- **Remote embeddings.** Responses are streamed into a bounded buffer before
+  JSON parsing. A response larger than `MAX_EMBEDDING_RESPONSE_BYTES`, a vector
+  wider than 8192, or a vector whose width differs from `EMBED_DIM` is discarded
+  and routing falls back to the bounded local embedder.
+- **Compatibility inbox storage.** Startup creates the inbox directory and file
+  with modes `0700` and `0600`. Directory/file symlinks, non-regular files,
+  hard-linked files, or objects owned by another user are refused using
+  no-follow descriptor-relative opens. Existing owner-matching modes are
+  tightened automatically. Set an absolute `AI_AGENT_BRIDGE_DIR` to preserve a
+  legacy watcher location.
 - **Auth.** When `API_AUTH_BEARER` is set it gates every non-health route on both
   transports (TCP requires an `auth` handshake first, within
   `TCP_AUTH_DEADLINE_SECS`); `POST /claude` also honors it. Token comparison is
@@ -236,9 +250,11 @@ keep working:
 - `GET /health` → `{ok, service, port, inbox_messages, auth}`.
 - `POST /claude` (Bearer, if `AI_AGENT_BRIDGE_TOKEN`/`CLAUDE_INBOX_TOKEN` is set) with
   `{"prompt","from","topic"}` appends a `{id, ts, from, topic, prompt}` line to
-  `inbox.jsonl` (in `AI_AGENT_BRIDGE_DIR`/`CLAUDE_INBOX_DIR`, default
-  `/tmp/claude_bridge`) and returns `{queued, id, note}`. As a superset bonus, the
-  message is also mirrored onto the chat bus (a channel named after `topic`).
+  `inbox.jsonl` (in the private `AI_AGENT_BRIDGE_DIR`/`CLAUDE_INBOX_DIR` state
+  directory described above) and returns `{queued, id, note}`. As a superset
+  bonus, the message is also mirrored onto the chat bus (a channel named after
+  `topic`). The wire payload and JSONL field order remain unchanged; only the
+  default storage location and filesystem safety policy changed.
 
 ## Deployment
 
@@ -249,7 +265,7 @@ included Dockerfile. HTTP and TCP are independently exposed on ports 8142 and
 ## Development
 
 ```sh
-cargo test          # 47 unit + integration tests (no DB needed)
+cargo test          # unit + integration tests (no DB needed)
 cargo build --release --locked
 ```
 

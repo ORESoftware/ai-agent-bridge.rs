@@ -11,3 +11,6 @@ required).
   multi-agent streaming group chat, and the 32-member cap bounce over a socket.
 - `hardening.rs` — security and resource-limit tests: auth gating, oversized
   payloads, connection/frame caps, and other abuse-resistance checks.
+
+Module-level tests in `src/compat.rs` and `src/embed.rs` additionally exercise
+private no-follow inbox storage and bounded remote embedding responses.

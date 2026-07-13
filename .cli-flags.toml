@@ -36,6 +36,12 @@ aliases = ["embed-dim"]
 type = "integer"
 help = "Embedding vector dimension."
 
+[flags.max-embedding-response-bytes]
+env = "MAX_EMBEDDING_RESPONSE_BYTES"
+aliases = ["max-embedding-response-bytes"]
+type = "integer"
+help = "Maximum bytes accepted from one remote embedding HTTP response."
+
 [flags.embeddings-url]
 env = "EMBEDDINGS_URL"
 aliases = ["embeddings-url"]
@@ -62,7 +68,7 @@ help = "Cosine similarity below which resolve mints a new topic (0.0-1.0, defaul
 env = "AI_AGENT_BRIDGE_DIR"
 aliases = ["inbox-dir"]
 type = "string"
-help = "Directory holding inbox.jsonl for the legacy claude-inbox contract (default /tmp/claude_bridge)."
+help = "Absolute private directory holding inbox.jsonl for the legacy claude-inbox contract."
 
 [flags.history-limit]
 env = "HISTORY_LIMIT"

@@ -30,6 +30,7 @@ async fn main() -> anyhow::Result<()> {
         config.embeddings_url.clone(),
         config.embeddings_model.clone(),
         config.embeddings_bearer.clone(),
+        config.max_embedding_response_bytes,
     );
 
     let state = build_state(config.clone(), embedder).await?;
@@ -80,7 +81,7 @@ async fn build_state(config: Config, embedder: Embedder) -> anyhow::Result<Arc<A
             None
         }
     };
-    let state = AppState::new(config, embedder).with_db(db.clone());
+    let state = AppState::new(config, embedder)?.with_db(db.clone());
     if let Some(db) = &db {
         match db.load_channels(&state).await {
             Ok(n) => info!(channels = n, "restored channels from postgres"),
@@ -92,7 +93,7 @@ async fn build_state(config: Config, embedder: Embedder) -> anyhow::Result<Arc<A
 
 #[cfg(not(feature = "postgres"))]
 async fn build_state(config: Config, embedder: Embedder) -> anyhow::Result<Arc<AppState>> {
-    Ok(AppState::new(config, embedder))
+    Ok(AppState::new(config, embedder)?)
 }
 
 fn init_tracing() {
