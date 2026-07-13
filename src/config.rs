@@ -123,7 +123,7 @@ impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let host = env_or("HOST", "0.0.0.0")
             .parse::<IpAddr>()
-            .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+            .map_err(|error| anyhow::anyhow!("HOST is not a valid IP address: {error}"))?;
 
         let http_port = env_opt("HTTP_PORT")
             .or_else(|| env_opt("PORT"))
@@ -151,20 +151,32 @@ impl Config {
             .map(|t| t.clamp(0.0, 1.0))
             .unwrap_or(0.72);
 
+        let api_auth_bearer = env_opt("API_AUTH_BEARER");
+        if !host.is_loopback() && api_auth_bearer.is_none() {
+            anyhow::bail!("API_AUTH_BEARER must be configured when HOST is not loopback");
+        }
+        let control_plane_url = env_opt("FIDUCIA_CONTROL_PLANE_URL");
+        let control_plane_secret =
+            env_opt("FIDUCIA_CONTROL_PLANE_SECRET").or_else(|| env_opt("FIDUCIA_INTERNAL_SECRET"));
+        if control_plane_url.is_some() != control_plane_secret.is_some() {
+            anyhow::bail!(
+                "FIDUCIA_CONTROL_PLANE_URL and FIDUCIA_CONTROL_PLANE_SECRET must be configured together"
+            );
+        }
+
         Ok(Self {
             host,
             http_port,
             tcp_port,
-            api_auth_bearer: env_opt("API_AUTH_BEARER"),
+            api_auth_bearer,
             embeddings_url: env_opt("EMBEDDINGS_URL"),
             embeddings_model: env_or("EMBEDDINGS_MODEL", "local-hash-v1"),
             embeddings_bearer: env_opt("EMBEDDINGS_API_AUTH_BEARER")
                 .or_else(|| env_opt("EMBEDDINGS_BEARER")),
             embed_dim,
             database_url: env_opt("DATABASE_URL").or_else(|| env_opt("RDS_DATABASE_URL")),
-            control_plane_url: env_opt("FIDUCIA_CONTROL_PLANE_URL"),
-            control_plane_secret: env_opt("FIDUCIA_CONTROL_PLANE_SECRET")
-                .or_else(|| env_opt("FIDUCIA_INTERNAL_SECRET")),
+            control_plane_url,
+            control_plane_secret,
             control_plane_timeout_secs: env_usize("CONTROL_PLANE_TIMEOUT_SECS", 10) as u64,
             history_limit,
             resolve_threshold,
