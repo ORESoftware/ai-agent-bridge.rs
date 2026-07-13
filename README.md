@@ -260,7 +260,10 @@ keep working:
 
 The service is customer-self-hostable with `docker compose up --build` or the
 included Dockerfile. HTTP and TCP are independently exposed on ports 8142 and
-8143; set `API_AUTH_BEARER` outside local development.
+8143; set `API_AUTH_BEARER` outside local development. The image builds with an
+exact Rust release and locked dependencies, then runs explicitly as numeric
+UID/GID `65532:65532` in the distroless non-root stage. Dependabot tracks Cargo,
+actions, and Docker inputs weekly.
 
 ## Development
 
