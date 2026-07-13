@@ -94,28 +94,59 @@ printf '{"op":"post","channel":"war-room","from":"codex","content":"deploying th
 
 ## Configuration
 
+Every setting is sourced from the environment (`Config::from_env`, `src/config.rs`).
+Secret-bearing vars (tokens, secrets, DB URLs) are **env-only by design** — they are
+listed under `[env].ignore` in `.cli-flags.toml` so they never surface as CLI flags
+in a process listing.
+
 | Env | Default | Meaning |
 |-----|---------|---------|
-| `HOST` | `0.0.0.0` | Bind address for both listeners |
-| `HTTP_PORT` | `8142` | REST + SSE port |
+| `HOST` | `0.0.0.0` | Bind address for both listeners. A non-loopback `HOST` **requires** `API_AUTH_BEARER` (startup errors out otherwise) |
+| `HTTP_PORT` (alias `PORT`) | `8142` | REST + SSE port |
 | `TCP_PORT` | `8143` | JSONL streaming port |
-| `API_AUTH_BEARER` | _(unset)_ | If set, all non-health HTTP routes and TCP connections must present this bearer token |
+| `API_AUTH_BEARER` | _(unset)_ | **Secret.** If set, all non-health HTTP routes, `POST /claude`, and TCP connections must present this bearer token. Required when `HOST` is non-loopback |
 | `EMBEDDINGS_URL` | _(unset)_ | Optional OpenAI-style embeddings endpoint; falls back to the built-in deterministic local embedder |
 | `EMBEDDINGS_MODEL` | `local-hash-v1` | Model label / remote model name |
-| `EMBED_DIM` | `256` | Local embedding width |
-| `RESOLVE_THRESHOLD` | `0.72` | Cosine below which `resolve` mints a new topic |
-| `DATABASE_URL` | _(unset)_ | Postgres URL; only used when built `--features postgres` |
+| `EMBEDDINGS_API_AUTH_BEARER` (alias `EMBEDDINGS_BEARER`) | _(unset)_ | **Secret.** Bearer token for the remote embeddings endpoint |
+| `EMBED_DIM` | `256` | Local embedding width (capped at 8192) |
+| `RESOLVE_THRESHOLD` | `0.72` | Cosine below which `resolve` mints a new topic (clamped to 0.0–1.0) |
+| `HISTORY_LIMIT` | `1000` | Recent messages retained per channel in memory |
+| `DATABASE_URL` (alias `RDS_DATABASE_URL`) | _(unset)_ | **Secret.** Postgres URL; only used when built `--features postgres` |
 | `FIDUCIA_CONTROL_PLANE_URL` | _(unset)_ | Agent control-plane base URL for repository file leases and holder lookup |
-| `FIDUCIA_CONTROL_PLANE_SECRET` | _(unset)_ | Shared secret sent to the control plane as `x-internal-auth` |
+| `FIDUCIA_CONTROL_PLANE_SECRET` (alias `FIDUCIA_INTERNAL_SECRET`) | _(unset)_ | **Secret.** Shared secret sent to the control plane as `x-internal-auth`. Must be set together with `FIDUCIA_CONTROL_PLANE_URL` |
 | `CONTROL_PLANE_TIMEOUT_SECS` | `10` | Timeout for bridge-to-control-plane HTTP requests |
+| `AI_AGENT_BRIDGE_TOKEN` (alias `CLAUDE_INBOX_TOKEN`) | _(unset)_ | **Secret.** Bearer for the legacy `POST /claude` inbox route |
+| `AI_AGENT_BRIDGE_DIR` (alias `CLAUDE_INBOX_DIR`) | `/tmp/claude_bridge` | Directory holding `inbox.jsonl` for the legacy claude-inbox contract |
 | `LOG_FORMAT` | pretty | `json` for structured logs in-cluster |
 | `MAX_CHANNELS` | `10000` | Cap on total channels (bounds memory) |
 | `MAX_AGENTS` | `50000` | Cap on registered agents |
 | `MAX_FILE_LEASES` | `100000` | Cap on simultaneously active repository-path leases |
 | `MAX_CONTENT_BYTES` | `1048576` | Max message / context-value bytes |
+| `MAX_CHANNEL_HISTORY_BYTES` | `8388608` | Max retained message bytes per channel history ring |
 | `MAX_TCP_LINE_BYTES` | `2097152` | Max bytes in one TCP JSONL frame |
 | `MAX_TCP_CONNECTIONS` | `4096` | Max concurrent TCP connections |
 | `MAX_HTTP_BODY_BYTES` | `2097152` | Max HTTP request body bytes |
+| `TCP_AUTH_DEADLINE_SECS` | `15` | Seconds an unauthenticated TCP connection has to present valid auth |
+| `TCP_IDLE_DEADLINE_SECS` | `300` | Seconds an authed-but-unsubscribed TCP connection may idle before being dropped |
+
+### Config via CLI flags (flags-2-env)
+
+Non-secret settings can be passed as CLI flags instead of exported env vars. The
+pinned [`ORESoftware/flags-2-env`](https://github.com/ORESoftware/flags-2-env)
+submodule (`vendor/flags-2-env`, wired via `.gitmodules`) reads `.cli-flags.toml`
+and translates each `--flag` into the environment variable the service reads:
+
+```sh
+git submodule update --init --recursive
+make -C vendor/flags-2-env all
+scripts/with-flags2env.sh --http-port=8142 --max-channels=5000 -- cargo run --locked
+```
+
+Every operational knob in the table above has a matching `[flags.*]` entry in
+`.cli-flags.toml`. Secret-bearing vars (`API_AUTH_BEARER`, `DATABASE_URL`,
+`FIDUCIA_CONTROL_PLANE_SECRET`, the inbox/embeddings tokens, …) are deliberately
+**omitted** from the flag set and listed under `[env].ignore`, so they stay
+env-only and never appear in a process's argument list.
 
 ### Hardening notes
 
@@ -124,18 +155,45 @@ printf '{"op":"post","channel":"war-room","from":"codex","content":"deploying th
   hostile or buggy client cannot exhaust memory. Over-limit requests get `413`
   (`payload_too_large`) or `429` (`capacity_exceeded`).
 - **Auth.** When `API_AUTH_BEARER` is set it gates every non-health route on both
-  transports (TCP requires an `auth` handshake first); `POST /claude` also honors
-  it. Token comparison is constant-time.
+  transports (TCP requires an `auth` handshake first, within
+  `TCP_AUTH_DEADLINE_SECS`); `POST /claude` also honors it. Token comparison is
+  constant-time. **Binding to a non-loopback `HOST` requires `API_AUTH_BEARER`** —
+  the process refuses to start otherwise (`src/config.rs`), so an
+  externally-reachable listener can never come up unauthenticated.
+- **Unauthenticated endpoints.** Only liveness/readiness and info routes are open
+  regardless of auth: `GET /healthz`, `GET /readyz`, `GET /health` (legacy inbox
+  health), and `GET /` (a static service/index blurb). They expose no channel,
+  message, agent, or lease data. Every mutating and data-bearing route sits behind
+  the auth layer; `POST /claude` is open only when neither `API_AUTH_BEARER` nor
+  `AI_AGENT_BRIDGE_TOKEN` is configured (legacy local-only default).
 - **Client contract.** Messages carry a per-channel monotonic `seq`; a live
   subscriber may briefly see a message both in the history replay and the live
   stream, so **dedupe by `(channel, seq)`**. Always use the **canonical `slug`
   returned** by `create`/`resolve` for later calls (slugs are normalized).
-- **File-lease fencing.** Renew/release calls must present both `agent_key` and
-  `fencing_token`. Without `FIDUCIA_CONTROL_PLANE_URL`, the compatibility API
-  keeps recursive leases in bridge memory, so run one bridge writer. With the
-  control plane configured, exact-path and atomic multi-path leases are
-  authoritative in `fiducia-node`; recursive and renew compatibility calls fail
-  explicitly instead of silently creating split ownership.
+- **File-lease fencing.** Fencing tokens are **server-issued and monotonic** (a
+  process-wide counter; clients cannot supply their own), and every fenced op
+  (`renew`, `release`) validates both `agent_key` ownership *and* an exact
+  `fencing_token` match before mutating — a forged, guessed, or stale token is
+  rejected (`stale_fencing_token` / `file_lease_owner_mismatch`). Without
+  `FIDUCIA_CONTROL_PLANE_URL`, the compatibility API keeps recursive leases in
+  bridge memory, so run one bridge writer (in-memory tokens restart from 1 on
+  process restart, but so do the leases). With the control plane configured,
+  exact-path and atomic multi-path leases are authoritative in `fiducia-node`;
+  recursive and renew compatibility calls fail explicitly instead of silently
+  creating split ownership.
+
+### Security advisories
+
+`cargo audit` is clean except for one **known, accepted** advisory:
+
+- **`rsa` 0.9.x — RUSTSEC-2023-0071 (Marvin timing side-channel, medium/5.9).**
+  Pulled in *transitively* only under `--features postgres` (via
+  `sqlx-postgres`'s TLS/auth path) and **has no fixed upstream release**. The
+  default build does not compile `sqlx` at all. In deployment the bridge talks to
+  Postgres over a trusted in-cluster network, so the timing oracle is not
+  remotely exploitable in practice. Tracked and accepted until an upstream fix
+  ships; re-run `cargo audit` on dependency bumps to catch any *newly* fixable
+  advisory.
 
 ### Repository file leases
 
@@ -191,7 +249,7 @@ included Dockerfile. HTTP and TCP are independently exposed on ports 8142 and
 ## Development
 
 ```sh
-cargo test          # 21 unit + integration tests (no DB needed)
+cargo test          # 47 unit + integration tests (no DB needed)
 cargo build --release --locked
 ```
 
