@@ -7,6 +7,7 @@
 
 pub mod compat;
 pub mod config;
+pub mod control_plane;
 pub mod embed;
 pub mod error;
 pub mod http;

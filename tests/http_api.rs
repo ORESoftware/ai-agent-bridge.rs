@@ -25,6 +25,135 @@ async fn get(client: &reqwest::Client, url: String) -> Value {
         .unwrap()
 }
 
+async fn spawn_fake_control_plane() -> String {
+    use axum::{
+        extract::Query,
+        http::{HeaderMap, StatusCode},
+        routing::{get, post},
+        Json, Router,
+    };
+    use std::collections::HashMap;
+
+    async fn acquire(headers: HeaderMap, Json(body): Json<Value>) -> (StatusCode, Json<Value>) {
+        if headers.get("x-internal-auth").and_then(|v| v.to_str().ok()) != Some("bridge-secret") {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error":"unauthorized"})),
+            );
+        }
+        (
+            StatusCode::CREATED,
+            Json(json!({
+                "result": {"output": {
+                    "acquired": true,
+                    "holder": body["agent_key"],
+                    "keys": ["git-file/fiducia-ai-agent-bridge.rs/src/http.rs"],
+                    "fencing_token": 41,
+                    "lease_expires_ms": 999999
+                }},
+                "echo": body
+            })),
+        )
+    }
+
+    async fn lookup(
+        headers: HeaderMap,
+        Query(query): Query<HashMap<String, String>>,
+    ) -> (StatusCode, Json<Value>) {
+        if headers.get("x-internal-auth").and_then(|v| v.to_str().ok()) != Some("bridge-secret") {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error":"unauthorized"})),
+            );
+        }
+        (
+            StatusCode::OK,
+            Json(json!({
+                "key": format!("git-file/{}/{}", query["repository"], query["path"]),
+                "lock": {
+                    "holder": "codex",
+                    "fencing_token": 41,
+                    "lease_expires_ms": 999999,
+                    "held_keys": ["git-file/fiducia-ai-agent-bridge.rs/src/http.rs"],
+                    "wait_queue": []
+                }
+            })),
+        )
+    }
+
+    async fn release(headers: HeaderMap, Json(body): Json<Value>) -> (StatusCode, Json<Value>) {
+        if headers.get("x-internal-auth").and_then(|v| v.to_str().ok()) != Some("bridge-secret") {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error":"unauthorized"})),
+            );
+        }
+        (
+            StatusCode::OK,
+            Json(json!({"result":{"output":{"released":true}}, "echo": body})),
+        )
+    }
+
+    let app = Router::new()
+        .route("/v1/file-leases", get(lookup))
+        .route("/v1/file-leases/acquire", post(acquire))
+        .route("/v1/file-leases/release", post(release));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn file_leases_proxy_to_control_plane_and_enrich_the_active_agent() {
+    let control_plane = spawn_fake_control_plane().await;
+    let mut config = common::base_config();
+    config.control_plane_url = Some(control_plane);
+    config.control_plane_secret = Some("bridge-secret".into());
+    let base = common::spawn_http(common::state_with(config)).await;
+    let client = reqwest::Client::new();
+
+    post(
+        &client,
+        format!("{base}/agents/register"),
+        json!({"agent_key":"codex", "display_name":"Codex worker", "kind":"codex"}),
+    )
+    .await;
+    let (status, acquired) = post(
+        &client,
+        format!("{base}/file-leases/acquire"),
+        json!({
+            "repository":"fiducia-ai-agent-bridge.rs",
+            "paths":["src/http.rs"],
+            "agent_key":"codex",
+            "ttl_ms":45000
+        }),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 201);
+    assert_eq!(acquired["result"]["output"]["fencing_token"], 41);
+    assert_eq!(acquired["echo"]["ttl_ms"], 45000);
+
+    let lookup = get(
+        &client,
+        format!("{base}/file-leases?repository=fiducia-ai-agent-bridge.rs&path=src%2Fhttp.rs"),
+    )
+    .await;
+    assert_eq!(lookup["lock"]["holder"], "codex");
+    assert_eq!(lookup["agent"]["display_name"], "Codex worker");
+
+    let (status, released) = post(
+        &client,
+        format!("{base}/file-leases/release"),
+        json!({"agent_key":"codex", "fencing_token":41}),
+    )
+    .await;
+    assert!(status.is_success());
+    assert_eq!(released["echo"]["agent_key"], "codex");
+}
+
 #[tokio::test]
 async fn full_rest_flow_register_create_search_post_context() {
     let base = common::spawn_http(common::state()).await;

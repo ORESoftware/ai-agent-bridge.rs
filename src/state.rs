@@ -99,6 +99,7 @@ pub struct JoinOutcome {
 pub struct AppState {
     pub config: Config,
     pub embedder: Embedder,
+    pub control_plane: Option<crate::control_plane::ControlPlaneClient>,
     agents: RwLock<HashMap<String, Agent>>,
     channels: RwLock<HashMap<String, ChannelState>>,
     /// Live count of `inbox.jsonl` lines, so `GET /health` is O(1) instead of
@@ -115,9 +116,11 @@ pub struct AppState {
 impl AppState {
     pub fn new(config: Config, embedder: Embedder) -> Arc<Self> {
         let inbox_count = AtomicU64::new(crate::compat::inbox_count(&config.inbox_dir) as u64);
+        let control_plane = crate::control_plane::ControlPlaneClient::from_config(&config);
         Arc::new(Self {
             config,
             embedder,
+            control_plane,
             agents: RwLock::new(HashMap::new()),
             channels: RwLock::new(HashMap::new()),
             inbox_count,
@@ -196,6 +199,10 @@ impl AppState {
 
     pub fn list_agents(&self) -> Vec<Agent> {
         self.agents.read().values().cloned().collect()
+    }
+
+    pub fn get_agent(&self, agent_key: &str) -> Option<Agent> {
+        self.agents.read().get(agent_key).cloned()
     }
 
     // ---- channels -------------------------------------------------------------

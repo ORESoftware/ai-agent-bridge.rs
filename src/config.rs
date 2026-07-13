@@ -58,6 +58,11 @@ pub struct Config {
     pub embed_dim: usize,
     /// Optional Postgres URL. Only consulted when built with `--features postgres`.
     pub database_url: Option<String>,
+    /// Control-plane base URL used for file leases and active-agent lookup.
+    pub control_plane_url: Option<String>,
+    /// Shared secret sent only in `x-internal-auth` to the control plane.
+    pub control_plane_secret: Option<String>,
+    pub control_plane_timeout_secs: u64,
     pub history_limit: usize,
     /// Similarity below which `resolve` mints a brand-new topic instead of
     /// joining an existing one (the "fluid topic formation" knob).
@@ -154,6 +159,10 @@ impl Config {
                 .or_else(|| env_opt("EMBEDDINGS_BEARER")),
             embed_dim,
             database_url: env_opt("DATABASE_URL").or_else(|| env_opt("RDS_DATABASE_URL")),
+            control_plane_url: env_opt("FIDUCIA_CONTROL_PLANE_URL"),
+            control_plane_secret: env_opt("FIDUCIA_CONTROL_PLANE_SECRET")
+                .or_else(|| env_opt("FIDUCIA_INTERNAL_SECRET")),
+            control_plane_timeout_secs: env_usize("CONTROL_PLANE_TIMEOUT_SECS", 10) as u64,
             history_limit,
             resolve_threshold,
             inbox_token: env_opt("AI_AGENT_BRIDGE_TOKEN").or_else(|| env_opt("CLAUDE_INBOX_TOKEN")),
@@ -196,6 +205,9 @@ impl Config {
             embeddings_bearer: None,
             embed_dim: DEFAULT_EMBED_DIM,
             database_url: None,
+            control_plane_url: None,
+            control_plane_secret: None,
+            control_plane_timeout_secs: 10,
             history_limit: DEFAULT_HISTORY_LIMIT,
             resolve_threshold: 0.72,
             inbox_token: None,

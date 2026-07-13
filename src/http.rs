@@ -55,6 +55,9 @@ pub fn router(state: Arc<AppState>) -> Router {
     let api = Router::new()
         .route("/agents/register", post(register_agent))
         .route("/agents", get(list_agents))
+        .route("/file-leases", get(get_file_lease))
+        .route("/file-leases/acquire", post(acquire_file_lease))
+        .route("/file-leases/release", post(release_file_lease))
         .route("/channels", get(list_channels).post(create_channel))
         .route("/channels/search", post(search_channels))
         .route("/channels/resolve", post(resolve_channel))
@@ -297,6 +300,99 @@ async fn register_agent(State(s): State<Arc<AppState>>, Json(req): Json<Register
 
 async fn list_agents(State(s): State<Arc<AppState>>) -> ApiResult {
     Ok(Json(json!({ "ok": true, "agents": s.list_agents() })))
+}
+
+// ---- repository file leases -------------------------------------------------
+
+#[derive(Deserialize)]
+struct AcquireFileLeaseReq {
+    repository: String,
+    paths: Vec<String>,
+    agent_key: String,
+    #[serde(default)]
+    ttl_ms: Option<u64>,
+    #[serde(default)]
+    wait: bool,
+}
+
+#[derive(Deserialize)]
+struct ReleaseFileLeaseReq {
+    agent_key: String,
+    fencing_token: u64,
+}
+
+#[derive(Deserialize)]
+struct FileLeaseQuery {
+    repository: String,
+    path: String,
+}
+
+async fn acquire_file_lease(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<AcquireFileLeaseReq>,
+) -> Response {
+    if s.get_agent(req.agent_key.trim()).is_none() {
+        return ApiError(BridgeError::BadRequest(
+            "agent_key must be registered with the bridge before leasing files".into(),
+        ))
+        .into_response();
+    }
+    let Some(control_plane) = &s.control_plane else {
+        return ApiError(BridgeError::ControlPlaneNotConfigured).into_response();
+    };
+    let body = json!({
+        "repository": req.repository,
+        "paths": req.paths,
+        "agent_key": req.agent_key.trim(),
+        "ttl_ms": req.ttl_ms.unwrap_or(30_000),
+        "wait": req.wait,
+    });
+    match control_plane.acquire(&body).await {
+        Ok(response) => control_plane_response(response),
+        Err(error) => ApiError(error).into_response(),
+    }
+}
+
+async fn release_file_lease(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<ReleaseFileLeaseReq>,
+) -> Response {
+    let Some(control_plane) = &s.control_plane else {
+        return ApiError(BridgeError::ControlPlaneNotConfigured).into_response();
+    };
+    let body = json!({
+        "agent_key": req.agent_key.trim(),
+        "fencing_token": req.fencing_token,
+    });
+    match control_plane.release(&body).await {
+        Ok(response) => control_plane_response(response),
+        Err(error) => ApiError(error).into_response(),
+    }
+}
+
+async fn get_file_lease(
+    State(s): State<Arc<AppState>>,
+    Query(req): Query<FileLeaseQuery>,
+) -> Response {
+    let Some(control_plane) = &s.control_plane else {
+        return ApiError(BridgeError::ControlPlaneNotConfigured).into_response();
+    };
+    match control_plane.lookup(&req.repository, &req.path).await {
+        Ok(mut response) => {
+            if response.status < 400 {
+                let holder = response.body["lock"]["holder"].as_str();
+                let agent = holder.and_then(|key| s.get_agent(key));
+                response.body["agent"] = serde_json::to_value(agent).unwrap_or_default();
+            }
+            control_plane_response(response)
+        }
+        Err(error) => ApiError(error).into_response(),
+    }
+}
+
+fn control_plane_response(response: crate::control_plane::ControlPlaneResponse) -> Response {
+    let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::BAD_GATEWAY);
+    (status, Json(response.body)).into_response()
 }
 
 // ---- channels ---------------------------------------------------------------

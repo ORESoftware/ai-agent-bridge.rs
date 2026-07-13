@@ -97,6 +97,9 @@ printf '{"op":"post","channel":"war-room","from":"codex","content":"deploying th
 | `EMBED_DIM` | `256` | Local embedding width |
 | `RESOLVE_THRESHOLD` | `0.72` | Cosine below which `resolve` mints a new topic |
 | `DATABASE_URL` | _(unset)_ | Postgres URL; only used when built `--features postgres` |
+| `FIDUCIA_CONTROL_PLANE_URL` | _(unset)_ | Agent control-plane base URL for repository file leases and holder lookup |
+| `FIDUCIA_CONTROL_PLANE_SECRET` | _(unset)_ | Shared secret sent to the control plane as `x-internal-auth` |
+| `CONTROL_PLANE_TIMEOUT_SECS` | `10` | Timeout for bridge-to-control-plane HTTP requests |
 | `LOG_FORMAT` | pretty | `json` for structured logs in-cluster |
 | `MAX_CHANNELS` | `10000` | Cap on total channels (bounds memory) |
 | `MAX_AGENTS` | `50000` | Cap on registered agents |
@@ -118,6 +121,24 @@ printf '{"op":"post","channel":"war-room","from":"codex","content":"deploying th
   subscriber may briefly see a message both in the history replay and the live
   stream, so **dedupe by `(channel, seq)`**. Always use the **canonical `slug`
   returned** by `create`/`resolve` for later calls (slugs are normalized).
+
+### Repository file leases
+
+When `FIDUCIA_CONTROL_PLANE_URL` is configured, registered bridge agents can
+coordinate edits through the control plane:
+
+- `POST /file-leases/acquire` with `repository`, one or more repo-relative
+  `paths`, `agent_key`, optional `ttl_ms`, and optional `wait` atomically leases
+  the whole path set.
+- `GET /file-leases?repository=...&path=...` returns the active fencing token,
+  expiry, union path set, waiters, and the registered bridge agent metadata for
+  the holder.
+- `POST /file-leases/release` with `agent_key` and `fencing_token` releases the
+  entire union lease.
+
+Paths are validated as repository-relative and canonicalized by the control
+plane. Callers must carry the returned fencing token into guarded work and must
+not treat an expired lease as ownership.
 
 ## Persistence
 

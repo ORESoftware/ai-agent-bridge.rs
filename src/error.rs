@@ -30,6 +30,12 @@ pub enum BridgeError {
 
     #[error("unauthorized")]
     Unauthorized,
+
+    #[error("control plane is not configured")]
+    ControlPlaneNotConfigured,
+
+    #[error("control plane request failed: {0}")]
+    ControlPlane(String),
 }
 
 impl BridgeError {
@@ -43,6 +49,8 @@ impl BridgeError {
             BridgeError::PayloadTooLarge { .. } => "payload_too_large",
             BridgeError::CapacityExceeded { .. } => "capacity_exceeded",
             BridgeError::Unauthorized => "unauthorized",
+            BridgeError::ControlPlaneNotConfigured => "control_plane_not_configured",
+            BridgeError::ControlPlane(_) => "control_plane_error",
         }
     }
 
@@ -55,6 +63,8 @@ impl BridgeError {
             BridgeError::PayloadTooLarge { .. } => 413,
             BridgeError::CapacityExceeded { .. } => 429,
             BridgeError::Unauthorized => 401,
+            BridgeError::ControlPlaneNotConfigured => 503,
+            BridgeError::ControlPlane(_) => 502,
         }
     }
 
