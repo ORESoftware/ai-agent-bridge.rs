@@ -205,7 +205,7 @@ env-only and never appear in a process's argument list.
 
 - **`rsa` 0.9.x — RUSTSEC-2023-0071.** It remains only as unreachable
   `sqlx-mysql` metadata in `Cargo.lock`; the optional store enables PostgreSQL
-  only. `cargo tree --all-features --target all -i rsa` confirms there is no
+  only. `cargo tree --locked --all-features --target all -i rsa` confirms there is no
   build path to it. Re-run `cargo audit` on dependency bumps so any newly
   reachable or fixable advisory still fails the gate.
 
@@ -268,7 +268,7 @@ actions, and Docker inputs weekly.
 ## Development
 
 ```sh
-cargo test          # unit + integration tests (no DB needed)
+cargo test --locked # unit + integration tests (no DB needed)
 cargo build --release --locked
 ```
 
