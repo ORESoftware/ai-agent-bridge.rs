@@ -48,6 +48,22 @@ aliases = ["embeddings-model"]
 type = "string"
 help = "Embedding model identifier."
 
+# Float knob (0.0-1.0); flags2env has no float type, so it is passed as a string
+# and parsed by the service. Cosine below this mints a new topic in `resolve`.
+[flags.resolve-threshold]
+env = "RESOLVE_THRESHOLD"
+aliases = ["resolve-threshold"]
+type = "string"
+help = "Cosine similarity below which resolve mints a new topic (0.0-1.0, default 0.72)."
+
+# Inbox directory for the legacy claude-inbox contract (not a secret). The
+# CLAUDE_INBOX_DIR env var is an accepted code-level alias for the same setting.
+[flags.inbox-dir]
+env = "AI_AGENT_BRIDGE_DIR"
+aliases = ["inbox-dir"]
+type = "string"
+help = "Directory holding inbox.jsonl for the legacy claude-inbox contract (default /tmp/claude_bridge)."
+
 [flags.history-limit]
 env = "HISTORY_LIMIT"
 aliases = ["history-limit"]
@@ -65,6 +81,54 @@ env = "MAX_AGENTS"
 aliases = ["max-agents"]
 type = "integer"
 help = "Maximum registered agents."
+
+[flags.max-file-leases]
+env = "MAX_FILE_LEASES"
+aliases = ["max-file-leases"]
+type = "integer"
+help = "Maximum simultaneously active repository-path leases."
+
+[flags.max-content-bytes]
+env = "MAX_CONTENT_BYTES"
+aliases = ["max-content-bytes"]
+type = "integer"
+help = "Maximum message / context-value bytes."
+
+[flags.max-tcp-line-bytes]
+env = "MAX_TCP_LINE_BYTES"
+aliases = ["max-tcp-line-bytes"]
+type = "integer"
+help = "Maximum bytes in one TCP JSONL frame."
+
+[flags.max-tcp-connections]
+env = "MAX_TCP_CONNECTIONS"
+aliases = ["max-tcp-connections"]
+type = "integer"
+help = "Maximum concurrent TCP connections."
+
+[flags.max-http-body-bytes]
+env = "MAX_HTTP_BODY_BYTES"
+aliases = ["max-http-body-bytes"]
+type = "integer"
+help = "Maximum HTTP request body bytes."
+
+[flags.max-channel-history-bytes]
+env = "MAX_CHANNEL_HISTORY_BYTES"
+aliases = ["max-channel-history-bytes"]
+type = "integer"
+help = "Maximum retained message bytes per channel history ring."
+
+[flags.tcp-auth-deadline-secs]
+env = "TCP_AUTH_DEADLINE_SECS"
+aliases = ["tcp-auth-deadline-secs"]
+type = "integer"
+help = "Seconds an unauthenticated TCP connection has to present valid auth."
+
+[flags.tcp-idle-deadline-secs]
+env = "TCP_IDLE_DEADLINE_SECS"
+aliases = ["tcp-idle-deadline-secs"]
+type = "integer"
+help = "Seconds an authed-but-unsubscribed TCP connection may idle before it is dropped."
 
 [flags.log-format]
 env = "LOG_FORMAT"
