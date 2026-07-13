@@ -129,6 +129,7 @@ in a process listing.
 | `MAX_CHANNEL_HISTORY_BYTES` | `8388608` | Max retained message bytes per channel history ring |
 | `MAX_TCP_LINE_BYTES` | `2097152` | Max bytes in one TCP JSONL frame |
 | `MAX_TCP_CONNECTIONS` | `4096` | Max concurrent TCP connections |
+| `MAX_SSE_CONNECTIONS` | `4096` | Max concurrent HTTP SSE streams |
 | `MAX_HTTP_BODY_BYTES` | `2097152` | Max HTTP request body bytes |
 | `TCP_AUTH_DEADLINE_SECS` | `15` | Seconds an unauthenticated TCP connection has to present valid auth |
 | `TCP_IDLE_DEADLINE_SECS` | `300` | Seconds an authed-but-unsubscribed TCP connection may idle before being dropped |
@@ -155,9 +156,11 @@ env-only and never appear in a process's argument list.
 ### Hardening notes
 
 - **Resource caps.** Channels, agents, members (32/room), message/context sizes,
-  TCP frame length, and TCP connection count are all bounded (see the table) so a
-  hostile or buggy client cannot exhaust memory. Over-limit requests get `413`
-  (`payload_too_large`) or `429` (`capacity_exceeded`).
+  TCP frame length, TCP connection count, and concurrent HTTP SSE streams are all
+  bounded (see the table) so a hostile or buggy client cannot exhaust memory.
+  Over-limit requests get `413` (`payload_too_large`) or `429`
+  (`capacity_exceeded`); an SSE stream over `MAX_SSE_CONNECTIONS` is shed with
+  `429` and its slot is released when the client disconnects.
 - **Remote embeddings.** Responses are streamed into a bounded buffer before
   JSON parsing. A response larger than `MAX_EMBEDDING_RESPONSE_BYTES`, a vector
   wider than 8192, or a vector whose width differs from `EMBED_DIM` is discarded

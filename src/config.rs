@@ -36,6 +36,10 @@ pub const DEFAULT_MAX_CONTENT_BYTES: usize = 1_048_576;
 pub const DEFAULT_MAX_TCP_LINE_BYTES: usize = 2_097_152;
 /// Max concurrent TCP connections (each is a task); excess are dropped.
 pub const DEFAULT_MAX_TCP_CONNECTIONS: usize = 4_096;
+/// Max concurrent SSE streams over HTTP (each holds a broadcast receiver + task);
+/// excess are shed with `429 capacity_exceeded`, mirroring the TCP connection cap
+/// so an authenticated client cannot open unbounded live streams.
+pub const DEFAULT_MAX_SSE_CONNECTIONS: usize = 4_096;
 /// Seconds an unauthenticated TCP connection has to present valid auth.
 pub const DEFAULT_TCP_AUTH_DEADLINE_SECS: u64 = 15;
 /// Seconds an authed-but-not-subscribed TCP connection may idle before it's
@@ -84,6 +88,7 @@ pub struct Config {
     pub max_content_bytes: usize,
     pub max_tcp_line_bytes: usize,
     pub max_tcp_connections: usize,
+    pub max_sse_connections: usize,
     pub max_http_body_bytes: usize,
     pub max_channel_history_bytes: usize,
     pub tcp_auth_deadline_secs: u64,
@@ -206,6 +211,7 @@ impl Config {
             max_content_bytes: env_usize("MAX_CONTENT_BYTES", DEFAULT_MAX_CONTENT_BYTES),
             max_tcp_line_bytes: env_usize("MAX_TCP_LINE_BYTES", DEFAULT_MAX_TCP_LINE_BYTES),
             max_tcp_connections: env_usize("MAX_TCP_CONNECTIONS", DEFAULT_MAX_TCP_CONNECTIONS),
+            max_sse_connections: env_usize("MAX_SSE_CONNECTIONS", DEFAULT_MAX_SSE_CONNECTIONS),
             max_http_body_bytes: env_usize("MAX_HTTP_BODY_BYTES", DEFAULT_MAX_HTTP_BODY_BYTES),
             max_channel_history_bytes: env_usize(
                 "MAX_CHANNEL_HISTORY_BYTES",
@@ -249,6 +255,7 @@ impl Config {
             max_content_bytes: DEFAULT_MAX_CONTENT_BYTES,
             max_tcp_line_bytes: DEFAULT_MAX_TCP_LINE_BYTES,
             max_tcp_connections: DEFAULT_MAX_TCP_CONNECTIONS,
+            max_sse_connections: DEFAULT_MAX_SSE_CONNECTIONS,
             max_http_body_bytes: DEFAULT_MAX_HTTP_BODY_BYTES,
             max_channel_history_bytes: DEFAULT_MAX_CHANNEL_HISTORY_BYTES,
             tcp_auth_deadline_secs: DEFAULT_TCP_AUTH_DEADLINE_SECS,

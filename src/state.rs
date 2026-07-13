@@ -111,6 +111,10 @@ pub struct AppState {
     pub config: Config,
     pub embedder: Embedder,
     pub control_plane: Option<crate::control_plane::ControlPlaneClient>,
+    /// Bounds concurrent HTTP SSE streams (each holds a broadcast receiver + a
+    /// forwarder task). The TCP listener has its own connection semaphore; this
+    /// is the HTTP-side equivalent so live streams can't grow without bound.
+    pub sse_connections: Arc<tokio::sync::Semaphore>,
     agents: RwLock<HashMap<String, Agent>>,
     file_leases: RwLock<HashMap<String, FileLeaseState>>,
     next_file_fencing_token: AtomicU64,
@@ -131,10 +135,12 @@ impl AppState {
         crate::compat::prepare_inbox(&config.inbox_dir)?;
         let inbox_count = AtomicU64::new(crate::compat::inbox_count(&config.inbox_dir)? as u64);
         let control_plane = crate::control_plane::ControlPlaneClient::from_config(&config);
+        let sse_connections = Arc::new(tokio::sync::Semaphore::new(config.max_sse_connections));
         Ok(Arc::new(Self {
             config,
             embedder,
             control_plane,
+            sse_connections,
             agents: RwLock::new(HashMap::new()),
             file_leases: RwLock::new(HashMap::new()),
             next_file_fencing_token: AtomicU64::new(0),

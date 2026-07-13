@@ -112,6 +112,12 @@ aliases = ["max-tcp-connections"]
 type = "integer"
 help = "Maximum concurrent TCP connections."
 
+[flags.max-sse-connections]
+env = "MAX_SSE_CONNECTIONS"
+aliases = ["max-sse-connections"]
+type = "integer"
+help = "Maximum concurrent HTTP SSE streams."
+
 [flags.max-http-body-bytes]
 env = "MAX_HTTP_BODY_BYTES"
 aliases = ["max-http-body-bytes"]
