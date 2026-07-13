@@ -198,16 +198,13 @@ env-only and never appear in a process's argument list.
 
 ### Security advisories
 
-`cargo audit` is clean except for one **known, accepted** advisory:
+`cargo audit` passes with one documented exception in `.cargo/audit.toml`:
 
-- **`rsa` 0.9.x — RUSTSEC-2023-0071 (Marvin timing side-channel, medium/5.9).**
-  Pulled in *transitively* only under `--features postgres` (via
-  `sqlx-postgres`'s TLS/auth path) and **has no fixed upstream release**. The
-  default build does not compile `sqlx` at all. In deployment the bridge talks to
-  Postgres over a trusted in-cluster network, so the timing oracle is not
-  remotely exploitable in practice. Tracked and accepted until an upstream fix
-  ships; re-run `cargo audit` on dependency bumps to catch any *newly* fixable
-  advisory.
+- **`rsa` 0.9.x — RUSTSEC-2023-0071.** It remains only as unreachable
+  `sqlx-mysql` metadata in `Cargo.lock`; the optional store enables PostgreSQL
+  only. `cargo tree --all-features --target all -i rsa` confirms there is no
+  build path to it. Re-run `cargo audit` on dependency bumps so any newly
+  reachable or fixable advisory still fails the gate.
 
 ### Repository file leases
 
