@@ -24,6 +24,8 @@ pub const DEFAULT_HISTORY_LIMIT: usize = 1000;
 /// and TCP frames are read from the network.
 pub const DEFAULT_MAX_CHANNELS: usize = 10_000;
 pub const DEFAULT_MAX_AGENTS: usize = 50_000;
+/// Max simultaneously active repository-path leases held in memory.
+pub const DEFAULT_MAX_FILE_LEASES: usize = 100_000;
 /// Max message/context byte length — matches the DB `content` CHECK (1 MiB).
 pub const DEFAULT_MAX_CONTENT_BYTES: usize = 1_048_576;
 /// Max bytes in one TCP JSONL frame before the connection is dropped (a frame
@@ -74,6 +76,7 @@ pub struct Config {
     pub inbox_dir: std::path::PathBuf,
     pub max_channels: usize,
     pub max_agents: usize,
+    pub max_file_leases: usize,
     pub max_content_bytes: usize,
     pub max_tcp_line_bytes: usize,
     pub max_tcp_connections: usize,
@@ -173,6 +176,7 @@ impl Config {
             ),
             max_channels: env_usize("MAX_CHANNELS", DEFAULT_MAX_CHANNELS),
             max_agents: env_usize("MAX_AGENTS", DEFAULT_MAX_AGENTS),
+            max_file_leases: env_usize("MAX_FILE_LEASES", DEFAULT_MAX_FILE_LEASES),
             max_content_bytes: env_usize("MAX_CONTENT_BYTES", DEFAULT_MAX_CONTENT_BYTES),
             max_tcp_line_bytes: env_usize("MAX_TCP_LINE_BYTES", DEFAULT_MAX_TCP_LINE_BYTES),
             max_tcp_connections: env_usize("MAX_TCP_CONNECTIONS", DEFAULT_MAX_TCP_CONNECTIONS),
@@ -214,6 +218,7 @@ impl Config {
             inbox_dir: std::env::temp_dir().join("claude_bridge_test"),
             max_channels: DEFAULT_MAX_CHANNELS,
             max_agents: DEFAULT_MAX_AGENTS,
+            max_file_leases: DEFAULT_MAX_FILE_LEASES,
             max_content_bytes: DEFAULT_MAX_CONTENT_BYTES,
             max_tcp_line_bytes: DEFAULT_MAX_TCP_LINE_BYTES,
             max_tcp_connections: DEFAULT_MAX_TCP_CONNECTIONS,
