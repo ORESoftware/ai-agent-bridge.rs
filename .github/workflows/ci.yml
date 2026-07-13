@@ -27,7 +27,7 @@ jobs:
       - run: cargo check --all-targets --locked --features postgres
       - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2
         with:
-          tool: cargo-audit@0.21.2
+          tool: cargo-audit@0.22.2
       - run: cargo audit
       - run: make -B -C vendor/flags-2-env all
       - run: vendor/flags-2-env/build/flags2env audit .cli-flags.toml
