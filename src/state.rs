@@ -1209,6 +1209,85 @@ mod tests {
         AppState::new(cfg, embedder)
     }
 
+    // Exercises the file-lease coordination the control-plane proxies to (an
+    // agent leases a repo path before editing it; the fencing token authorizes
+    // renew/release; another agent is blocked while it is held).
+    #[test]
+    fn file_lease_acquire_conflict_fence_and_lookup() {
+        let s = state();
+        let mk = |k: &str| Agent {
+            agent_key: k.into(),
+            display_name: String::new(),
+            kind: AgentKind::Other,
+            host: None,
+            meta: serde_json::json!({}),
+            registered_at: String::new(),
+        };
+        s.register_agent(mk("alice")).unwrap();
+        s.register_agent(mk("bob")).unwrap();
+
+        let acquire = |agent: &str, path: &str| {
+            s.acquire_file_lease(
+                "acme/api",
+                path,
+                agent,
+                30_000,
+                false,
+                "edit",
+                serde_json::json!({}),
+            )
+        };
+
+        // A lease for an unregistered agent is rejected.
+        assert!(matches!(
+            acquire("ghost", "src/lib.rs"),
+            Err(BridgeError::AgentNotFound(_))
+        ));
+
+        // Alice leases src/lib.rs and receives a fencing token.
+        let lease = acquire("alice", "src/lib.rs").unwrap();
+        assert_eq!(lease.agent_key, "alice");
+        assert!(lease.fencing_token >= 1);
+
+        // Bob is blocked on the same path, but free to lease a different one.
+        assert!(matches!(
+            acquire("bob", "src/lib.rs"),
+            Err(BridgeError::FileLeaseConflict { .. })
+        ));
+        acquire("bob", "src/other.rs").unwrap();
+
+        // Lookups: who holds a path, and what an agent holds.
+        assert_eq!(
+            s.file_lease_holders(Some("acme/api"), Some("src/lib.rs"), None, false)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            s.file_lease_holders(None, None, Some("bob"), false)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Renew/release are fenced: wrong token or wrong owner is refused.
+        assert!(matches!(
+            s.renew_file_lease(&lease.id, "alice", lease.fencing_token + 1, 30_000),
+            Err(BridgeError::StaleFencingToken(_))
+        ));
+        assert!(matches!(
+            s.renew_file_lease(&lease.id, "bob", lease.fencing_token, 30_000),
+            Err(BridgeError::FileLeaseOwnerMismatch { .. })
+        ));
+        s.renew_file_lease(&lease.id, "alice", lease.fencing_token, 30_000)
+            .unwrap();
+
+        // Releasing frees the path for the previously-blocked agent.
+        s.release_file_lease(&lease.id, "alice", lease.fencing_token)
+            .unwrap();
+        acquire("bob", "src/lib.rs").unwrap();
+    }
+
     #[test]
     fn truncate_bytes_respects_char_boundaries() {
         // bytes: a(1) é(2) b(1) あ(3) c(1) = 8 total
