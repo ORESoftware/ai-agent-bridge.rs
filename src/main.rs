@@ -10,11 +10,10 @@ use ai_agent_bridge::state::AppState;
 use ai_agent_bridge::{http, tcp};
 use tokio::net::TcpListener;
 use tracing::{info, warn};
-use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    init_tracing();
+    fiducia_telemetry::init("fiducia-ai-agent-bridge");
 
     let config = Config::from_env()?;
     info!(
@@ -94,21 +93,6 @@ async fn build_state(config: Config, embedder: Embedder) -> anyhow::Result<Arc<A
 #[cfg(not(feature = "postgres"))]
 async fn build_state(config: Config, embedder: Embedder) -> anyhow::Result<Arc<AppState>> {
     Ok(AppState::new(config, embedder)?)
-}
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,ai_agent_bridge=info"));
-    let builder = tracing_subscriber::fmt().with_env_filter(filter);
-    // JSON logs in-cluster (matches the other services), pretty logs locally.
-    if std::env::var("LOG_FORMAT")
-        .map(|v| v == "json")
-        .unwrap_or(false)
-    {
-        builder.json().init();
-    } else {
-        builder.init();
-    }
 }
 
 async fn shutdown_signal() {

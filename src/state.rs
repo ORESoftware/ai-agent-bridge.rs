@@ -128,6 +128,11 @@ pub struct AppState {
     /// write flood can't spawn unbounded tasks queued on the DB pool.
     #[cfg(feature = "postgres")]
     persist_sem: Arc<tokio::sync::Semaphore>,
+    /// Total best-effort persist writes shed under overload. Used to escalate
+    /// the shed log to `warn` on the first shed (and periodically after), so a
+    /// sustained overload is visible without a warn-per-drop flood.
+    #[cfg(feature = "postgres")]
+    shed_persist_writes: AtomicU64,
 }
 
 impl AppState {
@@ -150,6 +155,8 @@ impl AppState {
             db: None,
             #[cfg(feature = "postgres")]
             persist_sem: Arc::new(tokio::sync::Semaphore::new(256)),
+            #[cfg(feature = "postgres")]
+            shed_persist_writes: AtomicU64::new(0),
         }))
     }
 
@@ -1019,7 +1026,19 @@ impl AppState {
             let permit = match self.persist_sem.clone().try_acquire_owned() {
                 Ok(p) => p,
                 Err(_) => {
-                    tracing::debug!("persist queue full; dropping a best-effort write");
+                    // Escalate the first shed (and every 1000th) to `warn`: a
+                    // sustained overload silently thinning the Postgres mirror
+                    // must be visible, without a warn-per-drop flood.
+                    let shed = self.shed_persist_writes.fetch_add(1, Ordering::Relaxed) + 1;
+                    if shed == 1 || shed.is_multiple_of(1000) {
+                        tracing::warn!(
+                            total_shed = shed,
+                            "persist queue full; shedding best-effort writes \
+                             (in-memory state remains authoritative)"
+                        );
+                    } else {
+                        tracing::debug!("persist queue full; dropping a best-effort write");
+                    }
                     return;
                 }
             };

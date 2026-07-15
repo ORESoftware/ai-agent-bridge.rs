@@ -89,6 +89,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(api)
         .layer(DefaultBodyLimit::max(body_limit))
         .layer(from_fn(request_timeout))
+        // Fleet convention: per-request trace span, and catch-panic outermost so
+        // a panicking handler becomes a 500 instead of a dropped connection.
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(tower_http::catch_panic::CatchPanicLayer::new())
         .with_state(state)
 }
 
@@ -259,13 +263,17 @@ async fn claude_inbox(
             .await
             .is_ok()
         {
-            let _ = s.post_message(
+            if let Err(error) = s.post_message(
                 &slug,
                 &from,
                 Role::User,
                 &prompt,
                 json!({ "via": "claude-inbox", "id": id }),
-            );
+            ) {
+                // Near-impossible after create_or_get_channel succeeded, but an
+                // ingested inbox message silently vanishing must leave a trace.
+                tracing::warn!(%slug, %error, "claude-inbox message failed to post to its channel");
+            }
         }
     }
 
