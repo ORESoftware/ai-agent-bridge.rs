@@ -413,6 +413,80 @@ async fn thirty_third_member_gets_409_channel_full() {
     );
 }
 
+/// The 32-member cap counts LIVE membership, not historical joins: a leave
+/// frees exactly one slot for a new agent, and the room is full again once
+/// that slot is taken.
+#[tokio::test]
+async fn leave_frees_a_slot_at_the_member_cap() {
+    let base = common::spawn_http(common::state()).await;
+    let c = reqwest::Client::new();
+    post(
+        &c,
+        format!("{base}/channels"),
+        json!({ "slug": "revolving", "topic": "a full room", "created_by": "claude" }),
+    )
+    .await;
+
+    for i in 0..32 {
+        let (st, _) = post(
+            &c,
+            format!("{base}/channels/revolving/join"),
+            json!({ "agent_key": format!("agent-{i}") }),
+        )
+        .await;
+        assert!(st.is_success(), "join {i} should succeed");
+    }
+    let (st, body) = post(
+        &c,
+        format!("{base}/channels/revolving/join"),
+        json!({ "agent_key": "latecomer" }),
+    )
+    .await;
+    assert_eq!(st.as_u16(), 409, "the room starts full");
+    assert_eq!(body["error"], "channel_full");
+
+    // One member leaves; the freed slot admits the latecomer.
+    let (st, body) = post(
+        &c,
+        format!("{base}/channels/revolving/leave"),
+        json!({ "agent_key": "agent-0" }),
+    )
+    .await;
+    assert!(st.is_success());
+    assert_eq!(body["removed"], true);
+
+    let (st, body) = post(
+        &c,
+        format!("{base}/channels/revolving/join"),
+        json!({ "agent_key": "latecomer" }),
+    )
+    .await;
+    assert!(st.is_success(), "leave must free a slot: {body}");
+    assert_eq!(body["newly_joined"], true);
+
+    // The roster is back at the cap with the leaver replaced by the newcomer.
+    let members = get(&c, format!("{base}/channels/revolving/members")).await;
+    let keys: Vec<&str> = members["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["agent_key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys.len(), 32, "roster returns to the cap");
+    assert!(keys.contains(&"latecomer"));
+    assert!(!keys.contains(&"agent-0"), "the leaver stays gone");
+
+    // And the room is full again: the next join is refused.
+    let (st, body) = post(
+        &c,
+        format!("{base}/channels/revolving/join"),
+        json!({ "agent_key": "too-late" }),
+    )
+    .await;
+    assert_eq!(st.as_u16(), 409, "the reclaimed slot re-fills the room");
+    assert_eq!(body["error"], "channel_full");
+}
+
 #[tokio::test]
 async fn sse_stream_delivers_presence_and_messages() {
     let base = common::spawn_http(common::state()).await;

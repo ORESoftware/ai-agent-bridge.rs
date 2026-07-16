@@ -1330,6 +1330,73 @@ mod tests {
         acquire("bob", "src/lib.rs").unwrap();
     }
 
+    // Fencing tokens are MONOTONIC across the lifetime of a path: releasing a
+    // lease and re-acquiring the same path mints a strictly higher token, so a
+    // release presenting any earlier incarnation's token is refused — a zombie
+    // holder from before the release can never free the new holder's lease.
+    #[test]
+    fn file_lease_tokens_are_monotonic_and_stale_release_is_refused() {
+        let s = state();
+        s.register_agent(Agent {
+            agent_key: "alice".into(),
+            display_name: String::new(),
+            kind: AgentKind::Other,
+            host: None,
+            meta: serde_json::json!({}),
+            registered_at: String::new(),
+        })
+        .unwrap();
+        let acquire = || {
+            s.acquire_file_lease(
+                "acme/api",
+                "src/lib.rs",
+                "alice",
+                30_000,
+                false,
+                "edit",
+                serde_json::json!({}),
+            )
+            .unwrap()
+        };
+
+        let first = acquire();
+
+        // A release with a token the lease never had is refused and the lease
+        // stays held.
+        assert!(matches!(
+            s.release_file_lease(&first.id, "alice", first.fencing_token + 1),
+            Err(BridgeError::StaleFencingToken(_))
+        ));
+        assert_eq!(
+            s.file_lease_holders(Some("acme/api"), Some("src/lib.rs"), None, false)
+                .unwrap()
+                .len(),
+            1,
+            "a refused release must not drop the lease"
+        );
+
+        // Release with the live token, then re-acquire the same path: the new
+        // incarnation carries a strictly higher fencing token.
+        s.release_file_lease(&first.id, "alice", first.fencing_token)
+            .unwrap();
+        let second = acquire();
+        assert!(
+            second.fencing_token > first.fencing_token,
+            "tokens must be monotonic across acquire→release→re-acquire \
+             ({} then {})",
+            first.fencing_token,
+            second.fencing_token
+        );
+
+        // The previous incarnation's token is stale against the new lease.
+        assert!(matches!(
+            s.release_file_lease(&second.id, "alice", first.fencing_token),
+            Err(BridgeError::StaleFencingToken(_))
+        ));
+        s.release_file_lease(&second.id, "alice", second.fencing_token)
+            .unwrap();
+    }
+
     #[test]
     fn truncate_bytes_respects_char_boundaries() {
         // bytes: a(1) é(2) b(1) あ(3) c(1) = 8 total
@@ -1790,7 +1857,10 @@ mod shed_escalation_tests {
     /// the first shed, then exactly once per thousand, debug otherwise.
     #[test]
     fn shed_escalation_is_first_then_every_thousandth() {
-        assert!(shed_escalates_to_warn(1), "the first shed announces overload");
+        assert!(
+            shed_escalates_to_warn(1),
+            "the first shed announces overload"
+        );
         for n in [2u64, 3, 42, 999, 1001, 1999, 2001] {
             assert!(!shed_escalates_to_warn(n), "shed {n} must stay at debug");
         }
