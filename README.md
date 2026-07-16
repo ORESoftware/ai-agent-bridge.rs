@@ -227,12 +227,35 @@ Paths are validated as repository-relative and canonicalized by the control
 plane. Callers must carry the returned fencing token into guarded work and must
 not treat an expired lease as ownership.
 
+## Credential-safe LAN preflight
+
+Use the dedicated preflight binary when another machine cannot reach a shared
+bridge. Supply the bearer only through the environment; there is deliberately no
+bearer command-line flag:
+
+```sh
+export FIDUCIA_BRIDGE_PREFLIGHT_BEARER="$(your-credential-reader)"
+cargo run --locked --bin fiducia-ai-agent-bridge-preflight -- \
+  --base-url http://192.168.100.19:8142 --tcp-port 8143
+```
+
+The JSON report distinguishes name resolution, plain route failure, suspected
+lingering VPN helper/filter interference, TCP failure, HTTP health failure,
+readiness failure, and bearer/authentication failure. The report never retains
+or prints the bearer, request headers, response bodies, process details, or raw
+transport errors. Exit status is `0` only when every probe passes, `1` for a
+classified connectivity/auth failure, and `2` for invalid preflight input.
+
 ## Persistence
 
 The server is **in-memory by default** — perfect for ephemeral agent chatter.
 Build with `--features postgres` to additionally mirror agents, channels (with
 their embeddings), messages, membership, and context into Postgres, and to
-restore channels on restart. Writes are best-effort and never block the chat.
+restore durable agent metadata, channels, bounded recent message history, and
+shared context on restart. Per-channel membership is intentionally not restored:
+agents must rejoin so stale presence never appears live. The restored sequence
+high-water prevents `(channel, seq)` reuse, and graceful shutdown waits for every
+accepted persistence task. Writes remain best-effort and never block the chat.
 
 Tables live in the dedicated **`ai_agent_bridge`** Postgres schema whose
 canonical DDL and generated row types live in

@@ -9,6 +9,7 @@ use ai_agent_bridge::embed::Embedder;
 use ai_agent_bridge::state::AppState;
 use ai_agent_bridge::{http, tcp};
 use tokio::net::TcpListener;
+use tokio::task::JoinSet;
 use tracing::{info, warn};
 
 #[tokio::main]
@@ -43,22 +44,26 @@ async fn main() -> anyhow::Result<()> {
 
     let app = http::router(state.clone());
 
-    let http_task = tokio::spawn(async move {
+    let mut server_tasks = JoinSet::new();
+    server_tasks.spawn(async move {
         if let Err(e) = axum::serve(http_listener, app).await {
             warn!(error = %e, "http server exited");
         }
     });
-    let tcp_task = tokio::spawn(async move {
-        if let Err(e) = tcp::serve(state, tcp_listener).await {
+    let tcp_state = state.clone();
+    server_tasks.spawn(async move {
+        if let Err(e) = tcp::serve(tcp_state, tcp_listener).await {
             warn!(error = %e, "tcp server exited");
         }
     });
 
     tokio::select! {
         _ = shutdown_signal() => info!("shutdown signal received"),
-        _ = http_task => warn!("http task ended"),
-        _ = tcp_task => warn!("tcp task ended"),
+        result = server_tasks.join_next() => warn!(?result, "server task ended"),
     }
+    server_tasks.abort_all();
+    while server_tasks.join_next().await.is_some() {}
+    state.flush_persistence().await;
     Ok(())
 }
 
@@ -82,9 +87,15 @@ async fn build_state(config: Config, embedder: Embedder) -> anyhow::Result<Arc<A
     };
     let state = AppState::new(config, embedder)?.with_db(db.clone());
     if let Some(db) = &db {
-        match db.load_channels(&state).await {
-            Ok(n) => info!(channels = n, "restored channels from postgres"),
-            Err(e) => warn!(error = %e, "channel restore failed (schema not migrated yet?)"),
+        match db.load_state(&state).await {
+            Ok(counts) => info!(
+                agents = counts.agents,
+                channels = counts.channels,
+                messages = counts.messages,
+                context = counts.context,
+                "restored durable state from postgres"
+            ),
+            Err(e) => warn!(error = %e, "state restore failed (schema not migrated yet?)"),
         }
     }
     Ok(state)

@@ -28,6 +28,8 @@ const MAX_FILE_PATH_BYTES: usize = 4096;
 const MAX_FILE_PURPOSE_BYTES: usize = 1024;
 const MIN_FILE_LEASE_TTL_MS: u64 = 100;
 const MAX_FILE_LEASE_TTL_MS: u64 = 3_600_000;
+#[cfg(feature = "postgres")]
+const PERSIST_CONCURRENCY: usize = 256;
 
 /// Retained size of a message for the per-channel byte budget: content + its
 /// serialized `meta` (the variable-size fields that actually accumulate), so a
@@ -154,7 +156,7 @@ impl AppState {
             #[cfg(feature = "postgres")]
             db: None,
             #[cfg(feature = "postgres")]
-            persist_sem: Arc::new(tokio::sync::Semaphore::new(256)),
+            persist_sem: Arc::new(tokio::sync::Semaphore::new(PERSIST_CONCURRENCY)),
             #[cfg(feature = "postgres")]
             shed_persist_writes: AtomicU64::new(0),
         }))
@@ -228,6 +230,27 @@ impl AppState {
 
     pub fn list_agents(&self) -> Vec<Agent> {
         self.agents.read().values().cloned().collect()
+    }
+
+    /// Restore durable agent metadata without treating the agent as live in any
+    /// channel. Channel membership is deliberately not hydrated on restart:
+    /// presence must be re-established by a fresh join or subscription.
+    #[cfg(feature = "postgres")]
+    pub fn restore_agent(&self, agent: Agent) -> bool {
+        let mut agents = self.agents.write();
+        if agents.contains_key(&agent.agent_key) {
+            return false;
+        }
+        if agents.len() >= self.config.max_agents {
+            tracing::warn!(
+                limit = self.config.max_agents,
+                agent_key = %agent.agent_key,
+                "agent restore capacity reached; skipping persisted agent"
+            );
+            return false;
+        }
+        agents.insert(agent.agent_key.clone(), agent);
+        true
     }
 
     pub fn get_agent(&self, agent_key: &str) -> Option<Agent> {
@@ -611,9 +634,9 @@ impl AppState {
     }
 
     /// Reinstate a channel from persisted state on boot, using its stored
-    /// embedding (no re-embedding). Members/messages are not restored — live
-    /// chat state is ephemeral; the durable value is the topic + its vector so
-    /// semantic routing survives a restart. Idempotent: skips if already present.
+    /// embedding (no re-embedding). Membership is intentionally left empty so
+    /// stale presence is never resurrected. Messages and shared context are
+    /// hydrated separately after every active channel exists.
     #[cfg(feature = "postgres")]
     #[allow(clippy::too_many_arguments)] // Mirrors one complete persisted channel row.
     pub fn restore_channel(
@@ -625,10 +648,10 @@ impl AppState {
         created_by: &str,
         created_at: &str,
         meta: serde_json::Value,
-    ) {
+    ) -> bool {
         let mut chans = self.channels.write();
         if chans.contains_key(slug) {
-            return;
+            return false;
         }
         let (tx, _rx) = broadcast::channel(256);
         chans.insert(
@@ -656,6 +679,69 @@ impl AppState {
                 history_limit: self.config.history_limit,
             },
         );
+        true
+    }
+
+    /// Restore the bounded recent-history window while preserving the durable
+    /// total and the highest sequence number. The latter is essential: after a
+    /// restart, the next post must not reuse an existing `(channel, seq)` key.
+    #[cfg(feature = "postgres")]
+    pub fn restore_messages(
+        &self,
+        slug: &str,
+        mut messages: Vec<Message>,
+        message_count: u64,
+        max_seq: u64,
+    ) -> bool {
+        let mut chans = self.channels.write();
+        let Some(ch) = chans.get_mut(slug) else {
+            return false;
+        };
+
+        messages.retain(|message| message.channel == slug);
+        messages.sort_by_key(|message| message.seq);
+        ch.messages = messages.into();
+        ch.history_bytes = ch.messages.iter().map(message_retained_bytes).sum();
+        while ch.messages.len() > ch.history_limit
+            || (ch.history_bytes > self.config.max_channel_history_bytes && ch.messages.len() > 1)
+        {
+            if let Some(old) = ch.messages.pop_front() {
+                ch.history_bytes = ch
+                    .history_bytes
+                    .saturating_sub(message_retained_bytes(&old));
+            }
+        }
+        ch.message_count = message_count.max(ch.messages.len() as u64);
+        ch.next_seq = max_seq.saturating_add(1).max(1);
+        true
+    }
+
+    /// Restore one durable shared-context value without emitting a write back
+    /// to Postgres. Capacity rules stay identical to the live setter.
+    #[cfg(feature = "postgres")]
+    pub fn restore_context_entry(&self, slug: &str, entry: ContextEntry) -> bool {
+        if entry.key.is_empty() || entry.key.len() > MAX_CONTEXT_KEY_BYTES {
+            tracing::warn!(
+                channel = slug,
+                key_bytes = entry.key.len(),
+                "skipping invalid persisted context key"
+            );
+            return false;
+        }
+        let mut chans = self.channels.write();
+        let Some(ch) = chans.get_mut(slug) else {
+            return false;
+        };
+        if !ch.context.contains_key(&entry.key) && ch.context.len() >= MAX_CONTEXT_KEYS {
+            tracing::warn!(
+                channel = slug,
+                limit = MAX_CONTEXT_KEYS,
+                "context restore capacity reached; skipping persisted value"
+            );
+            return false;
+        }
+        ch.context.insert(entry.key.clone(), entry);
+        true
     }
 
     fn unique_slug(&self, base: &str) -> String {
@@ -1094,6 +1180,24 @@ impl AppState {
         self.spawn_persist(move |db| async move { db.save_context(&slug, &e).await });
     }
 
+    /// Wait for every accepted best-effort persistence task to finish. New
+    /// request handling must be stopped before this is called during shutdown.
+    #[cfg(feature = "postgres")]
+    pub async fn flush_persistence(&self) {
+        if self.db.is_none() {
+            return;
+        }
+        match self
+            .persist_sem
+            .clone()
+            .acquire_many_owned(PERSIST_CONCURRENCY as u32)
+            .await
+        {
+            Ok(_all_permits) => {}
+            Err(error) => tracing::warn!(%error, "persistence semaphore closed before flush"),
+        }
+    }
+
     // Zero-cost no-ops when Postgres is compiled out.
     #[cfg(not(feature = "postgres"))]
     fn persist_agent(&self, _agent: &Agent) {}
@@ -1107,6 +1211,8 @@ impl AppState {
     fn persist_message(&self, _message: &Message) {}
     #[cfg(not(feature = "postgres"))]
     fn persist_context(&self, _slug: &str, _entry: &ContextEntry) {}
+    #[cfg(not(feature = "postgres"))]
+    pub async fn flush_persistence(&self) {}
 }
 
 fn normalize_repository(value: &str) -> BridgeResult<String> {
