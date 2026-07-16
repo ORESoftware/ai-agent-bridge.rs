@@ -1030,7 +1030,7 @@ impl AppState {
                     // sustained overload silently thinning the Postgres mirror
                     // must be visible, without a warn-per-drop flood.
                     let shed = self.shed_persist_writes.fetch_add(1, Ordering::Relaxed) + 1;
-                    if shed == 1 || shed.is_multiple_of(1000) {
+                    if shed_escalates_to_warn(shed) {
                         tracing::warn!(
                             total_shed = shed,
                             "persist queue full; shedding best-effort writes \
@@ -1218,6 +1218,16 @@ pub fn slugify(text: &str) -> String {
 /// Normalize a caller-supplied slug (already slug-ish, but be forgiving).
 fn normalize_slug(slug: &str) -> String {
     slugify(slug)
+}
+
+/// Whether the `n`th shed best-effort persist write (1-based) escalates from
+/// `debug` to `warn`. The first shed announces the overload; every 1000th
+/// keeps a sustained overload visible without a warn-per-drop flood.
+/// (Only the postgres-mirror path sheds; the fn stays compiled everywhere so
+/// its tests run in every configuration.)
+#[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+fn shed_escalates_to_warn(n: u64) -> bool {
+    n == 1 || n.is_multiple_of(1000)
 }
 
 #[cfg(test)]
@@ -1768,6 +1778,24 @@ mod tests {
                 assert_eq!(member_count, 0);
             }
             other => panic!("expected leave presence, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod shed_escalation_tests {
+    use super::shed_escalates_to_warn;
+
+    /// Sustained persist overload must stay VISIBLE without flooding: warn on
+    /// the first shed, then exactly once per thousand, debug otherwise.
+    #[test]
+    fn shed_escalation_is_first_then_every_thousandth() {
+        assert!(shed_escalates_to_warn(1), "the first shed announces overload");
+        for n in [2u64, 3, 42, 999, 1001, 1999, 2001] {
+            assert!(!shed_escalates_to_warn(n), "shed {n} must stay at debug");
+        }
+        for n in [1000u64, 2000, 10_000] {
+            assert!(shed_escalates_to_warn(n), "shed {n} must re-announce");
         }
     }
 }
