@@ -103,7 +103,10 @@ fn env_or(key: &str, default: &str) -> String {
 }
 
 fn env_usize(key: &str, default: usize) -> usize {
-    env_opt(key).and_then(|v| v.parse().ok()).filter(|d| *d > 0).unwrap_or(default)
+    env_opt(key)
+        .and_then(|v| v.parse().ok())
+        .filter(|d| *d > 0)
+        .unwrap_or(default)
 }
 
 impl Config {
@@ -114,14 +117,18 @@ impl Config {
             .parse::<IpAddr>()
             .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
 
+        let compat_http_port =
+            env_opt("AI_AGENT_BRIDGE_PORT").or_else(|| env_opt("CLAUDE_INBOX_PORT"));
         let http_port = env_opt("HTTP_PORT")
             .or_else(|| env_opt("PORT"))
+            .or_else(|| compat_http_port.clone())
             .and_then(|v| v.parse().ok())
             .unwrap_or(8142);
 
         let tcp_port = env_opt("TCP_PORT")
+            .or_else(|| env_opt("AI_AGENT_BRIDGE_TCP_PORT"))
             .and_then(|v| v.parse().ok())
-            .unwrap_or(8143);
+            .unwrap_or(if compat_http_port.is_some() { 0 } else { 8143 });
 
         let embed_dim = env_opt("EMBED_DIM")
             .and_then(|v| v.parse().ok())
@@ -147,7 +154,8 @@ impl Config {
             api_auth_bearer: env_opt("API_AUTH_BEARER"),
             embeddings_url: env_opt("EMBEDDINGS_URL"),
             embeddings_model: env_or("EMBEDDINGS_MODEL", "local-hash-v1"),
-            embeddings_bearer: env_opt("EMBEDDINGS_API_AUTH_BEARER").or_else(|| env_opt("EMBEDDINGS_BEARER")),
+            embeddings_bearer: env_opt("EMBEDDINGS_API_AUTH_BEARER")
+                .or_else(|| env_opt("EMBEDDINGS_BEARER")),
             embed_dim,
             database_url: env_opt("DATABASE_URL").or_else(|| env_opt("RDS_DATABASE_URL")),
             history_limit,
@@ -164,9 +172,18 @@ impl Config {
             max_tcp_line_bytes: env_usize("MAX_TCP_LINE_BYTES", DEFAULT_MAX_TCP_LINE_BYTES),
             max_tcp_connections: env_usize("MAX_TCP_CONNECTIONS", DEFAULT_MAX_TCP_CONNECTIONS),
             max_http_body_bytes: env_usize("MAX_HTTP_BODY_BYTES", DEFAULT_MAX_HTTP_BODY_BYTES),
-            max_channel_history_bytes: env_usize("MAX_CHANNEL_HISTORY_BYTES", DEFAULT_MAX_CHANNEL_HISTORY_BYTES),
-            tcp_auth_deadline_secs: env_usize("TCP_AUTH_DEADLINE_SECS", DEFAULT_TCP_AUTH_DEADLINE_SECS as usize) as u64,
-            tcp_idle_deadline_secs: env_usize("TCP_IDLE_DEADLINE_SECS", DEFAULT_TCP_IDLE_DEADLINE_SECS as usize) as u64,
+            max_channel_history_bytes: env_usize(
+                "MAX_CHANNEL_HISTORY_BYTES",
+                DEFAULT_MAX_CHANNEL_HISTORY_BYTES,
+            ),
+            tcp_auth_deadline_secs: env_usize(
+                "TCP_AUTH_DEADLINE_SECS",
+                DEFAULT_TCP_AUTH_DEADLINE_SECS as usize,
+            ) as u64,
+            tcp_idle_deadline_secs: env_usize(
+                "TCP_IDLE_DEADLINE_SECS",
+                DEFAULT_TCP_IDLE_DEADLINE_SECS as usize,
+            ) as u64,
         })
     }
 
