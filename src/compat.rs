@@ -17,13 +17,13 @@ use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// One `inbox.jsonl` line. A typed struct (not a `serde_json::Value`) so the key
 /// order is exactly `id, ts, from, topic, prompt` — a `Value` serializes with
 /// sorted keys by default, which would silently change the legacy line format.
-#[derive(Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct InboxLine {
     pub id: u64,
     pub ts: String,
@@ -32,8 +32,27 @@ pub struct InboxLine {
     pub prompt: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoxFile {
+    Inbox,
+    Outbox,
+}
+
+impl BoxFile {
+    fn file_name(self) -> &'static str {
+        match self {
+            BoxFile::Inbox => "inbox.jsonl",
+            BoxFile::Outbox => "outbox.jsonl",
+        }
+    }
+}
+
 pub fn inbox_path(dir: &Path) -> PathBuf {
-    dir.join("inbox.jsonl")
+    box_path(dir, BoxFile::Inbox)
+}
+
+pub fn box_path(dir: &Path, file: BoxFile) -> PathBuf {
+    dir.join(file.file_name())
 }
 
 /// Create and validate the private compatibility state before the server starts.
@@ -41,7 +60,11 @@ pub fn inbox_path(dir: &Path) -> PathBuf {
 #[cfg(unix)]
 pub fn prepare_inbox(dir: &Path) -> std::io::Result<()> {
     let directory = secure_directory(dir)?;
-    let _ = open_inbox_at(directory.as_raw_fd(), libc::O_RDWR | libc::O_CREAT)?;
+    let _ = open_box_at(
+        directory.as_raw_fd(),
+        BoxFile::Inbox,
+        libc::O_RDWR | libc::O_CREAT,
+    )?;
     Ok(())
 }
 
@@ -54,7 +77,7 @@ pub fn prepare_inbox(_dir: &Path) -> std::io::Result<()> {
 #[cfg(unix)]
 pub fn inbox_count(dir: &Path) -> std::io::Result<usize> {
     let directory = secure_directory(dir)?;
-    let file = open_inbox_at(directory.as_raw_fd(), libc::O_RDONLY)?;
+    let file = open_box_at(directory.as_raw_fd(), BoxFile::Inbox, libc::O_RDONLY)?;
     BufReader::new(file)
         .lines()
         .try_fold(0usize, |count, line| {
@@ -71,18 +94,32 @@ pub fn inbox_count(_dir: &Path) -> std::io::Result<usize> {
 /// Append one JSON line to `inbox.jsonl`, matching the legacy format.
 #[cfg(unix)]
 pub fn append_inbox<T: Serialize>(dir: &Path, msg: &T) -> std::io::Result<()> {
-    let directory = secure_directory(dir)?;
-    let mut file = open_inbox_at(
-        directory.as_raw_fd(),
-        libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT,
-    )?;
-    let mut line = serde_json::to_string(msg).map_err(std::io::Error::other)?;
-    line.push('\n');
-    file.write_all(line.as_bytes())
+    append_box(dir, BoxFile::Inbox, msg)
 }
 
 #[cfg(not(unix))]
 pub fn append_inbox<T: Serialize>(_dir: &Path, _msg: &T) -> std::io::Result<()> {
+    unsupported_platform()
+}
+
+/// Append one JSON line to the given box file through the same no-follow,
+/// owner-checked descriptor path as the inbox; serialization failures are
+/// errors, never silently-written placeholders.
+#[cfg(unix)]
+pub fn append_box<T: Serialize>(dir: &Path, file: BoxFile, msg: &T) -> std::io::Result<()> {
+    let directory = secure_directory(dir)?;
+    let mut f = open_box_at(
+        directory.as_raw_fd(),
+        file,
+        libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT,
+    )?;
+    let mut line = serde_json::to_string(msg).map_err(std::io::Error::other)?;
+    line.push('\n');
+    f.write_all(line.as_bytes())
+}
+
+#[cfg(not(unix))]
+pub fn append_box<T: Serialize>(_dir: &Path, _file: BoxFile, _msg: &T) -> std::io::Result<()> {
     unsupported_platform()
 }
 
@@ -103,12 +140,15 @@ fn secure_directory(dir: &Path) -> std::io::Result<File> {
 }
 
 #[cfg(unix)]
-fn open_inbox_at(directory: RawFd, flags: libc::c_int) -> std::io::Result<File> {
-    const NAME: &CStr = c"inbox.jsonl";
-    // SAFETY: `directory` is an open directory fd, NAME is NUL-terminated, and
+fn open_box_at(directory: RawFd, file: BoxFile, flags: libc::c_int) -> std::io::Result<File> {
+    let name: &CStr = match file {
+        BoxFile::Inbox => c"inbox.jsonl",
+        BoxFile::Outbox => c"outbox.jsonl",
+    };
+    // SAFETY: `directory` is an open directory fd, `name` is NUL-terminated, and
     // the returned descriptor is immediately owned by `File` on success.
     let flags = flags | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK;
-    let fd = unsafe { libc::openat(directory, NAME.as_ptr(), flags, 0o600) };
+    let fd = unsafe { libc::openat(directory, name.as_ptr(), flags, 0o600) };
     if fd < 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -116,12 +156,12 @@ fn open_inbox_at(directory: RawFd, flags: libc::c_int) -> std::io::Result<File> 
     let file = unsafe { File::from_raw_fd(fd) };
     let metadata = file.metadata()?;
     if !metadata.is_file() {
-        return Err(invalid_state("compat inbox is not a regular file"));
+        return Err(invalid_state("compat box file is not a regular file"));
     }
     if metadata.nlink() != 1 {
-        return Err(invalid_state("compat inbox must not be hard-linked"));
+        return Err(invalid_state("compat box file must not be hard-linked"));
     }
-    require_current_owner(&metadata, "compat inbox file")?;
+    require_current_owner(&metadata, "compat box file")?;
     set_mode(file.as_raw_fd(), 0o600)?;
     Ok(file)
 }
@@ -159,6 +199,43 @@ fn unsupported_platform<T>() -> std::io::Result<T> {
         std::io::ErrorKind::Unsupported,
         "secure compatibility inbox storage requires Unix no-follow filesystem APIs",
     ))
+}
+
+/// Read JSONL messages with `id > since`, through the same no-follow,
+/// owner-checked descriptor path as the writers. A missing box file is an
+/// empty box. Malformed lines are skipped rather than making the bridge
+/// unreadable after one bad manual append.
+#[cfg(unix)]
+pub fn read_box_since(
+    dir: &Path,
+    file: BoxFile,
+    since: Option<u64>,
+) -> std::io::Result<Vec<InboxLine>> {
+    let directory = secure_directory(dir)?;
+    let f = match open_box_at(directory.as_raw_fd(), file, libc::O_RDONLY) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let since = since.unwrap_or(0);
+    let mut out = Vec::new();
+    for line in BufReader::new(f).lines().map_while(Result::ok) {
+        if let Ok(msg) = serde_json::from_str::<InboxLine>(&line) {
+            if msg.id > since {
+                out.push(msg);
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(not(unix))]
+pub fn read_box_since(
+    _dir: &Path,
+    _file: BoxFile,
+    _since: Option<u64>,
+) -> std::io::Result<Vec<InboxLine>> {
+    unsupported_platform()
 }
 
 /// `YYYY-MM-DDTHH:MM:SSZ` (UTC, seconds) — the legacy `inbox.jsonl` timestamp.

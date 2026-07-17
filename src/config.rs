@@ -134,14 +134,18 @@ impl Config {
             .parse::<IpAddr>()
             .map_err(|error| anyhow::anyhow!("HOST is not a valid IP address: {error}"))?;
 
+        let compat_http_port =
+            env_opt("AI_AGENT_BRIDGE_PORT").or_else(|| env_opt("CLAUDE_INBOX_PORT"));
         let http_port = env_opt("HTTP_PORT")
             .or_else(|| env_opt("PORT"))
+            .or_else(|| compat_http_port.clone())
             .and_then(|v| v.parse().ok())
             .unwrap_or(8142);
 
         let tcp_port = env_opt("TCP_PORT")
+            .or_else(|| env_opt("AI_AGENT_BRIDGE_TCP_PORT"))
             .and_then(|v| v.parse().ok())
-            .unwrap_or(8143);
+            .unwrap_or(if compat_http_port.is_some() { 0 } else { 8143 });
 
         let embed_dim = env_opt("EMBED_DIM")
             .and_then(|v| v.parse().ok())
