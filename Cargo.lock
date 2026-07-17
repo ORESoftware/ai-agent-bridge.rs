@@ -469,7 +469,7 @@ dependencies = [
 [[package]]
 name = "fiducia-telemetry"
 version = "0.1.0"
-source = "git+https://github.com/fiducia-cloud/fiducia-telemetry.rs?tag=v0.1.0#143382576f4e11e16ad49fde50b4f139883ed51b"
+source = "git+https://github.com/fiducia-cloud/fiducia-telemetry.rs?tag=v0.1.1#fc9b7f7a8df2bfbe24f342743c6185c2f434fb92"
 dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
