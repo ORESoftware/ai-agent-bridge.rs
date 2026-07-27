@@ -16,6 +16,7 @@ pub mod preflight;
 pub mod state;
 pub mod tcp;
 pub mod types;
+pub mod workflow_security;
 
 #[cfg(feature = "postgres")]
 pub mod db;
