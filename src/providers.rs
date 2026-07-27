@@ -152,9 +152,7 @@ impl ProviderConfig {
                 "timeouts must be greater than zero".into(),
             ));
         }
-        if self.max_response_bytes == 0
-            || self.max_response_bytes > MAX_CONFIGURED_RESPONSE_BYTES
-        {
+        if self.max_response_bytes == 0 || self.max_response_bytes > MAX_CONFIGURED_RESPONSE_BYTES {
             return Err(ProviderError::InvalidConfig(format!(
                 "max_response_bytes must be between 1 and {MAX_CONFIGURED_RESPONSE_BYTES}"
             )));
@@ -283,7 +281,8 @@ impl ProviderClient {
         }
         let request_id = request_id(response.headers());
         let bytes = read_bounded(response, self.config.raw.max_response_bytes).await?;
-        let body: Value = serde_json::from_slice(&bytes).map_err(|_| ProviderError::InvalidResponse)?;
+        let body: Value =
+            serde_json::from_slice(&bytes).map_err(|_| ProviderError::InvalidResponse)?;
         let text = parse_response_text(self.config.raw.protocol, &body)?;
         Ok(ProviderResponse {
             provider: self.config.raw.name.clone(),
@@ -320,7 +319,11 @@ fn validate_request(request: &ProviderRequest) -> Result<(), ProviderError> {
     if request.prompt.trim().is_empty() {
         return Err(ProviderError::InvalidConfig("prompt is required".into()));
     }
-    let system_bytes = request.system.as_ref().map(|value| value.len()).unwrap_or(0);
+    let system_bytes = request
+        .system
+        .as_ref()
+        .map(|value| value.len())
+        .unwrap_or(0);
     if request.prompt.len().saturating_add(system_bytes) > MAX_PROMPT_BYTES {
         return Err(ProviderError::PromptTooLarge);
     }
@@ -423,10 +426,7 @@ fn bearer_headers(api_key: &str) -> BTreeMap<String, String> {
     )])
 }
 
-fn enforce_destination(
-    config: &ValidatedProviderConfig,
-    url: &Url,
-) -> Result<(), ProviderError> {
+fn enforce_destination(config: &ValidatedProviderConfig, url: &Url) -> Result<(), ProviderError> {
     let host = url
         .host_str()
         .ok_or_else(|| ProviderError::InvalidConfig("provider endpoint requires a host".into()))?
@@ -557,9 +557,9 @@ fn valid_env_name(value: &str) -> bool {
 
 fn valid_gemini_model(value: &str) -> bool {
     !value.is_empty()
-        && value.chars().all(|ch| {
-            ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_')
-        })
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
 }
 
 fn is_loopback_host(host: &str) -> bool {
@@ -632,13 +632,14 @@ mod tests {
 
     #[test]
     fn openai_responses_request_uses_responses_endpoint() {
-        let client = ProviderClient::with_api_key(
-            config(ProviderProtocol::OpenAiResponses),
-            "secret",
-        )
-        .unwrap();
+        let client =
+            ProviderClient::with_api_key(config(ProviderProtocol::OpenAiResponses), "secret")
+                .unwrap();
         let prepared = client.prepare(&request()).unwrap();
-        assert_eq!(prepared.url.as_str(), "https://api.example.com/v1/responses");
+        assert_eq!(
+            prepared.url.as_str(),
+            "https://api.example.com/v1/responses"
+        );
         assert_eq!(prepared.body["model"], "model-1");
         assert_eq!(prepared.body["instructions"], "Be precise");
         assert_eq!(prepared.body["input"], "Solve the issue");
@@ -648,11 +649,9 @@ mod tests {
 
     #[test]
     fn anthropic_request_uses_messages_contract() {
-        let client = ProviderClient::with_api_key(
-            config(ProviderProtocol::AnthropicMessages),
-            "secret",
-        )
-        .unwrap();
+        let client =
+            ProviderClient::with_api_key(config(ProviderProtocol::AnthropicMessages), "secret")
+                .unwrap();
         let prepared = client.prepare(&request()).unwrap();
         assert_eq!(prepared.url.as_str(), "https://api.example.com/v1/messages");
         assert_eq!(prepared.headers["x-api-key"], "secret");
@@ -661,11 +660,9 @@ mod tests {
 
     #[test]
     fn gemini_request_keeps_secret_out_of_url() {
-        let client = ProviderClient::with_api_key(
-            config(ProviderProtocol::GeminiGenerateContent),
-            "secret",
-        )
-        .unwrap();
+        let client =
+            ProviderClient::with_api_key(config(ProviderProtocol::GeminiGenerateContent), "secret")
+                .unwrap();
         let prepared = client.prepare(&request()).unwrap();
         assert_eq!(
             prepared.url.as_str(),
@@ -677,11 +674,9 @@ mod tests {
 
     #[test]
     fn openai_compatible_request_supports_kimi_and_qwen_shape() {
-        let client = ProviderClient::with_api_key(
-            config(ProviderProtocol::OpenAiCompatibleChat),
-            "secret",
-        )
-        .unwrap();
+        let client =
+            ProviderClient::with_api_key(config(ProviderProtocol::OpenAiCompatibleChat), "secret")
+                .unwrap();
         let prepared = client.prepare(&request()).unwrap();
         assert_eq!(
             prepared.url.as_str(),
