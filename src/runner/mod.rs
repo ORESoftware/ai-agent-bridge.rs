@@ -53,11 +53,8 @@ impl Runner {
         let providers = configs
             .into_iter()
             .map(|config| {
-                let capabilities = configured_capabilities(
-                    &config.name,
-                    &capability_map,
-                    config.protocol,
-                );
+                let capabilities =
+                    configured_capabilities(&config.name, &capability_map, config.protocol);
                 let client = ProviderClient::from_config(config.clone())?;
                 Ok(ProviderWorker {
                     config,
@@ -66,16 +63,10 @@ impl Runner {
                 })
             })
             .collect::<Result<Vec<_>, crate::providers::ProviderError>>()?;
-        let max_concurrency = env_usize(
-            "AI_AGENT_RUNNER_MAX_CONCURRENCY",
-            DEFAULT_MAX_CONCURRENCY,
-        )
-        .clamp(1, MAX_CONCURRENCY);
-        let poll_interval_ms = env_u64(
-            "AI_AGENT_RUNNER_POLL_INTERVAL_MS",
-            DEFAULT_POLL_INTERVAL_MS,
-        )
-        .max(250);
+        let max_concurrency = env_usize("AI_AGENT_RUNNER_MAX_CONCURRENCY", DEFAULT_MAX_CONCURRENCY)
+            .clamp(1, MAX_CONCURRENCY);
+        let poll_interval_ms =
+            env_u64("AI_AGENT_RUNNER_POLL_INTERVAL_MS", DEFAULT_POLL_INTERVAL_MS).max(250);
         let lease_safety_margin_ms = env_u64(
             "AI_AGENT_RUNNER_LEASE_SAFETY_MARGIN_MS",
             DEFAULT_LEASE_SAFETY_MARGIN_MS,
@@ -163,7 +154,8 @@ impl Runner {
         };
         for workflow in workflows {
             for provider in self.providers.iter() {
-                let Some(assignment) = eligible_assignment(&workflow, &provider.config.name).cloned()
+                let Some(assignment) =
+                    eligible_assignment(&workflow, &provider.config.name).cloned()
                 else {
                     continue;
                 };
@@ -288,12 +280,7 @@ async fn execute_assignment(
     };
 
     match bridge
-        .submit(
-            &workflow.plan.id,
-            &provider.config.name,
-            &content,
-            meta,
-        )
+        .submit(&workflow.plan.id, &provider.config.name, &content, meta)
         .await
     {
         Ok(submission) => info!(
@@ -312,10 +299,7 @@ async fn execute_assignment(
     }
 
     if let Some(handle) = lease {
-        if let Err(error) = bridge
-            .release_lease(&handle, &provider.config.name)
-            .await
-        {
+        if let Err(error) = bridge.release_lease(&handle, &provider.config.name).await {
             warn!(
                 workflow_id = %workflow.plan.id,
                 agent_key = %provider.config.name,

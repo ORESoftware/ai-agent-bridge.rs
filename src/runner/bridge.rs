@@ -7,9 +7,7 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::orchestration::{
-    WorkflowPlan, WorkflowStatus, WorkflowSubmission, WorkflowView,
-};
+use crate::orchestration::{WorkflowPlan, WorkflowStatus, WorkflowSubmission, WorkflowView};
 use crate::types::AgentKind;
 
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
@@ -92,8 +90,8 @@ impl BridgeClient {
             .host_str()
             .ok_or_else(|| BridgeClientError::InvalidConfig("bridge URL requires a host".into()))?
             .to_ascii_lowercase();
-        let bearer = env_opt("AI_AGENT_RUNNER_BRIDGE_BEARER")
-            .or_else(|| env_opt("API_AUTH_BEARER"));
+        let bearer =
+            env_opt("AI_AGENT_RUNNER_BRIDGE_BEARER").or_else(|| env_opt("API_AUTH_BEARER"));
         if base_url.scheme() != "https" && !is_loopback_host(&host) {
             return Err(BridgeClientError::InvalidConfig(
                 "remote bridge URLs must use HTTPS".into(),
@@ -150,13 +148,19 @@ impl BridgeClient {
                 "model": model,
             }
         });
-        let _: Value = self.request(Method::POST, "agents/register", Some(body)).await?;
+        let _: Value = self
+            .request(Method::POST, "agents/register", Some(body))
+            .await?;
         Ok(())
     }
 
     pub(crate) async fn list_workflows(&self) -> Result<Vec<WorkflowView>, BridgeClientError> {
         let response: WorkflowListEnvelope = self.request(Method::GET, "workflows", None).await?;
-        Ok(response.workflows.into_iter().map(WorkflowView::from).collect())
+        Ok(response
+            .workflows
+            .into_iter()
+            .map(WorkflowView::from)
+            .collect())
     }
 
     #[allow(dead_code)]
@@ -165,11 +169,7 @@ impl BridgeClient {
         workflow_id: &str,
     ) -> Result<WorkflowView, BridgeClientError> {
         let response: WorkflowGetEnvelope = self
-            .request(
-                Method::GET,
-                &format!("workflows/{workflow_id}"),
-                None,
-            )
+            .request(Method::GET, &format!("workflows/{workflow_id}"), None)
             .await?;
         Ok(response.workflow.into())
     }

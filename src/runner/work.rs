@@ -239,16 +239,18 @@ fn append_bounded(target: &mut String, value: &str, retained: &mut usize, limit:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestration::{
-        WorkflowPlan, WorkflowStage, WorkflowStatus, WorkflowSubmission,
-    };
+    use crate::orchestration::{WorkflowPlan, WorkflowStage, WorkflowStatus, WorkflowSubmission};
 
     fn assignment(ordinal: usize, role: AssignmentRole, agent: &str) -> WorkflowAssignment {
         WorkflowAssignment {
             ordinal,
             agent_key: agent.into(),
             role,
-            phase: if role == AssignmentRole::Reviewer { 1 } else { 0 },
+            phase: if role == AssignmentRole::Reviewer {
+                1
+            } else {
+                0
+            },
         }
     }
 
@@ -301,7 +303,9 @@ mod tests {
     #[test]
     fn competitive_workers_do_not_receive_peer_outputs() {
         let mut workflow = view(WorkflowMode::Competitive);
-        workflow.submissions.push(submission(1, "claude", "peer idea"));
+        workflow
+            .submissions
+            .push(submission(1, "claude", "peer idea"));
         let request = provider_request(&workflow, &workflow.plan.assignments[0], 1000);
         assert!(!request.prompt.contains("peer idea"));
     }
@@ -313,7 +317,9 @@ mod tests {
             .plan
             .assignments
             .push(assignment(1, AssignmentRole::Worker, "claude"));
-        workflow.submissions.push(submission(0, "codex", "first idea"));
+        workflow
+            .submissions
+            .push(submission(0, "codex", "first idea"));
         let request = provider_request(&workflow, &workflow.plan.assignments[1], 1000);
         assert!(request.prompt.contains("first idea"));
     }
@@ -329,8 +335,12 @@ mod tests {
             .plan
             .assignments
             .push(assignment(2, AssignmentRole::Reviewer, "gemini"));
-        workflow.submissions.push(submission(0, "codex", "idea one"));
-        workflow.submissions.push(submission(1, "claude", "idea two"));
+        workflow
+            .submissions
+            .push(submission(0, "codex", "idea one"));
+        workflow
+            .submissions
+            .push(submission(1, "claude", "idea two"));
         let request = provider_request(&workflow, &workflow.plan.assignments[2], 1000);
         assert!(request.prompt.contains("idea one"));
         assert!(request.prompt.contains("idea two"));
