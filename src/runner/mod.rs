@@ -49,10 +49,7 @@ impl Runner {
         let raw = std::env::var("AI_PROVIDER_CONFIG_JSON")
             .map_err(|_| anyhow::anyhow!("AI_PROVIDER_CONFIG_JSON is required"))?;
         let configs = parse_provider_configs(&raw)?;
-        let capability_map = env_json("AI_PROVIDER_CAPABILITIES_JSON").unwrap_or_else(|| json!({}));
-        if !capability_map.is_object() {
-            anyhow::bail!("AI_PROVIDER_CAPABILITIES_JSON must be a JSON object");
-        }
+        let capability_map = capability_map_from_env()?;
         let providers = configs
             .into_iter()
             .map(|config| {
@@ -181,6 +178,7 @@ impl Runner {
                 }
                 let bridge = self.bridge.clone();
                 let provider = provider.clone();
+                let workflow = workflow.clone();
                 let in_flight = self.in_flight.clone();
                 let lease_safety_margin_ms = self.lease_safety_margin_ms;
                 let max_output_tokens = self.max_output_tokens;
@@ -329,11 +327,19 @@ async fn execute_assignment(
     }
 }
 
-fn env_json(key: &str) -> Option<Value> {
-    std::env::var(key)
+fn capability_map_from_env() -> anyhow::Result<Value> {
+    let Some(raw) = std::env::var("AI_PROVIDER_CAPABILITIES_JSON")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .and_then(|value| serde_json::from_str(&value).ok())
+    else {
+        return Ok(json!({}));
+    };
+    let value: Value = serde_json::from_str(&raw)
+        .map_err(|_| anyhow::anyhow!("AI_PROVIDER_CAPABILITIES_JSON is invalid JSON"))?;
+    if !value.is_object() {
+        anyhow::bail!("AI_PROVIDER_CAPABILITIES_JSON must be a JSON object");
+    }
+    Ok(value)
 }
 
 fn env_u64(key: &str, default: u64) -> u64 {
