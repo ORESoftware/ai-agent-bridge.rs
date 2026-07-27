@@ -127,6 +127,10 @@ pub fn evaluate(request: &PolicyRequest) -> Result<PolicyDecision, String> {
     }
 
     if request.expected_duration_ms > 0 && request.expected_duration_ms > budget.max_wall_clock_ms {
+        let denial_reason = format!(
+            "expected duration {} ms exceeds the hard wall-clock ceiling {} ms",
+            request.expected_duration_ms, budget.max_wall_clock_ms
+        );
         return Ok(denied_decision(
             mode,
             budget,
@@ -134,10 +138,7 @@ pub fn evaluate(request: &PolicyRequest) -> Result<PolicyDecision, String> {
             request.requires_repository_write,
             degradation_behavior,
             reasons,
-            format!(
-                "expected duration {} ms exceeds the hard wall-clock ceiling {} ms",
-                request.expected_duration_ms, budget.max_wall_clock_ms
-            ),
+            denial_reason,
         ));
     }
 
