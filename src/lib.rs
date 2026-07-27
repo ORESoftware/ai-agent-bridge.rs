@@ -11,6 +11,7 @@ pub mod control_plane;
 pub mod embed;
 pub mod error;
 pub mod http;
+pub mod orchestration;
 pub mod preflight;
 pub mod state;
 pub mod tcp;
