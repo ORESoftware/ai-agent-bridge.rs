@@ -7,9 +7,7 @@ use serde_json::{json, Value};
 
 async fn spawn() -> String {
     let state = common::state();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let app = http::router(state.clone()).merge(orchestration::router(state));
     tokio::spawn(async move {
@@ -18,11 +16,7 @@ async fn spawn() -> String {
     format!("http://{addr}")
 }
 
-async fn post(
-    client: &reqwest::Client,
-    url: String,
-    body: Value,
-) -> (reqwest::StatusCode, Value) {
+async fn post(client: &reqwest::Client, url: String, body: Value) -> (reqwest::StatusCode, Value) {
     let response = client.post(url).json(&body).send().await.unwrap();
     let status = response.status();
     let body = response.json::<Value>().await.unwrap_or(Value::Null);
