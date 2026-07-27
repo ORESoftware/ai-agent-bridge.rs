@@ -6,6 +6,7 @@
 //! can never target reserved internal namespaces such as `workflow.*`.
 
 use std::collections::BTreeSet;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
