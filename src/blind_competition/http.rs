@@ -181,9 +181,12 @@ async fn get_blind_competition(
 async fn submit_blind_competition(
     State(state): State<Arc<AppState>>,
     Path(workflow_id): Path<String>,
-    Extension(identity): Extension<AuthenticatedAdapter>,
+    viewer: Option<Extension<AuthenticatedAdapter>>,
     Json(req): Json<SubmitBlindCompetitionReq>,
 ) -> ApiResult {
+    let Some(Extension(identity)) = viewer else {
+        return Err(BridgeError::Unauthorized.into());
+    };
     let requested_agent_key = normalize_agent_key(&req.agent_key)?;
     if requested_agent_key != identity.agent_key {
         return Err(BridgeError::Unauthorized.into());
@@ -212,7 +215,7 @@ async fn submit_blind_competition(
         .find(|worker| worker.agent_key == identity.agent_key)
         .ok_or_else(|| {
             BridgeError::BadRequest(format!(
-                "agent '{}' is not a worker in blind competition '{}'",
+                "agent '{}' is not a worker in blind competition '{}',",
                 identity.agent_key, plan.id
             ))
         })?;
@@ -256,8 +259,11 @@ async fn submit_blind_competition(
 async fn reveal_blind_competition(
     State(state): State<Arc<AppState>>,
     Path(workflow_id): Path<String>,
-    Extension(identity): Extension<AuthenticatedAdapter>,
+    viewer: Option<Extension<AuthenticatedAdapter>>,
 ) -> ApiResult {
+    let Some(Extension(identity)) = viewer else {
+        return Err(BridgeError::Unauthorized.into());
+    };
     let plan = load_plan(&state, &workflow_id)?;
     if identity.agent_key != plan.reviewer_agent_key {
         return Err(BridgeError::Unauthorized.into());
