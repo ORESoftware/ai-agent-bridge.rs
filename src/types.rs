@@ -19,6 +19,9 @@ pub fn new_id() -> String {
 pub enum AgentKind {
     Claude,
     Codex,
+    Gemini,
+    Kimi,
+    Qwen,
     Human,
     #[default]
     Other,

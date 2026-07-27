@@ -7,7 +7,7 @@ use std::sync::Arc;
 use ai_agent_bridge::config::Config;
 use ai_agent_bridge::embed::Embedder;
 use ai_agent_bridge::state::AppState;
-use ai_agent_bridge::{http, tcp};
+use ai_agent_bridge::{http, orchestration, tcp};
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 use tracing::{info, warn};
@@ -42,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
     let tcp_listener = TcpListener::bind(tcp_addr).await?;
     info!(%http_addr, %tcp_addr, "listening");
 
-    let app = http::router(state.clone());
+    let app = http::router(state.clone()).merge(orchestration::router(state.clone()));
 
     let mut server_tasks = JoinSet::new();
     server_tasks.spawn(async move {
