@@ -19,6 +19,10 @@ categories = ["network-programming", "web-programming"]
 name = "fiducia-ai-agent-bridge"
 path = "src/main.rs"
 
+[[bin]]
+name = "fiducia-ai-agent-runner"
+path = "src/bin/fiducia-ai-agent-runner.rs"
+
 [lib]
 name = "ai_agent_bridge"
 path = "src/lib.rs"
