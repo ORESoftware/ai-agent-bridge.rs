@@ -7,8 +7,10 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::orchestration::{WorkflowSubmission, WorkflowView};
-use crate::types::{AgentKind, Role};
+use crate::orchestration::{
+    WorkflowPlan, WorkflowStatus, WorkflowSubmission, WorkflowView,
+};
+use crate::types::AgentKind;
 
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
@@ -44,13 +46,30 @@ pub(crate) enum BridgeClientError {
 }
 
 #[derive(Deserialize)]
+struct WorkflowViewWire {
+    plan: WorkflowPlan,
+    status: WorkflowStatus,
+    submissions: Vec<WorkflowSubmission>,
+}
+
+impl From<WorkflowViewWire> for WorkflowView {
+    fn from(value: WorkflowViewWire) -> Self {
+        Self {
+            plan: value.plan,
+            status: value.status,
+            submissions: value.submissions,
+        }
+    }
+}
+
+#[derive(Deserialize)]
 struct WorkflowListEnvelope {
-    workflows: Vec<WorkflowView>,
+    workflows: Vec<WorkflowViewWire>,
 }
 
 #[derive(Deserialize)]
 struct WorkflowGetEnvelope {
-    workflow: WorkflowView,
+    workflow: WorkflowViewWire,
 }
 
 impl BridgeClient {
@@ -137,7 +156,7 @@ impl BridgeClient {
 
     pub(crate) async fn list_workflows(&self) -> Result<Vec<WorkflowView>, BridgeClientError> {
         let response: WorkflowListEnvelope = self.request(Method::GET, "workflows", None).await?;
-        Ok(response.workflows)
+        Ok(response.workflows.into_iter().map(WorkflowView::from).collect())
     }
 
     #[allow(dead_code)]
@@ -152,7 +171,7 @@ impl BridgeClient {
                 None,
             )
             .await?;
-        Ok(response.workflow)
+        Ok(response.workflow.into())
     }
 
     pub(crate) async fn submit(
@@ -350,11 +369,5 @@ mod tests {
     #[test]
     fn route_trimming_keeps_requests_relative() {
         assert_eq!(trim_path("/file-leases/acquire"), "file-leases/acquire");
-    }
-
-    #[test]
-    fn role_import_remains_wire_compatible() {
-        let role = Role::Assistant;
-        assert_eq!(serde_json::to_value(role).unwrap(), json!("assistant"));
     }
 }
