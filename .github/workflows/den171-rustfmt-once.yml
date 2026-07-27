@@ -1,0 +1,41 @@
+name: DEN-171 rustfmt once
+
+on:
+  push:
+    branches:
+      - agent/den-171-workflow-orchestration
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-171-rustfmt-once
+  cancel-in-progress: false
+
+jobs:
+  format:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: true
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt
+      - name: Format and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          git rm .github/workflows/den171-rustfmt-once.yml
+          git add -A
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'style: apply rustfmt to DEN-171 workflow code'
+          git push origin HEAD:${GITHUB_REF_NAME}
