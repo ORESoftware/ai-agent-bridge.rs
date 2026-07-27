@@ -40,7 +40,7 @@ fn load_submissions(state: &AppState, channel: &str) -> BridgeResult<Vec<BlindSu
             entry
                 .key
                 .strip_prefix(BLIND_SUBMISSION_CONTEXT_PREFIX)
-                .and_then(|_| serde_json::from_value(entry.value).ok())
+                .and_then(|_| serde_json::from_value::<BlindSubmission>(entry.value).ok())
         })
         .collect::<Vec<_>>();
     submissions.sort_by_key(|submission| submission.assignment_ordinal);
