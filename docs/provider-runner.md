@@ -2,7 +2,8 @@
 
 `fiducia-ai-agent-runner` is the execution process paired with the conversation
 bridge. The bridge owns workflow state and live communication; the runner owns
-provider credentials and outbound model calls.
+provider credentials and outbound model calls. Run it as a separate process or
+container so provider failures cannot terminate the conversation bus.
 
 ## Execution loop
 
