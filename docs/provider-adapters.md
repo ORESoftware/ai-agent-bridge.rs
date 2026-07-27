@@ -17,7 +17,8 @@ endpoint, and releases the lease.
 
 The base URL deliberately includes the provider API prefix. This supports
 regional and workspace-specific Qwen/Kimi-compatible endpoints without
-hard-coding provider hostnames in the bridge.
+hard-coding provider hostnames in the bridge. Copy the provider's documented
+regional API base exactly and retain its trailing slash.
 
 ## Configuration
 
