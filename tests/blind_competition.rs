@@ -72,9 +72,7 @@ async fn spawn() -> (String, Arc<AppState>) {
     let app = http::router(state.clone())
         .merge(blind_competition::router(state.clone()))
         .layer(from_fn_with_state(security, workflow_security::enforce));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
@@ -105,12 +103,7 @@ async fn post_empty(
     url: String,
     token: &str,
 ) -> (reqwest::StatusCode, Value) {
-    let response = client
-        .post(url)
-        .bearer_auth(token)
-        .send()
-        .await
-        .unwrap();
+    let response = client.post(url).bearer_auth(token).send().await.unwrap();
     let status = response.status();
     let body = response.json::<Value>().await.unwrap_or(Value::Null);
     (status, body)
@@ -147,15 +140,12 @@ async fn candidates_are_hidden_until_the_designated_reviewer_reveals() {
     .await;
     assert!(status.is_success(), "{created}");
     let workflow_id = created["workflow"]["plan"]["id"].as_str().unwrap();
-    let channel = created["workflow"]["plan"]["channel"]
-        .as_str()
-        .unwrap();
+    let channel = created["workflow"]["plan"]["channel"].as_str().unwrap();
     let workflow_url = format!("{base}/blind-workflows/{workflow_id}");
     let submission_url = format!("{workflow_url}/submissions");
     let reveal_url = format!("{workflow_url}/reveal");
 
-    let (early_status, early) =
-        post_empty(&client, reveal_url.clone(), REVIEWER_TOKEN).await;
+    let (early_status, early) = post_empty(&client, reveal_url.clone(), REVIEWER_TOKEN).await;
     assert_eq!(early_status.as_u16(), 400, "{early}");
 
     let (status, first) = post_json(
@@ -170,7 +160,10 @@ async fn candidates_are_hidden_until_the_designated_reviewer_reveals() {
     )
     .await;
     assert!(status.is_success(), "{first}");
-    assert_eq!(first["workflow"]["submissions"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        first["workflow"]["submissions"].as_array().unwrap().len(),
+        1
+    );
     assert_eq!(first["workflow"]["hidden_submission_count"], 0);
 
     let (duplicate_status, duplicate) = post_json(
@@ -204,7 +197,10 @@ async fn candidates_are_hidden_until_the_designated_reviewer_reveals() {
     .await;
     assert!(status.is_success(), "{second}");
     assert_eq!(second["workflow"]["stage"], "ready_to_reveal");
-    assert_eq!(second["workflow"]["submissions"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        second["workflow"]["submissions"].as_array().unwrap().len(),
+        1
+    );
     assert_eq!(second["workflow"]["hidden_submission_count"], 1);
 
     let history = state.history(channel, None).unwrap();
@@ -212,8 +208,7 @@ async fn candidates_are_hidden_until_the_designated_reviewer_reveals() {
     assert!(!rendered.contains("candidate alpha secret"));
     assert!(!rendered.contains("candidate beta secret"));
 
-    let (admin_status, admin_reveal) =
-        post_empty(&client, reveal_url.clone(), ADMIN_TOKEN).await;
+    let (admin_status, admin_reveal) = post_empty(&client, reveal_url.clone(), ADMIN_TOKEN).await;
     assert_eq!(admin_status.as_u16(), 401, "{admin_reveal}");
 
     let (status, revealed) = post_empty(&client, reveal_url, REVIEWER_TOKEN).await;
