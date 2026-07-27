@@ -12,6 +12,7 @@ pub mod embed;
 pub mod error;
 pub mod http;
 pub mod orchestration;
+pub mod policy;
 pub mod preflight;
 pub mod state;
 pub mod tcp;
