@@ -13,6 +13,7 @@ pub mod error;
 pub mod http;
 pub mod orchestration;
 pub mod preflight;
+pub mod providers;
 pub mod state;
 pub mod tcp;
 pub mod types;
