@@ -1,9 +1,7 @@
 name: rustfmt artifact
 
 on:
-  push:
-    branches:
-      - agent/den-287-policy-engine
+  pull_request:
   workflow_dispatch:
 
 permissions:
