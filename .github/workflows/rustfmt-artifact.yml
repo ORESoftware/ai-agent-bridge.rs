@@ -1,9 +1,7 @@
 name: rustfmt artifact
 
 on:
-  push:
-    branches:
-      - agent/den-281-workflow-http-auth
+  pull_request:
   workflow_dispatch:
 
 permissions:
