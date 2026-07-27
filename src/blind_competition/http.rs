@@ -215,7 +215,7 @@ async fn submit_blind_competition(
         .find(|worker| worker.agent_key == identity.agent_key)
         .ok_or_else(|| {
             BridgeError::BadRequest(format!(
-                "agent '{}' is not a worker in blind competition '{}',",
+                "agent '{}' is not a worker in blind competition '{}'",
                 identity.agent_key, plan.id
             ))
         })?;
