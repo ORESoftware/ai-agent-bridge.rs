@@ -9,10 +9,10 @@ mod tests {
             {"token_id":"b","token":"same-token","agent_key":"b","scopes":["workflow:read"]}
           ]
         }"#;
-        let error = WorkflowSecurity::from_json(None, json, 1024)
-            .err()
-            .unwrap()
-            .to_string();
+        let error = match WorkflowSecurity::from_json(None, json, 1024) {
+            Ok(_) => panic!("duplicate token material must be rejected"),
+            Err(error) => error.to_string(),
+        };
         assert!(error.contains("duplicate workflow credential token material"));
     }
 
