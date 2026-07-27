@@ -4,7 +4,8 @@ The bridge coordinates model adapters without embedding vendor credentials or
 vendor-specific HTTP clients in the conversation-bus process. Codex, Claude,
 Gemini, Kimi, Qwen, and future adapters register as ordinary agents, advertise
 capabilities in `agent.meta.capabilities`, subscribe over SSE or TCP, and submit
-results through the workflow API.
+results through the workflow API. The workflow routes are mounted alongside the
+existing HTTP router and use the same global `API_AUTH_BEARER` gate.
 
 This keeps three boundaries explicit:
 
