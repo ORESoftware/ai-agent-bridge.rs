@@ -7,7 +7,7 @@ use std::sync::Arc;
 use ai_agent_bridge::config::Config;
 use ai_agent_bridge::embed::Embedder;
 use ai_agent_bridge::state::AppState;
-use ai_agent_bridge::{http, orchestration, tcp};
+use ai_agent_bridge::{http, orchestration, tcp, workflow_security};
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 use tracing::{info, warn};
@@ -17,6 +17,10 @@ async fn main() -> anyhow::Result<()> {
     fiducia_telemetry::init("fiducia-ai-agent-bridge");
 
     let config = Config::from_env()?;
+    let workflow_auth = workflow_security::WorkflowSecurity::from_env(
+        config.api_auth_bearer.clone(),
+        config.max_http_body_bytes,
+    )?;
     info!(
         http_port = config.http_port,
         tcp_port = config.tcp_port,
@@ -42,7 +46,12 @@ async fn main() -> anyhow::Result<()> {
     let tcp_listener = TcpListener::bind(tcp_addr).await?;
     info!(%http_addr, %tcp_addr, "listening");
 
-    let app = http::router(state.clone()).merge(orchestration::router(state.clone()));
+    let app = http::router(state.clone())
+        .merge(orchestration::router(state.clone()))
+        .layer(axum::middleware::from_fn_with_state(
+            workflow_auth,
+            workflow_security::enforce,
+        ));
 
     let mut server_tasks = JoinSet::new();
     server_tasks.spawn(async move {
