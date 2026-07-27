@@ -1,0 +1,44 @@
+name: clippy diagnostic
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  clippy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: "1.95.0"
+          components: clippy
+      - name: Capture Clippy diagnostics
+        id: clippy
+        continue-on-error: true
+        run: |
+          set +e
+          cargo clippy --all-targets --locked --features postgres -- -D warnings \
+            > clippy.log 2>&1
+          status=$?
+          printf '\nexit_code=%s\n' "$status" >> clippy.log
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Upload Clippy diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: clippy-auth
+          path: clippy.log
+          if-no-files-found: error
+          retention-days: 1
+      - name: Preserve Clippy status
+        env:
+          STATUS: ${{ steps.clippy.outputs.status }}
+        run: test "$STATUS" = 0
