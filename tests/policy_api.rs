@@ -4,9 +4,7 @@ use ai_agent_bridge::policy;
 use serde_json::{json, Value};
 
 async fn spawn() -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         let _ = axum::serve(listener, policy::router()).await;
