@@ -7,7 +7,7 @@ use std::sync::Arc;
 use ai_agent_bridge::config::Config;
 use ai_agent_bridge::embed::Embedder;
 use ai_agent_bridge::state::AppState;
-use ai_agent_bridge::{http, orchestration, tcp, workflow_security};
+use ai_agent_bridge::{blind_competition, http, orchestration, tcp, workflow_security};
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 use tracing::{info, warn};
@@ -48,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = http::router(state.clone())
         .merge(orchestration::router(state.clone()))
+        .merge(blind_competition::router(state.clone()))
         .layer(axum::middleware::from_fn_with_state(
             workflow_auth,
             workflow_security::enforce,
