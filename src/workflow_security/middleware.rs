@@ -82,6 +82,30 @@ fn bearer_token(headers: &axum::http::HeaderMap) -> Option<String> {
 
 fn access_rule(method: &Method, path: &str) -> Option<AccessRule> {
     let rule = match (method, path) {
+        (&Method::POST, "/blind-workflows") => AccessRule {
+            scope: "workflow:create",
+            identity_field: Some("created_by"),
+        },
+        (&Method::POST, path)
+            if path.starts_with("/blind-workflows/") && path.ends_with("/submissions") =>
+        {
+            AccessRule {
+                scope: "workflow:submit",
+                identity_field: Some("agent_key"),
+            }
+        }
+        (&Method::POST, path)
+            if path.starts_with("/blind-workflows/") && path.ends_with("/reveal") =>
+        {
+            AccessRule {
+                scope: "workflow:read",
+                identity_field: None,
+            }
+        }
+        (&Method::GET, path) if path.starts_with("/blind-workflows/") => AccessRule {
+            scope: "workflow:read",
+            identity_field: None,
+        },
         (&Method::POST, "/workflows") => AccessRule {
             scope: "workflow:create",
             identity_field: Some("created_by"),
