@@ -43,6 +43,11 @@ impl WorkflowSecurity {
             let token_id = validate_text("token_id", input.token_id, MAX_KEY_BYTES)?;
             let agent_key = validate_text("agent_key", input.agent_key, MAX_KEY_BYTES)?;
             let token = validate_text("token", input.token, MAX_TOKEN_BYTES)?;
+            if global_bearer.as_deref() == Some(token.as_str()) {
+                anyhow::bail!(
+                    "workflow credential '{token_id}' must not reuse API_AUTH_BEARER material"
+                );
+            }
             if !token_ids.insert(token_id.clone()) {
                 anyhow::bail!("duplicate workflow credential token_id '{token_id}'");
             }
