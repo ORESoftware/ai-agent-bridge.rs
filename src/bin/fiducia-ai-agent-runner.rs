@@ -3,6 +3,7 @@
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    fiducia_telemetry::init("fiducia-ai-agent-runner");
+    // Keep the guard alive until the worker exits so metrics and traces flush.
+    let _telemetry = fiducia_telemetry::init("fiducia-ai-agent-runner");
     ai_agent_bridge::runner::run_from_env().await
 }
