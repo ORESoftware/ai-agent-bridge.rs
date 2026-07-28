@@ -185,7 +185,7 @@ async fn acquire(state: Arc<AppState>, bytes: &[u8]) -> Response {
         Ok(response) => response,
         Err(error) => return error_response(error),
     };
-    if response.status >= 400 {
+    if !control_plane_success(response.status) {
         return control_plane_response(response);
     }
 
@@ -283,7 +283,7 @@ async fn renew(state: Arc<AppState>, lease_id: &str, bytes: &[u8]) -> Response {
         Ok(response) => response,
         Err(error) => return error_response(error),
     };
-    if response.status >= 400 {
+    if !control_plane_success(response.status) {
         return control_plane_response(response);
     }
     let renewed = find_bool(&response.body, "renewed").unwrap_or(false);
@@ -334,7 +334,7 @@ async fn release(state: Arc<AppState>, lease_id: &str, bytes: &[u8]) -> Response
         Ok(response) => response,
         Err(error) => return error_response(error),
     };
-    if response.status < 400 {
+    if control_plane_success(response.status) {
         descriptor.status = DescriptorStatus::Released;
         descriptor.released_at = Some(now_ts());
         descriptor.expires_at = now_ts();
@@ -554,6 +554,10 @@ fn find_string(value: &Value, key: &str) -> Option<String> {
         Value::Array(values) => values.iter().find_map(|value| find_string(value, key)),
         _ => None,
     }
+}
+
+fn control_plane_success(status: u16) -> bool {
+    (200..300).contains(&status)
 }
 
 fn control_plane_response(response: ControlPlaneResponse) -> Response {
