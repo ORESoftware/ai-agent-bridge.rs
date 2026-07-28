@@ -25,6 +25,9 @@ pub(crate) struct BridgeClient {
 pub(crate) struct LeaseHandle {
     pub fencing_token: u64,
     pub release_path: String,
+    pub repository: String,
+    pub paths: Vec<String>,
+    pub ttl_ms: u64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -41,6 +44,8 @@ pub(crate) enum BridgeClientError {
     InvalidResponse,
     #[error("Fiducia lease was not acquired")]
     LeaseNotAcquired,
+    #[error("Fiducia lease renewal was rejected")]
+    LeaseRenewalRejected,
 }
 
 #[derive(Deserialize)]
@@ -226,7 +231,35 @@ impl BridgeClient {
         Ok(LeaseHandle {
             fencing_token,
             release_path: trim_path(release_path).to_string(),
+            repository: repository.to_string(),
+            paths: paths.to_vec(),
+            ttl_ms,
         })
+    }
+
+    pub(crate) async fn renew_lease(
+        &self,
+        handle: &LeaseHandle,
+        agent_key: &str,
+    ) -> Result<(), BridgeClientError> {
+        let body = json!({
+            "repository": handle.repository,
+            "paths": handle.paths,
+            "agent_key": agent_key,
+            "fencing_token": handle.fencing_token,
+            "ttl_ms": handle.ttl_ms,
+        });
+        let response: Value = self
+            .request(Method::POST, "file-leases/renew", Some(body))
+            .await?;
+        let renewed = find_bool(&response, "renewed").unwrap_or(false);
+        let fencing_token = find_u64(&response, "fencing_token")
+            .filter(|token| *token > 0)
+            .ok_or(BridgeClientError::LeaseRenewalRejected)?;
+        if !renewed || fencing_token != handle.fencing_token {
+            return Err(BridgeClientError::LeaseRenewalRejected);
+        }
+        Ok(())
     }
 
     pub(crate) async fn release_lease(
