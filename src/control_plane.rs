@@ -9,6 +9,8 @@ use serde_json::Value;
 use crate::config::Config;
 use crate::error::{BridgeError, BridgeResult};
 
+const MAX_RESPONSE_BYTES: usize = 1_048_576;
+
 #[derive(Clone)]
 pub struct ControlPlaneClient {
     base_url: String,
@@ -25,10 +27,14 @@ impl ControlPlaneClient {
     pub fn from_config(config: &Config) -> Option<Self> {
         let base_url = config.control_plane_url.as_deref()?;
         let base_url = base_url.trim().trim_end_matches('/');
+        let timeout = Duration::from_secs(config.control_plane_timeout_secs.max(1));
         let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(config.control_plane_timeout_secs))
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(timeout)
+            .connect_timeout(timeout.min(Duration::from_secs(10)))
+            .user_agent("fiducia-ai-agent-bridge/0.1")
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            .expect("static control-plane HTTP client configuration must be valid");
         Some(Self {
             base_url: base_url.to_string(),
             secret: config.control_plane_secret.clone(),
@@ -38,6 +44,11 @@ impl ControlPlaneClient {
 
     pub async fn acquire(&self, body: &Value) -> BridgeResult<ControlPlaneResponse> {
         self.request(Method::POST, "/v1/file-leases/acquire", Some(body), &[])
+            .await
+    }
+
+    pub async fn renew(&self, body: &Value) -> BridgeResult<ControlPlaneResponse> {
+        self.request(Method::POST, "/v1/file-leases/renew", Some(body), &[])
             .await
     }
 
@@ -73,12 +84,17 @@ impl ControlPlaneClient {
         if let Some(body) = body {
             request = request.json(body);
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|error| BridgeError::ControlPlane(error.to_string()))?;
+        let response = request.send().await.map_err(|error| {
+            let detail = if error.is_timeout() {
+                "request timed out"
+            } else if error.is_connect() {
+                "connection failed"
+            } else {
+                "request failed"
+            };
+            BridgeError::ControlPlane(detail.to_string())
+        })?;
         let status = response.status().as_u16();
-        const MAX_RESPONSE_BYTES: usize = 1_048_576;
         if response
             .content_length()
             .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
@@ -90,7 +106,8 @@ impl ControlPlaneClient {
         let mut bytes = Vec::new();
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|error| BridgeError::ControlPlane(error.to_string()))?;
+            let chunk =
+                chunk.map_err(|_| BridgeError::ControlPlane("response read failed".to_string()))?;
             if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
                 return Err(BridgeError::ControlPlane(
                     "response exceeded 1 MiB".to_string(),
@@ -98,11 +115,16 @@ impl ControlPlaneClient {
             }
             bytes.extend_from_slice(&chunk);
         }
-        let body = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
-            let end = bytes.len().min(512);
-            let detail = String::from_utf8_lossy(&bytes[..end]);
-            serde_json::json!({ "error": "control_plane_error", "detail": detail })
-        });
+        let body = if bytes.is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+                serde_json::json!({
+                    "error": "control_plane_error",
+                    "detail": "control plane returned a non-JSON response"
+                })
+            })
+        };
         Ok(ControlPlaneResponse { status, body })
     }
 }

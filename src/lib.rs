@@ -13,6 +13,7 @@ pub mod control_plane;
 pub mod embed;
 pub mod error;
 pub mod http;
+pub mod lease_renewal;
 pub mod orchestration;
 pub mod policy;
 pub mod preflight;
