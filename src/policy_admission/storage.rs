@@ -3,7 +3,7 @@ struct AdmissionFailure {
     status: StatusCode,
     code: &'static str,
     message: String,
-    admission: Option<AdmissionRecord>,
+    admission: Option<Box<AdmissionRecord>>,
 }
 
 impl AdmissionFailure {
@@ -17,7 +17,7 @@ impl AdmissionFailure {
     }
 
     fn with_admission(mut self, admission: AdmissionRecord) -> Self {
-        self.admission = Some(admission);
+        self.admission = Some(Box::new(admission));
         self
     }
 
@@ -96,6 +96,13 @@ fn create_admission(
                 .denial_reason
                 .clone()
                 .unwrap_or_else(|| "policy denied managed execution".into()),
+        ));
+    }
+    if decision.mode != plan.mode {
+        return Err(AdmissionFailure::new(
+            StatusCode::CONFLICT,
+            "policy_mode_escalated",
+            "policy requires a different workflow mode; create a matching workflow plan",
         ));
     }
 
