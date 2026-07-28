@@ -16,7 +16,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
       --bin fiducia-ai-agent-bridge \
       --bin fiducia-ai-agent-runner \
     && install -D -m 0755 target/release/fiducia-ai-agent-bridge /out/fiducia-ai-agent-bridge \
-    && install -D -m 0755 target/release/fiducia-ai-agent-runner /out/fiducia-ai-agent-runner
+    && install -D -m 0755 target/release/fiducia-ai-agent-runner /out/fiducia-ai-agent-runner \
+    && mkdir -p /out/runtime-state/claude-inbox
 
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:66aa873a4a14fb164aa01296058efd8253744606d72715e45acface073359faa AS bridge
 
@@ -24,7 +25,7 @@ LABEL org.opencontainers.image.source="https://github.com/ORESoftware/ai-agent-b
       org.opencontainers.image.description="Fiducia live AI-agent conversation and orchestration bridge"
 
 COPY --from=builder /out/fiducia-ai-agent-bridge /usr/local/bin/fiducia-ai-agent-bridge
-COPY --chown=nonroot:nonroot runtime-state/ /var/lib/bridge/
+COPY --from=builder --chown=nonroot:nonroot /out/runtime-state/ /var/lib/bridge/
 
 ENV HOST=0.0.0.0 \
     HTTP_PORT=8142 \
