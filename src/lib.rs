@@ -14,6 +14,8 @@ pub mod http;
 pub mod orchestration;
 pub mod policy;
 pub mod preflight;
+pub mod providers;
+pub mod runner;
 pub mod state;
 pub mod tcp;
 pub mod types;
