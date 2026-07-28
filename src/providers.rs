@@ -289,7 +289,7 @@ impl ProviderClient {
             model: self.config.raw.model.clone(),
             text,
             request_id,
-            usage: body.get("usage").cloned().unwrap_or(Value::Null),
+            usage: normalize_usage(self.config.raw.protocol, &body),
         })
     }
 }
@@ -538,6 +538,65 @@ pub fn parse_response_text(
     }
 }
 
+fn normalize_usage(protocol: ProviderProtocol, body: &Value) -> Value {
+    let raw = match protocol {
+        ProviderProtocol::GeminiGenerateContent => body.get("usageMetadata"),
+        _ => body.get("usage"),
+    };
+    let Some(raw) = raw.filter(|value| !value.is_null()) else {
+        return Value::Null;
+    };
+    let (input_keys, output_keys, total_keys): (&[&str], &[&str], &[&str]) = match protocol {
+        ProviderProtocol::OpenAiResponses => (
+            &["input_tokens", "prompt_tokens"],
+            &["output_tokens", "completion_tokens"],
+            &["total_tokens"],
+        ),
+        ProviderProtocol::AnthropicMessages => (
+            &["input_tokens"],
+            &["output_tokens"],
+            &["total_tokens"],
+        ),
+        ProviderProtocol::GeminiGenerateContent => (
+            &["promptTokenCount", "prompt_token_count"],
+            &["candidatesTokenCount", "candidates_token_count"],
+            &["totalTokenCount", "total_token_count"],
+        ),
+        ProviderProtocol::OpenAiCompatibleChat => (
+            &["prompt_tokens", "input_tokens"],
+            &["completion_tokens", "output_tokens"],
+            &["total_tokens"],
+        ),
+    };
+    let input_tokens = usage_u64(raw, input_keys).unwrap_or(0);
+    let output_tokens = usage_u64(raw, output_keys).unwrap_or(0);
+    let total_tokens = usage_u64(raw, total_keys)
+        .unwrap_or_else(|| input_tokens.saturating_add(output_tokens));
+    json!({
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "raw": raw,
+    })
+}
+
+fn usage_u64(value: &Value, keys: &[&str]) -> Option<u64> {
+    keys.iter().find_map(|key| find_usage_u64(value, key))
+}
+
+fn find_usage_u64(value: &Value, key: &str) -> Option<u64> {
+    match value {
+        Value::Object(map) => map
+            .get(key)
+            .and_then(Value::as_u64)
+            .or_else(|| map.values().find_map(|value| find_usage_u64(value, key))),
+        Value::Array(values) => values
+            .iter()
+            .find_map(|value| find_usage_u64(value, key)),
+        _ => None,
+    }
+}
+
 fn request_id(headers: &HeaderMap) -> Option<String> {
     ["x-request-id", "request-id", "x-goog-request-id"]
         .iter()
@@ -569,6 +628,10 @@ fn is_loopback_host(host: &str) -> bool {
             .parse::<IpAddr>()
             .is_ok_and(|address| address.is_loopback())
 }
+
+#[cfg(test)]
+#[path = "providers/http_tests.rs"]
+mod http_tests;
 
 #[cfg(test)]
 mod tests {
@@ -719,6 +782,38 @@ mod tests {
             )
             .unwrap(),
             "compatible"
+        );
+    }
+
+    #[test]
+    fn normalizes_all_provider_usage_shapes() {
+        assert_eq!(
+            normalize_usage(
+                ProviderProtocol::OpenAiResponses,
+                &json!({"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}})
+            )["total_tokens"],
+            15
+        );
+        assert_eq!(
+            normalize_usage(
+                ProviderProtocol::AnthropicMessages,
+                &json!({"usage":{"input_tokens":11,"output_tokens":6}})
+            )["total_tokens"],
+            17
+        );
+        let gemini = normalize_usage(
+            ProviderProtocol::GeminiGenerateContent,
+            &json!({"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":7,"totalTokenCount":19}}),
+        );
+        assert_eq!(gemini["input_tokens"], 12);
+        assert_eq!(gemini["output_tokens"], 7);
+        assert_eq!(gemini["total_tokens"], 19);
+        assert_eq!(
+            normalize_usage(
+                ProviderProtocol::OpenAiCompatibleChat,
+                &json!({"usage":{"prompt_tokens":13,"completion_tokens":8,"total_tokens":21}})
+            )["total_tokens"],
+            21
         );
     }
 
