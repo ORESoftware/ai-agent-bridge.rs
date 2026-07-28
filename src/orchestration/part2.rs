@@ -16,12 +16,12 @@ fn insert_workflow_context(
     updated_by: &str,
 ) -> BridgeResult<ContextEntry> {
     let _guard = workflow_context_lock().lock();
-    if state.get_context_key(slug, key)?.is_some() {
+    if state.get_context_key_internal(slug, key)?.is_some() {
         return Err(BridgeError::BadRequest(format!(
             "workflow context key '{key}' already exists"
         )));
     }
-    state.set_context(slug, key, value, updated_by)
+    state.set_context_internal(slug, key, value, updated_by)
 }
 
 fn load_plan(state: &AppState, workflow_id: &str) -> BridgeResult<WorkflowPlan> {
@@ -31,7 +31,7 @@ fn load_plan(state: &AppState, workflow_id: &str) -> BridgeResult<WorkflowPlan> 
 
 fn load_plan_by_channel(state: &AppState, channel: &str) -> BridgeResult<WorkflowPlan> {
     let entry = state
-        .get_context_key(channel, PLAN_CONTEXT_KEY)?
+        .get_context_key_internal(channel, PLAN_CONTEXT_KEY)?
         .ok_or_else(|| BridgeError::BadRequest(format!("workflow plan missing in '{channel}'")))?;
     serde_json::from_value(entry.value)
         .map_err(|_| BridgeError::BadRequest(format!("workflow plan in '{channel}' is invalid")))
@@ -49,7 +49,7 @@ fn workflow_view(state: &AppState, plan: &WorkflowPlan) -> BridgeResult<Workflow
 
 fn load_submissions(state: &AppState, channel: &str) -> BridgeResult<Vec<WorkflowSubmission>> {
     let mut submissions = state
-        .get_context(channel)?
+        .get_context_internal(channel)?
         .into_iter()
         .filter_map(parse_submission)
         .collect::<Vec<_>>();

@@ -21,6 +21,7 @@ async fn main() -> anyhow::Result<()> {
         config.api_auth_bearer.clone(),
         config.max_http_body_bytes,
     )?;
+    let tcp_auth = workflow_auth.clone();
     info!(
         http_port = config.http_port,
         tcp_port = config.tcp_port,
@@ -63,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
     });
     let tcp_state = state.clone();
     server_tasks.spawn(async move {
-        if let Err(e) = tcp::serve(tcp_state, tcp_listener).await {
+        if let Err(e) = tcp::serve(tcp_state, tcp_listener, tcp_auth).await {
             warn!(error = %e, "tcp server exited");
         }
     });

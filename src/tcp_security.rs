@@ -3,9 +3,7 @@
 use serde_json::{json, Value};
 
 use crate::tcp::Req;
-use crate::workflow_security::{
-    AuthenticatedAdapter, AuthenticatedPrincipal, WorkflowSecurity,
-};
+use crate::workflow_security::{AuthenticatedAdapter, AuthenticatedPrincipal, WorkflowSecurity};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TcpPrincipal {
@@ -86,10 +84,7 @@ impl TcpAccessError {
     }
 }
 
-fn authorize_adapter(
-    adapter: &AuthenticatedAdapter,
-    request: &Req,
-) -> Result<(), TcpAccessError> {
+fn authorize_adapter(adapter: &AuthenticatedAdapter, request: &Req) -> Result<(), TcpAccessError> {
     let (scope, identity) = match request {
         Req::Auth { .. } | Req::Ping => return Ok(()),
         Req::Register { agent_key, .. } => ("agent:register", Some(agent_key.as_str())),

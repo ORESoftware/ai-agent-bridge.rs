@@ -226,7 +226,10 @@ async fn operator_and_no_auth_compatibility_modes_remain_explicit() {
     let open_security = WorkflowSecurity::from_json(None, r#"{"credentials":[]}"#, 1024).unwrap();
     let open_address = spawn(open_security).await;
     let mut open = Client::connect(open_address).await;
-    assert_eq!(open.request(json!({"op":"list_channels"})).await["ok"], true);
+    assert_eq!(
+        open.request(json!({"op":"list_channels"})).await["ok"],
+        true
+    );
 }
 
 #[tokio::test]

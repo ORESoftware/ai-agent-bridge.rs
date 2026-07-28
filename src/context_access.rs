@@ -43,9 +43,7 @@ pub(crate) fn is_reserved_context_key(key: &str) -> bool {
 
 fn ensure_external_context_key(key: &str) -> BridgeResult<()> {
     if is_reserved_context_key(key) {
-        return Err(BridgeError::BadRequest(
-            "reserved_context_namespace".into(),
-        ));
+        return Err(BridgeError::BadRequest("reserved_context_namespace".into()));
     }
     Ok(())
 }
@@ -80,7 +78,12 @@ mod tests {
     async fn generic_context_access_hides_and_rejects_reserved_namespaces() {
         let state = state().await;
         state
-            .set_context("context-test", "public.key", json!({"visible":true}), "adapter")
+            .set_context(
+                "context-test",
+                "public.key",
+                json!({"visible":true}),
+                "adapter",
+            )
             .unwrap();
         state
             .set_context_internal(
