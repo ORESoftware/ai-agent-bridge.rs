@@ -58,6 +58,8 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
+    use tokio::sync::Notify;
+
     use super::*;
 
     #[test]
@@ -72,32 +74,41 @@ mod tests {
 
     #[tokio::test]
     async fn long_operation_is_renewed_until_completion() {
-        let renewals = Arc::new(AtomicU64::new(0));
-        let counter = renewals.clone();
+        let renewal_count = Arc::new(AtomicU64::new(0));
+        let operation_ready = Arc::new(Notify::new());
+        let operation_signal = operation_ready.clone();
+        let counter = renewal_count.clone();
+        let renewal_signal = operation_ready.clone();
+
         let outcome = run_with_heartbeat(
-            async {
-                tokio::time::sleep(Duration::from_millis(85)).await;
+            async move {
+                operation_signal.notified().await;
                 "done"
             },
+            300,
             50,
-            20,
             move || {
                 let counter = counter.clone();
+                let renewal_signal = renewal_signal.clone();
                 async move {
-                    counter.fetch_add(1, Ordering::SeqCst);
+                    let completed = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                    if completed == 2 {
+                        renewal_signal.notify_one();
+                    }
                     Ok::<_, ()>(())
                 }
             },
         )
         .await;
+
         match outcome {
             HeartbeatOutcome::Completed { output, renewals } => {
                 assert_eq!(output, "done");
-                assert!(renewals >= 2);
+                assert_eq!(renewals, 2);
             }
             HeartbeatOutcome::LeaseLost { .. } => panic!("lease unexpectedly lost"),
         }
-        assert!(renewals.load(Ordering::SeqCst) >= 2);
+        assert_eq!(renewal_count.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
