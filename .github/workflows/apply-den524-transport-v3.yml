@@ -1,0 +1,66 @@
+name: apply DEN-524 transport integration v3
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-den524-transport-v3
+  cancel-in-progress: true
+
+jobs:
+  integrate:
+    if: github.event.pull_request.head.ref == 'agent/den-524-tcp-scoped-auth'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt
+      - name: Integrate and format
+        id: integrate
+        continue-on-error: true
+        run: |
+          set +e
+          python .github/scripts/den524_integrate.py > den524-integrate.log 2>&1
+          status=$?
+          if [ "$status" -eq 0 ]; then
+            cargo fmt --all >> den524-integrate.log 2>&1
+            status=$?
+          fi
+          printf '\nexit_code=%s\n' "$status" >> den524-integrate.log
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Upload integration log
+        uses: actions/upload-artifact@v4
+        with:
+          name: den524-integration-log
+          path: den524-integrate.log
+          retention-days: 1
+          if-no-files-found: error
+      - name: Commit integrated source
+        if: steps.integrate.outputs.status == '0'
+        env:
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- '*.rs'; then
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- '*.rs'
+          git commit -m 'security: integrate scoped TCP principals and context APIs'
+          git push origin "HEAD:${HEAD_BRANCH}"
+      - name: Preserve integration status
+        env:
+          STATUS: ${{ steps.integrate.outputs.status }}
+        run: test "$STATUS" = 0
