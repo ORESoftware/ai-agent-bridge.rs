@@ -45,7 +45,7 @@ mod tests {
             meta: json!({}),
         };
         state
-            .set_context(
+            .set_context_internal(
                 &channel,
                 WORKFLOW_PLAN_CONTEXT_KEY,
                 serde_json::to_value(plan).unwrap(),
