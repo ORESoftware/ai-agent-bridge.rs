@@ -1023,7 +1023,7 @@ impl AppState {
 
     // ---- shared context -------------------------------------------------------
 
-    pub fn set_context(
+    pub(crate) fn set_context_internal(
         &self,
         slug: &str,
         key: &str,
@@ -1081,7 +1081,7 @@ impl AppState {
         Ok(entry)
     }
 
-    pub fn get_context(&self, slug: &str) -> BridgeResult<Vec<ContextEntry>> {
+    pub(crate) fn get_context_internal(&self, slug: &str) -> BridgeResult<Vec<ContextEntry>> {
         let chans = self.channels.read();
         let ch = chans
             .get(slug)
@@ -1091,7 +1091,11 @@ impl AppState {
         Ok(v)
     }
 
-    pub fn get_context_key(&self, slug: &str, key: &str) -> BridgeResult<Option<ContextEntry>> {
+    pub(crate) fn get_context_key_internal(
+        &self,
+        slug: &str,
+        key: &str,
+    ) -> BridgeResult<Option<ContextEntry>> {
         let chans = self.channels.read();
         let ch = chans
             .get(slug)

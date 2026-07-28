@@ -10,7 +10,7 @@ columns = ["options", "env", "type", "description"]
 allow_unknown = false
 
 [env]
-ignore = ["DATABASE_URL", "RDS_DATABASE_URL", "API_AUTH_BEARER", "AI_AGENT_BRIDGE_TOKEN", "CLAUDE_INBOX_TOKEN", "EMBEDDINGS_API_AUTH_BEARER", "EMBEDDINGS_BEARER", "FIDUCIA_CONTROL_PLANE_SECRET", "FIDUCIA_INTERNAL_SECRET", "WORKFLOW_ADAPTER_AUTH_JSON"]
+ignore = ["DATABASE_URL", "RDS_DATABASE_URL", "API_AUTH_BEARER", "AI_AGENT_BRIDGE_TOKEN", "CLAUDE_INBOX_TOKEN", "EMBEDDINGS_API_AUTH_BEARER", "EMBEDDINGS_BEARER", "FIDUCIA_CONTROL_PLANE_SECRET", "FIDUCIA_INTERNAL_SECRET", "WORKFLOW_ADAPTER_AUTH_JSON", "AI_PROVIDER_CONFIG_JSON", "AI_PROVIDER_PRICING_JSON", "AI_AGENT_RUNNER_BRIDGE_BEARER"]
 
 [flags.host]
 env = "HOST"
@@ -159,3 +159,75 @@ env = "CONTROL_PLANE_TIMEOUT_SECS"
 aliases = ["control-plane-timeout-secs"]
 type = "integer"
 help = "Bridge-to-control-plane HTTP timeout in seconds."
+
+[flags.require-assignment-claims]
+env = "AI_AGENT_BRIDGE_REQUIRE_ASSIGNMENT_CLAIMS"
+aliases = ["require-assignment-claims"]
+type = "string"
+help = "Require a current Fiducia assignment claim on every workflow submission."
+
+[flags.assignment-claim-repository]
+env = "AI_AGENT_BRIDGE_ASSIGNMENT_CLAIM_REPOSITORY"
+aliases = ["assignment-claim-repository"]
+type = "string"
+help = "Canonical owner/repo coordination namespace used for assignment claims."
+
+[flags.assignment-claim-max-ttl-ms]
+env = "AI_AGENT_BRIDGE_ASSIGNMENT_CLAIM_MAX_TTL_MS"
+aliases = ["assignment-claim-max-ttl-ms"]
+type = "integer"
+help = "Maximum TTL accepted while validating an assignment claim."
+
+[flags.runner-distributed-claims]
+env = "AI_AGENT_RUNNER_DISTRIBUTED_CLAIMS"
+aliases = ["runner-distributed-claims"]
+type = "string"
+help = "Enable Fiducia-backed assignment claims in the provider runner."
+
+[flags.runner-replica-count]
+env = "AI_AGENT_RUNNER_REPLICA_COUNT"
+aliases = ["runner-replica-count"]
+type = "integer"
+help = "Declared provider-runner replica count; values above one require distributed claims."
+
+[flags.runner-instance-id]
+env = "AI_AGENT_RUNNER_INSTANCE_ID"
+aliases = ["runner-instance-id"]
+type = "string"
+help = "Unique path-safe provider-runner instance identity."
+
+[flags.runner-assignment-claim-repository]
+env = "AI_AGENT_RUNNER_ASSIGNMENT_CLAIM_REPOSITORY"
+aliases = ["runner-assignment-claim-repository"]
+type = "string"
+help = "Canonical coordination namespace used by provider-runner assignment claims."
+
+[flags.runner-assignment-claim-ttl-ms]
+env = "AI_AGENT_RUNNER_ASSIGNMENT_CLAIM_TTL_MS"
+aliases = ["runner-assignment-claim-ttl-ms"]
+type = "integer"
+help = "TTL for one provider-runner assignment claim."
+
+[flags.runner-admission-actor]
+env = "AI_AGENT_RUNNER_ADMISSION_ACTOR"
+aliases = ["runner-admission-actor"]
+type = "string"
+help = "Scoped runner identity used for policy admission and usage reporting."
+
+[flags.runner-policy-approved-by]
+env = "AI_AGENT_RUNNER_POLICY_APPROVED_BY"
+aliases = ["runner-policy-approved-by"]
+type = "string"
+help = "Explicit approver identity supplied when policy requires human approval."
+
+[flags.runner-admission-timeout-secs]
+env = "AI_AGENT_RUNNER_ADMISSION_TIMEOUT_SECS"
+aliases = ["runner-admission-timeout-secs"]
+type = "integer"
+help = "Total timeout for one policy-admission HTTP request."
+
+[flags.runner-max-admission-response-bytes]
+env = "AI_AGENT_RUNNER_MAX_ADMISSION_RESPONSE_BYTES"
+aliases = ["runner-max-admission-response-bytes"]
+type = "integer"
+help = "Maximum bytes accepted from one policy-admission response."

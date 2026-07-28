@@ -369,7 +369,10 @@ async fn store_descriptor(
         .await?;
     let _guard = mutation_lock().lock().await;
     let key = descriptor_key(&descriptor.lease_id);
-    if state.get_context_key(REGISTRY_CHANNEL, &key)?.is_some() {
+    if state
+        .get_context_key_internal(REGISTRY_CHANNEL, &key)?
+        .is_some()
+    {
         return Err(BridgeError::BadRequest(
             "compatibility lease ID collision".into(),
         ));
@@ -381,7 +384,7 @@ fn persist_descriptor(
     state: &AppState,
     descriptor: &AuthoritativeLeaseDescriptor,
 ) -> Result<(), BridgeError> {
-    state.set_context(
+    state.set_context_internal(
         REGISTRY_CHANNEL,
         &descriptor_key(&descriptor.lease_id),
         serde_json::to_value(descriptor)
@@ -396,7 +399,7 @@ fn load_active_descriptor(
     lease_id: &str,
 ) -> Result<AuthoritativeLeaseDescriptor, BridgeError> {
     let entry = state
-        .get_context_key(REGISTRY_CHANNEL, &descriptor_key(lease_id))
+        .get_context_key_internal(REGISTRY_CHANNEL, &descriptor_key(lease_id))
         .map_err(|_| BridgeError::FileLeaseNotFound(lease_id.to_string()))?
         .ok_or_else(|| BridgeError::FileLeaseNotFound(lease_id.to_string()))?;
     let descriptor = serde_json::from_value::<AuthoritativeLeaseDescriptor>(entry.value)
@@ -606,3 +609,7 @@ mod tests {
         assert!(normalize_path("src\\lib.rs").is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "lease_descriptors_internal_tests.rs"]
+mod internal_tests;

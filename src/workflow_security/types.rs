@@ -9,11 +9,16 @@ const KNOWN_SCOPES: &[&str] = &[
     "workflow:create",
     "workflow:read",
     "workflow:submit",
+    "workflow:admit",
+    "workflow:usage",
     "agent:register",
     "agent:read",
+    "channel:create",
     "channel:join",
     "channel:post",
     "channel:read",
+    "context:read",
+    "context:write",
     "lease:operate",
 ];
 
@@ -22,6 +27,18 @@ pub struct AuthenticatedAdapter {
     pub token_id: String,
     pub agent_key: String,
     pub scopes: BTreeSet<String>,
+}
+
+impl AuthenticatedAdapter {
+    pub fn has_scope(&self, scope: &str) -> bool {
+        self.scopes.contains(scope)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthenticatedPrincipal {
+    Operator,
+    Adapter(AuthenticatedAdapter),
 }
 
 struct Credential {

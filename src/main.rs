@@ -8,8 +8,8 @@ use ai_agent_bridge::config::Config;
 use ai_agent_bridge::embed::Embedder;
 use ai_agent_bridge::state::AppState;
 use ai_agent_bridge::{
-    assignment_claims, blind_competition, http, lease_descriptors, lease_renewal,
-    orchestration, policy, policy_admission, tcp, workflow_security,
+    assignment_claims, blind_competition, http, lease_descriptors, lease_renewal, orchestration,
+    policy, policy_admission, tcp, workflow_security,
 };
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;

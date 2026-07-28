@@ -50,7 +50,7 @@ pub enum DegradationBehavior {
     QueueUntilRequiredProvidersAreAvailable,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProviderCandidate {
     pub agent_key: String,
     pub kind: AgentKind,
@@ -71,7 +71,7 @@ pub struct ProviderCandidate {
     pub max_context_tokens: u64,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RequestedBudget {
     pub max_providers: Option<u8>,
     pub max_rounds: Option<u8>,
@@ -83,7 +83,7 @@ pub struct RequestedBudget {
     pub max_cost_micro_usd: Option<u64>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PolicyRequest {
     #[serde(default)]
     pub task_risk: TaskRisk,
@@ -102,7 +102,7 @@ pub struct PolicyRequest {
     pub providers: Vec<ProviderCandidate>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BudgetLimits {
     pub max_providers: u8,
     pub max_rounds: u8,
@@ -114,7 +114,7 @@ pub struct BudgetLimits {
     pub max_cost_micro_usd: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SelectedProvider {
     pub ordinal: usize,
     pub agent_key: String,

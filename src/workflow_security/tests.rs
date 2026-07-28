@@ -17,6 +17,29 @@ mod tests {
     }
 
     #[test]
+    fn scoped_token_must_not_equal_operator_token() {
+        let json = r#"{
+          "credentials": [
+            {
+              "token_id":"adapter-v1",
+              "token":"shared-secret",
+              "agent_key":"codex",
+              "scopes":["workflow:read"]
+            }
+          ]
+        }"#;
+        let error = match WorkflowSecurity::from_json(
+            Some("shared-secret".into()),
+            json,
+            1024,
+        ) {
+            Ok(_) => panic!("operator/scoped token collision must be rejected"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("must not reuse API_AUTH_BEARER material"));
+    }
+
+    #[test]
     fn token_lookup_returns_scoped_identity() {
         let json = r#"{
           "credentials": [
@@ -33,6 +56,31 @@ mod tests {
         assert_eq!(identity.token_id, "codex-v2");
         assert_eq!(identity.agent_key, "codex");
         assert!(identity.scopes.contains("workflow:submit"));
+    }
+
+    #[test]
+    fn token_lookup_returns_transport_principals() {
+        let json = r#"{
+          "credentials": [
+            {
+              "token_id":"codex-v2",
+              "token":"codex-secret",
+              "agent_key":"codex",
+              "scopes":["channel:read"]
+            }
+          ]
+        }"#;
+        let security =
+            WorkflowSecurity::from_json(Some("operator-secret".into()), json, 1024).unwrap();
+        assert_eq!(
+            security.authenticate_principal("operator-secret"),
+            Some(AuthenticatedPrincipal::Operator)
+        );
+        assert!(matches!(
+            security.authenticate_principal("codex-secret"),
+            Some(AuthenticatedPrincipal::Adapter(identity)) if identity.agent_key == "codex"
+        ));
+        assert!(security.authenticate_principal("invalid").is_none());
     }
 
     #[test]
