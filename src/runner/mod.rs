@@ -1,4 +1,5 @@
 mod bridge;
+mod heartbeat;
 mod work;
 
 use std::collections::HashSet;
@@ -14,9 +15,10 @@ use crate::orchestration::{WorkflowAssignment, WorkflowView};
 use crate::providers::{parse_provider_configs, ProviderClient, ProviderConfig};
 
 use bridge::{BridgeClient, LeaseHandle};
+use heartbeat::{run_with_heartbeat, HeartbeatOutcome};
 use work::{
-    configured_capabilities, eligible_assignment, failure_meta, infer_agent_kind, lease_is_safe,
-    protocol_label, provider_request, success_meta,
+    configured_capabilities, eligible_assignment, failure_meta, infer_agent_kind, protocol_label,
+    provider_request, success_meta,
 };
 
 const DEFAULT_POLL_INTERVAL_MS: u64 = 5_000;
@@ -211,18 +213,13 @@ async fn execute_assignment(
         .as_ref()
         .filter(|requirement| requirement.required)
     {
-        if !lease_is_safe(
-            requirement,
-            provider.config.timeout_secs,
-            lease_safety_margin_ms,
-        ) {
+        if heartbeat::renewal_delay(requirement.ttl_ms, lease_safety_margin_ms).is_none() {
             warn!(
                 workflow_id = %workflow.plan.id,
                 agent_key = %provider.config.name,
                 ttl_ms = requirement.ttl_ms,
-                provider_timeout_secs = provider.config.timeout_secs,
                 safety_margin_ms = lease_safety_margin_ms,
-                "skipping assignment because the unrenewed lease TTL is unsafe"
+                "skipping assignment because the lease TTL cannot preserve its heartbeat margin"
             );
             return;
         }
@@ -252,8 +249,26 @@ async fn execute_assignment(
 
     let fencing_token = lease.as_ref().map(|handle| handle.fencing_token);
     let request = provider_request(&workflow, &assignment, max_output_tokens);
-    let (content, meta) = match provider.client.execute(&request).await {
-        Ok(response) => (
+    let execution = if let Some(handle) = lease.as_ref() {
+        run_with_heartbeat(
+            provider.client.execute(&request),
+            handle.ttl_ms,
+            lease_safety_margin_ms,
+            || bridge.renew_lease(handle, &provider.config.name),
+        )
+        .await
+    } else {
+        HeartbeatOutcome::Completed {
+            output: provider.client.execute(&request).await,
+            renewals: 0,
+        }
+    };
+
+    let (content, mut meta, renewals, heartbeat_failed) = match execution {
+        HeartbeatOutcome::Completed {
+            output: Ok(response),
+            renewals,
+        } => (
             response.text,
             success_meta(
                 &response.provider,
@@ -263,8 +278,13 @@ async fn execute_assignment(
                 response.usage,
                 fencing_token,
             ),
+            renewals,
+            false,
         ),
-        Err(error) => {
+        HeartbeatOutcome::Completed {
+            output: Err(error),
+            renewals,
+        } => {
             let error = error.to_string();
             (
                 format!("Provider execution failed: {error}"),
@@ -275,9 +295,37 @@ async fn execute_assignment(
                     &error,
                     fencing_token,
                 ),
+                renewals,
+                false,
+            )
+        }
+        HeartbeatOutcome::LeaseLost { error, renewals } => {
+            let error = error.to_string();
+            warn!(
+                workflow_id = %workflow.plan.id,
+                assignment_ordinal = assignment.ordinal,
+                agent_key = %provider.config.name,
+                fencing_token,
+                successful_renewals = renewals,
+                %error,
+                "Fiducia lease heartbeat failed; provider execution cancelled"
+            );
+            (
+                "Provider execution cancelled because the Fiducia lease heartbeat failed."
+                    .to_string(),
+                failure_meta(
+                    &provider.config.name,
+                    &provider.config.model,
+                    provider.config.protocol,
+                    &error,
+                    fencing_token,
+                ),
+                renewals,
+                true,
             )
         }
     };
+    annotate_heartbeat(&mut meta, lease.is_some(), renewals, heartbeat_failed);
 
     match bridge
         .submit(&workflow.plan.id, &provider.config.name, &content, meta)
@@ -287,6 +335,7 @@ async fn execute_assignment(
             workflow_id = %workflow.plan.id,
             assignment_ordinal = submission.assignment_ordinal,
             agent_key = %provider.config.name,
+            lease_renewals = renewals,
             "provider workflow submission accepted"
         ),
         Err(error) => error!(
@@ -308,6 +357,16 @@ async fn execute_assignment(
                 "Fiducia lease release failed; waiting for TTL expiry"
             );
         }
+    }
+}
+
+fn annotate_heartbeat(meta: &mut Value, leased: bool, renewals: u64, failed: bool) {
+    if !leased {
+        return;
+    }
+    if let Some(object) = meta.as_object_mut() {
+        object.insert("lease_renewals".into(), json!(renewals));
+        object.insert("lease_heartbeat_failed".into(), json!(failed));
     }
 }
 
