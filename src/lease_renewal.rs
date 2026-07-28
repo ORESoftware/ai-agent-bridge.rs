@@ -105,8 +105,7 @@ pub async fn intercept(
     });
     match control_plane.renew(&body).await {
         Ok(response) => {
-            let status =
-                StatusCode::from_u16(response.status).unwrap_or(StatusCode::BAD_GATEWAY);
+            let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::BAD_GATEWAY);
             (status, Json(response.body)).into_response()
         }
         Err(error) => error_response(error),
