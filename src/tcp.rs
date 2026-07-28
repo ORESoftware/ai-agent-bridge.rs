@@ -14,14 +14,20 @@ use tracing::{debug, info, warn};
 
 use crate::error::BridgeError;
 use crate::state::AppState;
+use crate::tcp_security::TcpPrincipal;
 use crate::types::{Agent, AgentKind, Event, MemberRole, Role};
+use crate::workflow_security::WorkflowSecurity;
 
 type Writer = Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>;
 
 /// Max concurrent `subscribe` forwarders on a single TCP connection.
 const MAX_SUBS_PER_CONN: usize = 64;
 
-pub async fn serve(state: Arc<AppState>, listener: TcpListener) -> anyhow::Result<()> {
+pub async fn serve(
+    state: Arc<AppState>,
+    listener: TcpListener,
+    security: Arc<WorkflowSecurity>,
+) -> anyhow::Result<()> {
     info!(addr = %listener.local_addr()?, "tcp listener up");
     // Bound concurrent connections; excess are dropped (load shed) rather than
     // spawning unbounded tasks.
@@ -44,9 +50,10 @@ pub async fn serve(state: Arc<AppState>, listener: TcpListener) -> anyhow::Resul
             }
         };
         let state = state.clone();
+        let security = security.clone();
         tokio::spawn(async move {
             let _permit = permit; // released when the connection ends
-            if let Err(e) = handle_conn(state, socket).await {
+            if let Err(e) = handle_conn(state, socket, security).await {
                 debug!(peer = %peer, error = %e, "tcp connection closed");
             }
         });
@@ -118,7 +125,11 @@ async fn write_line(writer: &Writer, value: &Value) -> std::io::Result<()> {
     w.flush().await
 }
 
-async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<()> {
+async fn handle_conn(
+    state: Arc<AppState>,
+    socket: TcpStream,
+    security: Arc<WorkflowSecurity>,
+) -> anyhow::Result<()> {
     let _ = socket.set_nodelay(true);
     let (read_half, write_half) = socket.into_split();
     let writer: Writer = Arc::new(Mutex::new(write_half));
@@ -127,13 +138,19 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
 
     // Auth handshake: when a bearer is configured, nothing but `auth`/`ping`
     // works until the client presents it.
-    let mut authed = state.config.api_auth_bearer.is_none();
+    let mut principal = TcpPrincipal::initial(&security);
     let mut sub_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     let mut subscribed: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     write_line(
         &writer,
-        &json!({ "ok": true, "hello": "ai-agent-bridge", "needs_auth": !authed, "max_members": crate::config::MAX_MEMBERS }),
+        &json!({
+            "ok": true,
+            "hello": "ai-agent-bridge",
+            "needs_auth": !principal.authenticated(),
+            "max_members": crate::config::MAX_MEMBERS,
+            "auth": principal.hello_json(),
+        }),
     )
     .await?;
 
@@ -141,7 +158,7 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
         // Read deadline: an unauthenticated connection must authenticate fast; an
         // authed-but-idle connection that never subscribes can't squat a slot
         // forever; a subscribed connection may idle (it receives events, not sends).
-        let deadline_secs = if !authed {
+        let deadline_secs = if !principal.authenticated() {
             Some(state.config.tcp_auth_deadline_secs)
         } else if subscribed.is_empty() {
             Some(state.config.tcp_idle_deadline_secs)
@@ -157,7 +174,7 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
                         None => break,
                     },
                     Err(_) => {
-                        let err = if authed {
+                        let err = if principal.authenticated() {
                             "idle_timeout"
                         } else {
                             "auth_timeout"
@@ -189,27 +206,30 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
         };
 
         if let Req::Auth { token } = &req {
-            authed = match state.config.api_auth_bearer.as_deref() {
-                Some(expected) => {
-                    crate::config::constant_time_eq(expected.as_bytes(), token.as_bytes())
+            match principal.authenticate(&security, token) {
+                Ok(next) => {
+                    principal = next;
+                    write_line(
+                        &writer,
+                        &json!({ "ok": true, "op": "auth", "auth": principal.hello_json() }),
+                    )
+                    .await?;
                 }
-                None => true,
-            };
-            // Exactly one response frame per request: ok=false here already means
-            // the token was rejected.
-            let mut resp = json!({ "ok": authed, "op": "auth" });
-            if !authed {
-                resp["error"] = json!("unauthorized");
+                Err(error) => write_line(&writer, &error.payload()).await?,
             }
-            write_line(&writer, &resp).await?;
             continue;
         }
         if matches!(req, Req::Ping) {
             write_line(&writer, &json!({ "ok": true, "op": "ping", "pong": true })).await?;
             continue;
         }
-        if !authed {
+        if !principal.authenticated() {
             write_line(&writer, &BridgeError::Unauthorized.payload_json()).await?;
+            continue;
+        }
+
+        if let Err(error) = principal.authorize(&req) {
+            write_line(&writer, &error.payload()).await?;
             continue;
         }
 
@@ -434,7 +454,7 @@ fn default_limit() -> usize {
 
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
-enum Req {
+pub(crate) enum Req {
     Auth {
         token: String,
     },

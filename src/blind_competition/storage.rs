@@ -11,19 +11,19 @@ fn insert_blind_context(
     updated_by: &str,
 ) -> BridgeResult<()> {
     let _guard = blind_context_lock().lock();
-    if state.get_context_key(channel, key)?.is_some() {
+    if state.get_context_key_internal(channel, key)?.is_some() {
         return Err(BridgeError::BadRequest(format!(
             "blind competition context key '{key}' already exists"
         )));
     }
-    state.set_context(channel, key, value, updated_by)?;
+    state.set_context_internal(channel, key, value, updated_by)?;
     Ok(())
 }
 
 fn load_plan(state: &AppState, workflow_id: &str) -> BridgeResult<BlindCompetitionPlan> {
     let channel = blind_channel(workflow_id)?;
     let entry = state
-        .get_context_key(&channel, BLIND_PLAN_CONTEXT_KEY)?
+        .get_context_key_internal(&channel, BLIND_PLAN_CONTEXT_KEY)?
         .ok_or_else(|| {
             BridgeError::BadRequest(format!("blind competition plan missing in '{channel}'"))
         })?;
@@ -34,7 +34,7 @@ fn load_plan(state: &AppState, workflow_id: &str) -> BridgeResult<BlindCompetiti
 
 fn load_submissions(state: &AppState, channel: &str) -> BridgeResult<Vec<BlindSubmission>> {
     let mut submissions = state
-        .get_context(channel)?
+        .get_context_internal(channel)?
         .into_iter()
         .filter_map(|entry| {
             entry
@@ -49,7 +49,7 @@ fn load_submissions(state: &AppState, channel: &str) -> BridgeResult<Vec<BlindSu
 
 fn load_reveal(state: &AppState, channel: &str) -> BridgeResult<Option<BlindReveal>> {
     state
-        .get_context_key(channel, BLIND_REVEAL_CONTEXT_KEY)?
+        .get_context_key_internal(channel, BLIND_REVEAL_CONTEXT_KEY)?
         .map(|entry| {
             serde_json::from_value(entry.value).map_err(|_| {
                 BridgeError::BadRequest(format!(
