@@ -5,6 +5,7 @@
 //! what the test suite exercises. Postgres persistence ([`db`]) is optional and
 //! compiled in only with `--features postgres`.
 
+pub mod blind_competition;
 pub mod compat;
 pub mod config;
 pub mod control_plane;
