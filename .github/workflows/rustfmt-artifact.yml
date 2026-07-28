@@ -1,35 +1,37 @@
-name: rustfmt artifact
+name: apply rustfmt once
 
 on:
-  pull_request:
-  workflow_dispatch:
+  push:
+    branches:
+      - agent/den-392-distributed-assignment-claims
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   format:
+    if: ${{ !contains(github.event.head_commit.message, '[rustfmt applied]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          persist-credentials: false
+          ref: agent/den-392-distributed-assignment-claims
           submodules: recursive
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: "1.95.0"
           components: rustfmt
-      - name: Generate exact rustfmt patch
+      - name: Apply and publish deterministic formatting
         run: |
           set -euo pipefail
           cargo fmt --all
-          git diff --binary -- '*.rs' > rustfmt.patch
-          test -s rustfmt.patch
-      - name: Upload rustfmt patch
-        uses: actions/upload-artifact@v4
-        with:
-          name: rustfmt-den-392
-          path: rustfmt.patch
-          if-no-files-found: error
-          retention-days: 1
+          if git diff --quiet -- '*.rs'; then
+            echo "No formatting changes required."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- '*.rs'
+          git commit -m 'style: apply rustfmt [rustfmt applied]'
+          git push origin HEAD:agent/den-392-distributed-assignment-claims
