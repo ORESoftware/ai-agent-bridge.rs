@@ -33,10 +33,7 @@ async fn spawn() -> String {
     .unwrap();
     let app = Router::new()
         .route("/workflows/{id}/submissions", post(echo_auth))
-        .route(
-            "/channels/{slug}/context",
-            get(echo_auth).post(echo_auth),
-        )
+        .route("/channels/{slug}/context", get(echo_auth).post(echo_auth))
         .layer(from_fn_with_state(security, workflow_security::enforce));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
