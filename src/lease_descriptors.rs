@@ -156,9 +156,7 @@ async fn acquire(state: Arc<AppState>, bytes: &[u8]) -> Response {
         ));
     }
     if state.get_agent(req.agent_key.trim()).is_none() {
-        return error_response(BridgeError::AgentNotFound(
-            req.agent_key.trim().to_string(),
-        ));
+        return error_response(BridgeError::AgentNotFound(req.agent_key.trim().to_string()));
     }
     let repository = match normalize_repository(&req.repository) {
         Ok(value) => value,
@@ -380,9 +378,8 @@ fn persist_descriptor(
     state.set_context(
         REGISTRY_CHANNEL,
         &descriptor_key(&descriptor.lease_id),
-        serde_json::to_value(descriptor).map_err(|_| {
-            BridgeError::BadRequest("lease descriptor is not serializable".into())
-        })?,
+        serde_json::to_value(descriptor)
+            .map_err(|_| BridgeError::BadRequest("lease descriptor is not serializable".into()))?,
         &descriptor.agent_key,
     )?;
     Ok(())

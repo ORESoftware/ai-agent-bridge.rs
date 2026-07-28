@@ -108,9 +108,7 @@ async fn spawn() -> (String, Arc<ai_agent_bridge::state::AppState>, MockState) {
         calls: Arc::new(Mutex::new(Vec::new())),
         active_token: Arc::new(AtomicU64::new(42)),
     };
-    let control_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let control_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let control_addr = control_listener.local_addr().unwrap();
     let control_app = Router::new()
         .route("/v1/file-leases/acquire", post(acquire_handler))
@@ -136,15 +134,10 @@ async fn spawn() -> (String, Arc<ai_agent_bridge::state::AppState>, MockState) {
         })
         .unwrap();
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let app = http::router(state.clone())
-        .layer(from_fn_with_state(
-            state.clone(),
-            lease_renewal::intercept,
-        ))
+        .layer(from_fn_with_state(state.clone(), lease_renewal::intercept))
         .layer(from_fn_with_state(
             state.clone(),
             lease_descriptors::intercept,
@@ -224,9 +217,7 @@ async fn forged_owner_and_stale_token_are_rejected_before_authority_access() {
     let (base, _, mock) = spawn().await;
     let client = reqwest::Client::new();
     let acquired = acquire(&client, &base).await;
-    let lease_id = acquired["compatibility_lease"]["id"]
-        .as_str()
-        .unwrap();
+    let lease_id = acquired["compatibility_lease"]["id"].as_str().unwrap();
     let calls_before = mock.calls.lock().unwrap().len();
 
     let wrong_owner = client
@@ -260,9 +251,7 @@ async fn release_tombstones_the_descriptor_and_blocks_later_renewal() {
     let (base, state, mock) = spawn().await;
     let client = reqwest::Client::new();
     let acquired = acquire(&client, &base).await;
-    let lease_id = acquired["compatibility_lease"]["id"]
-        .as_str()
-        .unwrap();
+    let lease_id = acquired["compatibility_lease"]["id"].as_str().unwrap();
 
     let released = client
         .post(format!("{base}/file-leases/{lease_id}/release"))
