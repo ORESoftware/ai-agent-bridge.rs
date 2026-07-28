@@ -76,7 +76,32 @@ async fn report_usage(
     Path(workflow_id): Path<String>,
     Json(request): Json<UsageReq>,
 ) -> Response {
-    match record_usage(&state, &workflow_id, &request.updated_by, request.delta) {
+    let admission = match load_admission(&state, &workflow_id) {
+        Ok(Some(admission)) => admission,
+        Ok(None) => {
+            return AdmissionFailure::new(
+                StatusCode::CONFLICT,
+                "admission_required",
+                "managed provider work requires an active admission",
+            )
+            .into_response()
+        }
+        Err(error) => return ApiError(error).into_response(),
+    };
+    if admission.requested_by != request.updated_by.trim() {
+        return AdmissionFailure::new(
+            StatusCode::FORBIDDEN,
+            "admission_reporter_mismatch",
+            "usage reporter does not own this admission",
+        )
+        .into_response();
+    }
+    match record_usage(
+        &state,
+        &workflow_id,
+        &request.provider_agent_key,
+        request.delta,
+    ) {
         Ok(admission) => Json(json!({"ok":true,"admission":admission})).into_response(),
         Err(error) => error.into_response(),
     }
