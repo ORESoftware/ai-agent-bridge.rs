@@ -18,9 +18,7 @@ async fn spawn() -> String {
             registered_at: now_ts(),
         })
         .unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let app = orchestration::router(state.clone()).merge(policy_admission::router(state));
     tokio::spawn(async move {
@@ -45,10 +43,7 @@ async fn create_workflow(client: &reqwest::Client, base: &str) -> String {
         .unwrap();
     assert!(response.status().is_success());
     let body = response.json::<Value>().await.unwrap();
-    body["workflow"]["plan"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string()
+    body["workflow"]["plan"]["id"].as_str().unwrap().to_string()
 }
 
 fn policy_request(max_cost_micro_usd: u64) -> Value {
@@ -113,9 +108,7 @@ async fn admission_is_insert_only_and_one_unit_overage_is_terminal() {
     );
 
     let accepted = client
-        .post(format!(
-            "{base}/workflows/{workflow_id}/admission/usage"
-        ))
+        .post(format!("{base}/workflows/{workflow_id}/admission/usage"))
         .json(&json!({
             "updated_by":"runner/pod-0",
             "provider_agent_key":"codex",
@@ -127,9 +120,7 @@ async fn admission_is_insert_only_and_one_unit_overage_is_terminal() {
     assert!(accepted.status().is_success());
 
     let exhausted = client
-        .post(format!(
-            "{base}/workflows/{workflow_id}/admission/usage"
-        ))
+        .post(format!("{base}/workflows/{workflow_id}/admission/usage"))
         .json(&json!({
             "updated_by":"runner/pod-0",
             "provider_agent_key":"codex",
@@ -149,9 +140,7 @@ async fn admission_is_insert_only_and_one_unit_overage_is_terminal() {
     );
 
     let late = client
-        .post(format!(
-            "{base}/workflows/{workflow_id}/admission/usage"
-        ))
+        .post(format!("{base}/workflows/{workflow_id}/admission/usage"))
         .json(&json!({
             "updated_by":"runner/pod-0",
             "provider_agent_key":"codex",
@@ -180,9 +169,7 @@ async fn runner_and_provider_identities_are_checked_separately() {
     assert!(admitted.status().is_success());
 
     let wrong_runner = client
-        .post(format!(
-            "{base}/workflows/{workflow_id}/admission/usage"
-        ))
+        .post(format!("{base}/workflows/{workflow_id}/admission/usage"))
         .json(&json!({
             "updated_by":"runner/pod-1",
             "provider_agent_key":"codex",
@@ -194,9 +181,7 @@ async fn runner_and_provider_identities_are_checked_separately() {
     assert_eq!(wrong_runner.status(), reqwest::StatusCode::FORBIDDEN);
 
     let wrong_provider = client
-        .post(format!(
-            "{base}/workflows/{workflow_id}/admission/usage"
-        ))
+        .post(format!("{base}/workflows/{workflow_id}/admission/usage"))
         .json(&json!({
             "updated_by":"runner/pod-0",
             "provider_agent_key":"claude",

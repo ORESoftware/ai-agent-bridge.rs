@@ -396,7 +396,10 @@ async fn execute_assignment(
         .saturating_sub(reserved.usage.output_tokens);
     if remaining_output_tokens == 0 {
         let _ = admission
-            .cancel(&workflow.plan.id, "output token budget exhausted before provider call")
+            .cancel(
+                &workflow.plan.id,
+                "output token budget exhausted before provider call",
+            )
             .await;
         release_file_lease(
             &bridge,
@@ -577,7 +580,10 @@ async fn execute_assignment(
     annotate_heartbeat(&mut meta, claim.is_some(), file_lease.is_some(), renewals);
     if let Some(object) = meta.as_object_mut() {
         object.insert("policy_admitted".into(), json!(true));
-        object.insert("policy_version".into(), json!(reserved.policy.policy_version));
+        object.insert(
+            "policy_version".into(),
+            json!(reserved.policy.policy_version),
+        );
         object.insert("provider_elapsed_ms".into(), json!(elapsed_ms));
     }
     if let Some(handle) = claim.as_ref() {
@@ -591,7 +597,10 @@ async fn execute_assignment(
                 "assignment claim became stale before submission; provider output discarded"
             );
             let _ = admission
-                .cancel(&workflow.plan.id, "assignment claim became stale before submission")
+                .cancel(
+                    &workflow.plan.id,
+                    "assignment claim became stale before submission",
+                )
                 .await;
             release_file_lease(
                 &bridge,
@@ -644,7 +653,10 @@ async fn execute_assignment(
                 "provider result could not be submitted"
             );
             let _ = admission
-                .cancel(&workflow.plan.id, "workflow submission failed after provider execution")
+                .cancel(
+                    &workflow.plan.id,
+                    "workflow submission failed after provider execution",
+                )
                 .await;
         }
     }
