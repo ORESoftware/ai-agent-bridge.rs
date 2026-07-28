@@ -47,7 +47,12 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --locked --features postgres -- -D warnings
-      - run: cargo test --all-targets --locked
+      - name: Test library and binaries
+        run: cargo test --lib --bins --locked
+      - name: Test lease-renewal integration
+        run: cargo test --test lease_renewal --locked -- --nocapture
+      - name: Test complete target matrix
+        run: cargo test --all-targets --locked
       - run: cargo check --all-targets --locked --features postgres
       - name: Test PostgreSQL restart durability
         env:
