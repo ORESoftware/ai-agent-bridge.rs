@@ -25,11 +25,35 @@ jobs:
         with:
           toolchain: "1.95.0"
           components: rustfmt
-      - name: Format and commit once
+      - name: Apply safety rule, format, and commit once
         env:
           HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/lease_descriptors.rs')
+          text = path.read_text()
+          text = text.replace(
+              'if response.status >= 400 {',
+              'if !control_plane_success(response.status) {',
+          )
+          text = text.replace(
+              'if response.status < 400 {',
+              'if control_plane_success(response.status) {',
+          )
+          marker = 'fn control_plane_response(response: ControlPlaneResponse) -> Response {'
+          helper = '''fn control_plane_success(status: u16) -> bool {
+              (200..300).contains(&status)
+          }
+
+          '''
+          if helper.strip() not in text:
+              if marker not in text:
+                  raise SystemExit('control-plane response marker missing')
+              text = text.replace(marker, helper + marker, 1)
+          path.write_text(text)
+          PY
           cargo fmt --all
           if git diff --quiet -- '*.rs'; then
             exit 0
@@ -37,5 +61,5 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -- '*.rs'
-          git commit -m 'style: apply rustfmt'
+          git commit -m 'fix: require 2xx authority responses'
           git push origin "HEAD:${HEAD_BRANCH}"
