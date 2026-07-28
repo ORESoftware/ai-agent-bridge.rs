@@ -1,0 +1,189 @@
+name: apply DEN-524 transport integration v2
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-den524-transport-v2
+  cancel-in-progress: true
+
+jobs:
+  integrate:
+    if: github.event.pull_request.head.ref == 'agent/den-524-tcp-scoped-auth'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt
+      - name: Apply explicit internal context and TCP principal integration
+        env:
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one match, found {count}: {old!r}')
+              file.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'src/state.rs',
+              '    pub fn set_context(\n',
+              '    pub(crate) fn set_context_internal(\n',
+          )
+          replace_once(
+              'src/state.rs',
+              '    pub fn get_context(&self, slug: &str) -> BridgeResult<Vec<ContextEntry>> {\n',
+              '    pub(crate) fn get_context_internal(\n        &self,\n        slug: &str,\n    ) -> BridgeResult<Vec<ContextEntry>> {\n',
+          )
+          replace_once(
+              'src/state.rs',
+              '    pub fn get_context_key(&self, slug: &str, key: &str) -> BridgeResult<Option<ContextEntry>> {\n',
+              '    pub(crate) fn get_context_key_internal(\n        &self,\n        slug: &str,\n        key: &str,\n    ) -> BridgeResult<Option<ContextEntry>> {\n',
+          )
+
+          for path in ['src/orchestration/part2.rs', 'src/blind_competition/storage.rs']:
+              file = Path(path)
+              text = file.read_text()
+              text = text.replace('.get_context_key(', '.get_context_key_internal(')
+              text = text.replace('.get_context(', '.get_context_internal(')
+              text = text.replace('.set_context(', '.set_context_internal(')
+              file.write_text(text)
+
+          main = Path('src/main.rs')
+          text = main.read_text()
+          marker = '''    let workflow_auth = workflow_security::WorkflowSecurity::from_env(
+              config.api_auth_bearer.clone(),
+              config.max_http_body_bytes,
+          )?;
+          '''
+          if marker not in text:
+              raise SystemExit('main workflow auth marker missing')
+          text = text.replace(marker, marker + '    let tcp_auth = workflow_auth.clone();\n', 1)
+          old_serve = 'tcp::serve(tcp_state, tcp_listener).await'
+          if old_serve not in text:
+              raise SystemExit('main tcp serve marker missing')
+          text = text.replace(
+              old_serve,
+              'tcp::serve(tcp_state, tcp_listener, tcp_auth).await',
+              1,
+          )
+          main.write_text(text)
+
+          tcp = Path('src/tcp.rs')
+          text = tcp.read_text()
+          text = text.replace(
+              'use crate::state::AppState;\n',
+              'use crate::state::AppState;\nuse crate::tcp_security::TcpPrincipal;\nuse crate::workflow_security::WorkflowSecurity;\n',
+              1,
+          )
+          text = text.replace(
+              'pub async fn serve(state: Arc<AppState>, listener: TcpListener) -> anyhow::Result<()> {',
+              'pub async fn serve(\n    state: Arc<AppState>,\n    listener: TcpListener,\n    security: Arc<WorkflowSecurity>,\n) -> anyhow::Result<()> {',
+              1,
+          )
+          old_spawn = '''        let state = state.clone();
+          tokio::spawn(async move {
+              let _permit = permit; // released when the connection ends
+              if let Err(e) = handle_conn(state, socket).await {
+          '''
+          new_spawn = '''        let state = state.clone();
+          let security = security.clone();
+          tokio::spawn(async move {
+              let _permit = permit; // released when the connection ends
+              if let Err(e) = handle_conn(state, socket, security).await {
+          '''
+          if old_spawn not in text:
+              raise SystemExit('tcp spawn marker missing')
+          text = text.replace(old_spawn, new_spawn, 1)
+          text = text.replace(
+              'async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<()> {',
+              'async fn handle_conn(\n    state: Arc<AppState>,\n    socket: TcpStream,\n    security: Arc<WorkflowSecurity>,\n) -> anyhow::Result<()> {',
+              1,
+          )
+          text = text.replace(
+              '    let mut authed = state.config.api_auth_bearer.is_none();\n',
+              '    let mut principal = TcpPrincipal::initial(&security);\n',
+              1,
+          )
+          text = text.replace(
+              '&json!({ "ok": true, "hello": "ai-agent-bridge", "needs_auth": !authed, "max_members": crate::config::MAX_MEMBERS }),',
+              '&json!({\n            "ok": true,\n            "hello": "ai-agent-bridge",\n            "needs_auth": !principal.authenticated(),\n            "max_members": crate::config::MAX_MEMBERS,\n            "auth": principal.hello_json(),\n        }),',
+              1,
+          )
+          old_auth = '''        if let Req::Auth { token } = &req {
+              authed = match state.config.api_auth_bearer.as_deref() {
+                  Some(expected) => {
+                      crate::config::constant_time_eq(expected.as_bytes(), token.as_bytes())
+                  }
+                  None => true,
+              };
+              // Exactly one response frame per request: ok=false here already means
+              // the token was rejected.
+              let mut resp = json!({ "ok": authed, "op": "auth" });
+              if !authed {
+                  resp["error"] = json!("unauthorized");
+              }
+              write_line(&writer, &resp).await?;
+              continue;
+          }
+          '''
+          new_auth = '''        if let Req::Auth { token } = &req {
+              match principal.authenticate(&security, token) {
+                  Ok(next) => {
+                      principal = next;
+                      write_line(
+                          &writer,
+                          &json!({ "ok": true, "op": "auth", "auth": principal.hello_json() }),
+                      )
+                      .await?;
+                  }
+                  Err(error) => write_line(&writer, &error.payload()).await?,
+              }
+              continue;
+          }
+          '''
+          if old_auth not in text:
+              raise SystemExit('tcp auth block missing')
+          text = text.replace(old_auth, new_auth, 1)
+          text = text.replace('if !authed {', 'if !principal.authenticated() {')
+          text = text.replace('if authed {', 'if principal.authenticated() {')
+          dispatch_marker = '''        let response = dispatch(&state, &writer, req, &mut sub_tasks, &mut subscribed).await;
+          '''
+          dispatch_new = '''        if let Err(error) = principal.authorize(&req) {
+              write_line(&writer, &error.payload()).await?;
+              continue;
+          }
+
+          let response = dispatch(&state, &writer, req, &mut sub_tasks, &mut subscribed).await;
+          '''
+          if dispatch_marker not in text:
+              raise SystemExit('tcp dispatch marker missing')
+          text = text.replace(dispatch_marker, dispatch_new, 1)
+          text = text.replace('enum Req {', 'pub(crate) enum Req {', 1)
+          tcp.write_text(text)
+          PY
+          cargo fmt --all
+          if git diff --quiet -- '*.rs'; then
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- '*.rs'
+          git commit -m 'security: integrate scoped TCP principals and context APIs'
+          git push origin "HEAD:${HEAD_BRANCH}"
