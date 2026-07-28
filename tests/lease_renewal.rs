@@ -16,6 +16,9 @@ use axum::routing::post;
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
+type RecordedCall = (Option<String>, Value);
+type RecordedCalls = Arc<Mutex<Vec<RecordedCall>>>;
+
 #[derive(Clone, Copy)]
 enum MockMode {
     Success,
@@ -29,7 +32,7 @@ enum MockMode {
 #[derive(Clone)]
 struct MockState {
     mode: MockMode,
-    calls: Arc<Mutex<Vec<(Option<String>, Value)>>>,
+    calls: RecordedCalls,
     redirect_hits: Arc<AtomicU64>,
 }
 
