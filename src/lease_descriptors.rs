@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-use crate::control_plane::{ControlPlaneClient, ControlPlaneResponse};
+use crate::control_plane::ControlPlaneResponse;
 use crate::error::BridgeError;
 use crate::state::AppState;
 use crate::types::{new_id, now_ts};
@@ -172,7 +172,6 @@ async fn acquire(state: Arc<AppState>, bytes: &[u8]) -> Response {
         Ok(value) => value,
         Err(error) => return error_response(error),
     };
-    let _ = (&req.purpose, &req.meta);
     let body = json!({
         "repository": repository,
         "paths": [path],
@@ -200,9 +199,9 @@ async fn acquire(state: Arc<AppState>, bytes: &[u8]) -> Response {
             ))
         }
     };
-    if find_bool(&response.body, "acquired") == Some(false) {
+    if find_bool(&response.body, "acquired") != Some(true) {
         return error_response(BridgeError::ControlPlane(
-            "control plane did not acquire the lease".into(),
+            "control plane did not explicitly acquire the lease".into(),
         ));
     }
 
@@ -454,9 +453,10 @@ fn expiry_from_response(body: &Value, ttl_ms: u64) -> String {
         }
     }
     if let Some(value) = find_u64(body, "expires_at_ms") {
-        if let Some(timestamp) = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(value as i64)
-        {
-            return timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        if let Ok(value) = i64::try_from(value) {
+            if let Some(timestamp) = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(value) {
+                return timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            }
         }
     }
     (chrono::Utc::now() + chrono::Duration::milliseconds(ttl_ms as i64))
