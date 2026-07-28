@@ -9,7 +9,7 @@ use std::time::Duration;
 use ai_agent_bridge::types::{now_ts, Agent, AgentKind};
 use ai_agent_bridge::{http, lease_renewal};
 use axum::extract::State;
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::from_fn_with_state;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
@@ -78,8 +78,7 @@ async fn renew_handler(
             .into_response(),
         MockMode::Timeout => {
             tokio::time::sleep(Duration::from_millis(1_200)).await;
-            Json(json!({"result":{"output":{"renewed":true,"fencing_token":42}}}))
-                .into_response()
+            Json(json!({"result":{"output":{"renewed":true,"fencing_token":42}}})).into_response()
         }
     }
 }
@@ -97,9 +96,7 @@ async fn spawn(mode: MockMode, timeout_secs: u64) -> (String, MockState) {
         calls,
         redirect_hits,
     };
-    let control_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let control_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let control_addr = control_listener.local_addr().unwrap();
     let control_app = Router::new()
         .route("/v1/file-leases/renew", post(renew_handler))
@@ -125,14 +122,10 @@ async fn spawn(mode: MockMode, timeout_secs: u64) -> (String, MockState) {
         })
         .unwrap();
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let app = http::router(state.clone()).layer(from_fn_with_state(
-        state,
-        lease_renewal::intercept,
-    ));
+    let app =
+        http::router(state.clone()).layer(from_fn_with_state(state, lease_renewal::intercept));
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
