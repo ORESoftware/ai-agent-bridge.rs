@@ -102,12 +102,9 @@ mod tests {
 
     #[tokio::test]
     async fn renewal_failure_cancels_the_operation() {
-        let outcome = run_with_heartbeat(
-            std::future::pending::<()>(),
-            50,
-            20,
-            || async { Err::<(), _>("stale fencing token") },
-        )
+        let outcome = run_with_heartbeat(std::future::pending::<()>(), 50, 20, || async {
+            Err::<(), _>("stale fencing token")
+        })
         .await;
         match outcome {
             HeartbeatOutcome::LeaseLost { error, renewals } => {
