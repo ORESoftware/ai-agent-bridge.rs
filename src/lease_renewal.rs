@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use axum::body::{to_bytes, Body};
+use axum::body::to_bytes;
 use axum::extract::{Request, State};
 use axum::http::{Method, StatusCode};
 use axum::middleware::Next;
