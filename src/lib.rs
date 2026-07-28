@@ -8,6 +8,7 @@
 pub mod blind_competition;
 pub mod compat;
 pub mod config;
+mod context_access;
 pub mod control_plane;
 pub mod embed;
 pub mod error;
@@ -19,6 +20,7 @@ pub mod providers;
 pub mod runner;
 pub mod state;
 pub mod tcp;
+mod tcp_security;
 pub mod types;
 pub mod workflow_security;
 
