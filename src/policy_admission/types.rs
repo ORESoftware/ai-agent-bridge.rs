@@ -119,5 +119,3 @@ impl IntoResponse for ApiError {
         (status, Json(self.0.payload())).into_response()
     }
 }
-
-type ApiResult = Result<Json<Value>, ApiError>;
