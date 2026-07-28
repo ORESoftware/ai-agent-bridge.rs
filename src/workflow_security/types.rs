@@ -9,6 +9,8 @@ const KNOWN_SCOPES: &[&str] = &[
     "workflow:create",
     "workflow:read",
     "workflow:submit",
+    "workflow:admit",
+    "workflow:usage",
     "agent:register",
     "agent:read",
     "channel:create",

@@ -115,6 +115,32 @@ fn access_rule(method: &Method, path: &str) -> Option<AccessRule> {
             identity_field: None,
         },
         (&Method::POST, path)
+            if path.starts_with("/workflows/") && path.ends_with("/admission/usage") =>
+        {
+            AccessRule {
+                scope: "workflow:usage",
+                identity_field: Some("updated_by"),
+            }
+        }
+        (&Method::POST, path)
+            if path.starts_with("/workflows/")
+                && (path.ends_with("/admission/complete")
+                    || path.ends_with("/admission/cancel")) =>
+        {
+            AccessRule {
+                scope: "workflow:usage",
+                identity_field: Some("updated_by"),
+            }
+        }
+        (&Method::POST, path)
+            if path.starts_with("/workflows/") && path.ends_with("/admission") =>
+        {
+            AccessRule {
+                scope: "workflow:admit",
+                identity_field: Some("requested_by"),
+            }
+        }
+        (&Method::POST, path)
             if path.starts_with("/workflows/") && path.ends_with("/submissions") =>
         {
             AccessRule {

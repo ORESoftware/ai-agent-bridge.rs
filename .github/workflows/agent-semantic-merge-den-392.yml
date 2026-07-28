@@ -1,0 +1,144 @@
+name: semantic merge DEN-392 stack into current main
+
+on:
+  push:
+    branches:
+      - agent/den-392-distributed-assignment-claims
+
+permissions:
+  contents: write
+
+jobs:
+  merge-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_DB: bridge_restart
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: bridge-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bridge -d bridge_restart"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: agent/den-392-distributed-assignment-claims
+          fetch-depth: 0
+          submodules: recursive
+      - name: Merge current main without discarding either side
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch --no-tags origin main
+          if ! git merge --no-ff --no-edit origin/main; then
+            echo 'Automatic merge stopped. Unresolved paths follow; no ours/theirs selection is permitted.' >&2
+            git status --short >&2
+            git diff --name-only --diff-filter=U >&2
+            exit 1
+          fi
+      - name: Reconcile reserved workflow context semantically
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path: str, old: str, new: str, expected: int = 1) -> None:
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f"{path}: expected {expected} occurrence(s) of {old!r}, found {count}")
+              file.write_text(text.replace(old, new, expected))
+
+          replace_exact(
+              "src/assignment_claims.rs",
+              ".get_context_key(&channel, PLAN_CONTEXT_KEY)?",
+              ".get_context_key_internal(&channel, PLAN_CONTEXT_KEY)?",
+          )
+          replace_exact(
+              "src/policy_admission/storage.rs",
+              ".get_context_key(&channel, WORKFLOW_PLAN_CONTEXT_KEY)?",
+              ".get_context_key_internal(&channel, WORKFLOW_PLAN_CONTEXT_KEY)?",
+          )
+          replace_exact(
+              "src/policy_admission/storage.rs",
+              ".get_context_key(&channel, ADMISSION_CONTEXT_KEY)?",
+              ".get_context_key_internal(&channel, ADMISSION_CONTEXT_KEY)?",
+          )
+          replace_exact(
+              "src/policy_admission/storage.rs",
+              "state.set_context(\n",
+              "state.set_context_internal(\n",
+          )
+          replace_exact(
+              "src/policy_admission/tests.rs",
+              ".set_context(\n",
+              ".set_context_internal(\n",
+          )
+
+          checks = {
+              "src/assignment_claims.rs": [".get_context_key(&channel, PLAN_CONTEXT_KEY)"],
+              "src/policy_admission/storage.rs": [
+                  ".get_context_key(&channel, WORKFLOW_PLAN_CONTEXT_KEY)",
+                  ".get_context_key(&channel, ADMISSION_CONTEXT_KEY)",
+                  "state.set_context(\n",
+              ],
+              "src/policy_admission/tests.rs": [".set_context(\n"],
+          }
+          for path, forbidden in checks.items():
+              text = Path(path).read_text()
+              for marker in forbidden:
+                  if marker in text:
+                      raise SystemExit(f"{path}: stale external context access remains: {marker!r}")
+          PY
+          git diff --check
+      - name: Validate GitHub Actions
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+        with:
+          args: ./.github/workflows
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: "1.95.0"
+          components: rustfmt, clippy
+      - name: Canonical Rust and persistence validation
+        shell: bash
+        env:
+          FIDUCIA_BRIDGE_TEST_DATABASE_URL: postgresql://bridge:bridge-test-only@localhost:5432/bridge_restart
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --locked --features postgres -- -D warnings
+          cargo test --all-targets --locked
+          cargo check --all-targets --locked --features postgres
+          cargo test --locked --features postgres --test postgres_restart -- --ignored
+      - uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b
+        with:
+          tool: cargo-audit@0.22.2
+      - name: Audit dependencies and CLI contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo audit
+          make -B -C vendor/flags-2-env all
+          vendor/flags-2-env/build/flags2env audit .cli-flags.toml
+      - name: Commit the conceptual merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/agent-semantic-merge-den-392.yml
+          git diff --check
+          git add -A
+          git commit --amend --no-edit
+          git push origin HEAD:agent/den-392-distributed-assignment-claims
