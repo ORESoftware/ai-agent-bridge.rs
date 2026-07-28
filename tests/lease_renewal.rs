@@ -99,9 +99,7 @@ async fn spawn(mode: MockMode, timeout_secs: u64) -> (String, MockState) {
         calls,
         redirect_hits,
     };
-    let control_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let control_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let control_addr = control_listener.local_addr().unwrap();
     let control_app = Router::new()
         .route("/v1/file-leases/renew", post(renew_handler))
@@ -127,9 +125,7 @@ async fn spawn(mode: MockMode, timeout_secs: u64) -> (String, MockState) {
         })
         .unwrap();
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let app =
         http::router(state.clone()).layer(from_fn_with_state(state, lease_renewal::intercept));
