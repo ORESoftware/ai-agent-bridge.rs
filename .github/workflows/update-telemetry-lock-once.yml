@@ -1,0 +1,63 @@
+name: update telemetry lock once
+
+on:
+  push:
+    branches: [agent/upgrade-fiducia-telemetry-v0.2.1]
+
+permissions:
+  contents: write
+
+jobs:
+  update-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_DB: bridge_restart
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: bridge-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bridge -d bridge_restart"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/upgrade-fiducia-telemetry-v0.2.1
+          fetch-depth: 0
+          persist-credentials: true
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: "1.95.0"
+          components: rustfmt, clippy
+      - name: Regenerate lockfile
+        run: cargo update -p fiducia-telemetry
+      - name: Validate upgraded dependency
+        env:
+          FIDUCIA_BRIDGE_TEST_DATABASE_URL: postgresql://bridge:bridge-test-only@localhost:5432/bridge_restart
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --locked --features postgres -- -D warnings
+          cargo test --all-targets --locked
+          cargo check --all-targets --locked --features postgres
+          cargo test --locked --features postgres --test postgres_restart -- --ignored
+          make -B -C vendor/flags-2-env all
+          vendor/flags-2-env/build/flags2env audit .cli-flags.toml
+      - name: Commit lockfile only after validation
+        run: |
+          git add Cargo.lock
+          if git diff --cached --quiet; then
+            echo "Cargo.lock already current"
+            exit 0
+          fi
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: refresh lockfile for fiducia-telemetry v0.2.1"
+          git push origin HEAD:agent/upgrade-fiducia-telemetry-v0.2.1
