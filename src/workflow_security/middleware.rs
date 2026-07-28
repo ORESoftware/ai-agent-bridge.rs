@@ -164,8 +164,10 @@ fn access_rule(method: &Method, path: &str) -> Option<AccessRule> {
                 identity_field: None,
             }
         }
-        (&Method::POST | &Method::PUT, path)
-            if path.starts_with("/channels/") && path.ends_with("/context") =>
+        (method, path)
+            if matches!(method, &Method::POST | &Method::PUT)
+                && path.starts_with("/channels/")
+                && path.ends_with("/context") =>
         {
             AccessRule {
                 scope: "context:write",
