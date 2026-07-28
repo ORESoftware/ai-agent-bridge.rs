@@ -1,0 +1,40 @@
+name: DEN-513 rustfmt diagnostic
+
+on:
+  pull_request:
+    paths:
+      - 'src/providers.rs'
+      - 'src/providers/**'
+      - '.github/workflows/rustfmt-den513-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.ref == 'agent/den-513-provider-protocol-mocks'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt
+      - name: Generate exact formatter patch
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          git diff --binary -- '*.rs' > rustfmt.patch
+          test -s rustfmt.patch
+      - name: Upload patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: den513-rustfmt-patch
+          path: rustfmt.patch
+          retention-days: 1
+          if-no-files-found: error
