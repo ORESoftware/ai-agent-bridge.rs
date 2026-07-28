@@ -1,0 +1,41 @@
+name: apply DEN-524 rustfmt
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-rustfmt-den524
+  cancel-in-progress: true
+
+jobs:
+  format:
+    if: github.event.pull_request.head.ref == 'agent/den-524-tcp-scoped-auth'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt
+      - name: Format and commit once
+        env:
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          if git diff --quiet -- '*.rs'; then
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- '*.rs'
+          git commit -m 'style: apply rustfmt'
+          git push origin "HEAD:${HEAD_BRANCH}"
