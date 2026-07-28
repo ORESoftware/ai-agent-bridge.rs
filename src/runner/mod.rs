@@ -14,6 +14,7 @@ use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
 
 use crate::orchestration::{WorkflowAssignment, WorkflowStage, WorkflowView};
+use crate::policy_admission::AdmissionRecord;
 use crate::providers::{parse_provider_configs, ProviderClient, ProviderConfig};
 use crate::types::AgentKind;
 
@@ -239,7 +240,8 @@ impl Runner {
                     continue;
                 }
                 let bridge = self.bridge.clone();
-                let admission = self.admission.clone();
+                let admission_control = self.admission.clone();
+                let admission_snapshot = admission.clone();
                 let provider = provider.clone();
                 let workflow = workflow.clone();
                 let claims = self.claims.clone();
@@ -250,7 +252,8 @@ impl Runner {
                     let _permit = permit;
                     execute_assignment(
                         bridge,
-                        admission,
+                        admission_control,
+                        admission_snapshot,
                         provider,
                         workflow,
                         assignment,
@@ -274,6 +277,7 @@ pub async fn run_from_env() -> anyhow::Result<()> {
 async fn execute_assignment(
     bridge: BridgeClient,
     admission: AdmissionControl,
+    admission_snapshot: AdmissionRecord,
     provider: ProviderWorker,
     workflow: WorkflowView,
     assignment: WorkflowAssignment,
@@ -354,46 +358,11 @@ async fn execute_assignment(
         }
     }
 
-    let phase_concurrency = workflow
-        .plan
-        .assignments
-        .iter()
-        .filter(|candidate| candidate.phase == assignment.phase)
-        .count();
-    let phase_concurrency = u8::try_from(phase_concurrency).unwrap_or(u8::MAX);
-    let reserved = match admission
-        .reserve_call(
-            &workflow.plan.id,
-            &provider.config.name,
-            phase_concurrency.max(1),
-        )
-        .await
-    {
-        Ok(admission) => admission,
-        Err(error) => {
-            warn!(
-                workflow_id = %workflow.plan.id,
-                assignment_ordinal = assignment.ordinal,
-                agent_key = %provider.config.name,
-                %error,
-                "policy budget did not admit another provider call"
-            );
-            release_file_lease(
-                &bridge,
-                file_lease.as_ref(),
-                &provider.config.name,
-                &workflow,
-            )
-            .await;
-            release_claim(&bridge, claim.as_ref(), &claims, &workflow, &assignment).await;
-            return;
-        }
-    };
-    let remaining_output_tokens = reserved
+    let remaining_output_tokens = admission_snapshot
         .policy
         .budget
         .max_output_tokens
-        .saturating_sub(reserved.usage.output_tokens);
+        .saturating_sub(admission_snapshot.usage.output_tokens);
     if remaining_output_tokens == 0 {
         let _ = admission
             .cancel(
@@ -415,9 +384,48 @@ async fn execute_assignment(
         .min(remaining_output_tokens)
         .try_into()
         .unwrap_or(max_output_tokens);
+    let request = provider_request(&workflow, &assignment, effective_max_output_tokens);
+    let phase_concurrency = workflow
+        .plan
+        .assignments
+        .iter()
+        .filter(|candidate| candidate.phase == assignment.phase)
+        .count();
+    let phase_concurrency = u8::try_from(phase_concurrency).unwrap_or(u8::MAX);
+    let (reserved, reservation) = match admission
+        .reserve_call(
+            &workflow.plan.id,
+            &provider.config.name,
+            &request,
+            phase_concurrency.max(1),
+        )
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            warn!(
+                workflow_id = %workflow.plan.id,
+                assignment_ordinal = assignment.ordinal,
+                agent_key = %provider.config.name,
+                %error,
+                "policy budget did not admit the provider call"
+            );
+            let _ = admission
+                .cancel(&workflow.plan.id, "provider call reservation failed")
+                .await;
+            release_file_lease(
+                &bridge,
+                file_lease.as_ref(),
+                &provider.config.name,
+                &workflow,
+            )
+            .await;
+            release_claim(&bridge, claim.as_ref(), &claims, &workflow, &assignment).await;
+            return;
+        }
+    };
 
     let file_fencing_token = file_lease.as_ref().map(|handle| handle.fencing_token);
-    let request = provider_request(&workflow, &assignment, effective_max_output_tokens);
     let heartbeat_ttl_ms = claim
         .iter()
         .chain(file_lease.iter())
@@ -471,6 +479,7 @@ async fn execute_assignment(
                     &provider.config.name,
                     &response.usage,
                     elapsed_ms,
+                    reservation,
                 )
                 .await
             {
@@ -509,17 +518,8 @@ async fn execute_assignment(
             renewals,
         } => {
             let error = error.to_string();
-            let synthetic_usage = json!({
-                "input_tokens": 0,
-                "output_tokens": 0
-            });
             if let Err(accounting_error) = admission
-                .report_response(
-                    &workflow.plan.id,
-                    &provider.config.name,
-                    &synthetic_usage,
-                    elapsed_ms,
-                )
+                .report_failure(&workflow.plan.id, &provider.config.name, elapsed_ms)
                 .await
             {
                 warn!(
@@ -580,10 +580,7 @@ async fn execute_assignment(
     annotate_heartbeat(&mut meta, claim.is_some(), file_lease.is_some(), renewals);
     if let Some(object) = meta.as_object_mut() {
         object.insert("policy_admitted".into(), json!(true));
-        object.insert(
-            "policy_version".into(),
-            json!(reserved.policy.policy_version),
-        );
+        object.insert("policy_version".into(), json!(reserved.policy.policy_version));
         object.insert("provider_elapsed_ms".into(), json!(elapsed_ms));
     }
     if let Some(handle) = claim.as_ref() {
@@ -597,10 +594,7 @@ async fn execute_assignment(
                 "assignment claim became stale before submission; provider output discarded"
             );
             let _ = admission
-                .cancel(
-                    &workflow.plan.id,
-                    "assignment claim became stale before submission",
-                )
+                .cancel(&workflow.plan.id, "assignment claim became stale before submission")
                 .await;
             release_file_lease(
                 &bridge,
