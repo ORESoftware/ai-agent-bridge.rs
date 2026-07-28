@@ -93,6 +93,7 @@ struct AdmitReq {
 #[derive(Debug, Deserialize)]
 struct UsageReq {
     updated_by: String,
+    provider_agent_key: String,
     delta: UsageDelta,
 }
 
