@@ -50,8 +50,11 @@ impl ClaimConfig {
             .trim()
             .to_ascii_lowercase();
         validate_repository(&repository)?;
-        let ttl_ms = env_u64("AI_AGENT_RUNNER_ASSIGNMENT_CLAIM_TTL_MS", DEFAULT_CLAIM_TTL_MS)
-            .clamp(1, MAX_CLAIM_TTL_MS);
+        let ttl_ms = env_u64(
+            "AI_AGENT_RUNNER_ASSIGNMENT_CLAIM_TTL_MS",
+            DEFAULT_CLAIM_TTL_MS,
+        )
+        .clamp(1, MAX_CLAIM_TTL_MS);
         let owner = format!("runner/{instance_id}");
         if owner.len() > 120 {
             anyhow::bail!("runner assignment-claim owner exceeds 120 bytes");
@@ -109,6 +112,8 @@ fn validate_repository(value: &str) -> anyhow::Result<()> {
     if parts.len() != 2
         || parts.iter().any(|part| {
             part.is_empty()
+                || *part == "."
+                || *part == ".."
                 || !part
                     .chars()
                     .all(|character| character.is_ascii_alphanumeric() || "-_.".contains(character))
@@ -174,5 +179,11 @@ mod tests {
         assert!(validate_instance_id("pod-0.example").is_ok());
         assert!(validate_instance_id("pod/0").is_err());
         assert!(validate_instance_id("bad\nvalue").is_err());
+    }
+
+    #[test]
+    fn claim_repository_rejects_dot_segments() {
+        assert!(validate_repository("owner/repo").is_ok());
+        assert!(validate_repository("owner/..").is_err());
     }
 }
