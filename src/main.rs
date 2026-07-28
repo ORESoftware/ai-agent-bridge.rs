@@ -8,7 +8,8 @@ use ai_agent_bridge::config::Config;
 use ai_agent_bridge::embed::Embedder;
 use ai_agent_bridge::state::AppState;
 use ai_agent_bridge::{
-    blind_competition, http, lease_renewal, orchestration, policy, tcp, workflow_security,
+    assignment_claims, blind_competition, http, lease_renewal, orchestration, policy, tcp,
+    workflow_security,
 };
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
@@ -40,6 +41,8 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let state = build_state(config.clone(), embedder).await?;
+    let assignment_claim_policy =
+        assignment_claims::AssignmentClaimPolicy::from_env(state.clone())?;
 
     let http_addr = std::net::SocketAddr::new(config.host, config.http_port);
     let tcp_addr = std::net::SocketAddr::new(config.host, config.tcp_port);
@@ -52,6 +55,10 @@ async fn main() -> anyhow::Result<()> {
         .merge(orchestration::router(state.clone()))
         .merge(policy::router())
         .merge(blind_competition::router(state.clone()))
+        .layer(axum::middleware::from_fn_with_state(
+            assignment_claim_policy,
+            assignment_claims::enforce,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             lease_renewal::intercept,
