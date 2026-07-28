@@ -1,0 +1,83 @@
+name: update serde_json on current main
+
+on:
+  push:
+    branches:
+      - agent/merge-serde-json-1.0.151-current-main
+
+permissions:
+  contents: write
+
+jobs:
+  update-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_DB: bridge_restart
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: bridge-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bridge -d bridge_restart"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: agent/merge-serde-json-1.0.151-current-main
+          fetch-depth: 0
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: "1.95.0"
+          components: rustfmt, clippy
+      - name: Regenerate only serde_json
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo update -p serde_json@1.0.150 --precise 1.0.151
+          python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+          packages = tomllib.loads(Path('Cargo.lock').read_text())['package']
+          matches = [p for p in packages if p['name'] == 'serde_json']
+          assert len(matches) == 1, matches
+          assert matches[0]['version'] == '1.0.151', matches[0]
+          assert matches[0]['checksum'] == 'c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14'
+          PY
+          test "$(git diff --name-only)" = 'Cargo.lock'
+          git diff --check
+      - name: Canonical Rust and persistence validation
+        env:
+          FIDUCIA_BRIDGE_TEST_DATABASE_URL: postgresql://bridge:bridge-test-only@localhost:5432/bridge_restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --locked --features postgres -- -D warnings
+          cargo test --all-targets --locked
+          cargo check --all-targets --locked --features postgres
+          cargo test --locked --features postgres --test postgres_restart -- --ignored
+      - uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7
+        with:
+          tool: cargo-audit@0.22.2
+      - name: Audit and commit validated graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo audit
+          make -B -C vendor/flags-2-env all
+          vendor/flags-2-env/build/flags2env audit .cli-flags.toml
+          rm .github/workflows/agent-update-serde-json.yml
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.lock .github/workflows/agent-update-serde-json.yml
+          git commit -m 'chore(deps): update serde_json to 1.0.151'
+          git push origin HEAD:agent/merge-serde-json-1.0.151-current-main
