@@ -161,7 +161,8 @@ pub async fn enforce(
     let expected_owner = format!("runner/{}", claim.instance_id.trim());
     if claim.assignment_ordinal != assignment.ordinal
         || claim.repository.trim().to_ascii_lowercase() != policy.repository
-        || claim.paths != vec![expected_path.clone()]
+        || claim.paths.len() != 1
+        || claim.paths.first() != Some(&expected_path)
         || claim.owner.trim().is_empty()
         || claim.owner.trim() != expected_owner
         || claim.instance_id.trim().is_empty()
@@ -270,7 +271,7 @@ fn validate_repository(value: &str) -> anyhow::Result<()> {
             && *part != ".."
             && part
                 .chars()
-                .all(|character| character.is_ascii_alphanumeric() || "-_ .".contains(character))
+                .all(|character| character.is_ascii_alphanumeric() || "-_.".contains(character))
     };
     if parts.len() != 2 || !parts.iter().all(valid_part) {
         anyhow::bail!("assignment claim repository must be canonical owner/repo");
