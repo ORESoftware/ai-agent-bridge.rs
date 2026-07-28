@@ -1,0 +1,178 @@
+name: integrate DEN-490 with scoped context security
+
+on:
+  push:
+    branches:
+      - agent/den-490-authoritative-lease-descriptors
+
+permissions:
+  contents: write
+
+jobs:
+  apply-integration:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: agent/den-490-authoritative-lease-descriptors
+          fetch-depth: 0
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: "1.95.0"
+          components: rustfmt
+      - name: Preserve authoritative descriptors behind internal context APIs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path: str, old: str, new: str, expected: int = 1) -> None:
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f"{path}: expected {expected} occurrence(s) of {old!r}, found {count}")
+              file.write_text(text.replace(old, new, expected))
+
+          replace_exact(
+              "src/lease_descriptors.rs",
+              "if state.get_context_key(REGISTRY_CHANNEL, &key)?.is_some() {",
+              "if state.get_context_key_internal(REGISTRY_CHANNEL, &key)?.is_some() {",
+          )
+          replace_exact(
+              "src/lease_descriptors.rs",
+              "    state.set_context(\n        REGISTRY_CHANNEL,",
+              "    state.set_context_internal(\n        REGISTRY_CHANNEL,",
+          )
+          replace_exact(
+              "src/lease_descriptors.rs",
+              ".get_context_key(REGISTRY_CHANNEL, &descriptor_key(lease_id))",
+              ".get_context_key_internal(REGISTRY_CHANNEL, &descriptor_key(lease_id))",
+          )
+
+          test_path = "tests/lease_descriptor_compatibility.rs"
+          replace_exact(
+              test_path,
+              "    let (base, state, mock) = spawn().await;",
+              "    let (base, _state, mock) = spawn().await;",
+              expected=2,
+          )
+          replace_exact(
+              test_path,
+              '''
+              let entries = state
+                  .get_context("internal-file-lease-descriptors")
+                  .unwrap();
+              assert_eq!(entries.len(), 1);
+              assert!(entries[0].key.ends_with(lease_id));
+              assert_eq!(entries[0].value["repository"], "owner/repo");
+              assert_eq!(entries[0].value["paths"], json!(["src/lib.rs"]));
+          ''',
+              "\n",
+          )
+          replace_exact(
+              test_path,
+              '''
+              let entry = state
+                  .get_context("internal-file-lease-descriptors")
+                  .unwrap()
+                  .into_iter()
+                  .next()
+                  .unwrap();
+              assert_eq!(entry.value["status"], "released");
+              assert!(entry.value["released_at"].as_str().is_some());
+          ''',
+              "\n",
+          )
+
+          module_path = Path("src/lease_descriptors.rs")
+          source = module_path.read_text()
+          marker = '''    #[test]
+              fn normalizes_paths_and_rejects_traversal() {
+                  assert_eq!(normalize_path("src/./lib.rs").unwrap(), "src/lib.rs");
+                  assert!(normalize_path("../secrets").is_err());
+                  assert!(normalize_path("/etc/passwd").is_err());
+                  assert!(normalize_path("src\\\\lib.rs").is_err());
+              }
+          }
+          '''
+          replacement = '''    #[test]
+              fn normalizes_paths_and_rejects_traversal() {
+                  assert_eq!(normalize_path("src/./lib.rs").unwrap(), "src/lib.rs");
+                  assert!(normalize_path("../secrets").is_err());
+                  assert!(normalize_path("/etc/passwd").is_err());
+                  assert!(normalize_path("src\\\\lib.rs").is_err());
+              }
+
+              #[tokio::test]
+              async fn internal_registry_round_trips_while_external_context_stays_hidden() {
+                  let config = crate::config::Config::in_memory();
+                  let embedder = crate::embed::Embedder::new(
+                      config.embed_dim,
+                      None,
+                      "local".into(),
+                      None,
+                      config.max_embedding_response_bytes,
+                  );
+                  let state = AppState::new(config, embedder).unwrap();
+                  let descriptor = AuthoritativeLeaseDescriptor {
+                      version: 1,
+                      lease_id: "descriptor-test".into(),
+                      repository: "owner/repo".into(),
+                      paths: vec!["src/lib.rs".into()],
+                      agent_key: "codex".into(),
+                      fencing_token: 42,
+                      ttl_ms: 30_000,
+                      acquired_at: now_ts(),
+                      expires_at: (chrono::Utc::now() + chrono::Duration::minutes(1))
+                          .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                      status: DescriptorStatus::Active,
+                      released_at: None,
+                  };
+
+                  store_descriptor(&state, &descriptor).await.unwrap();
+                  assert!(state.get_context(REGISTRY_CHANNEL).unwrap().is_empty());
+                  let internal = state.get_context_internal(REGISTRY_CHANNEL).unwrap();
+                  assert_eq!(internal.len(), 1);
+                  assert_eq!(internal[0].key, descriptor_key(&descriptor.lease_id));
+                  assert_eq!(internal[0].value["repository"], "owner/repo");
+
+                  let loaded = load_active_descriptor(&state, &descriptor.lease_id).unwrap();
+                  assert_eq!(loaded.repository, descriptor.repository);
+                  assert_eq!(loaded.paths, descriptor.paths);
+                  assert_eq!(loaded.fencing_token, descriptor.fencing_token);
+              }
+          }
+          '''
+          if source.count(marker) != 1:
+              raise SystemExit("src/lease_descriptors.rs: unit-test insertion point changed")
+          module_path.write_text(source.replace(marker, replacement, 1))
+
+          forbidden = {
+              "src/lease_descriptors.rs": [
+                  "state.get_context_key(REGISTRY_CHANNEL",
+                  "state.set_context(\n        REGISTRY_CHANNEL",
+                  ".get_context_key(REGISTRY_CHANNEL, &descriptor_key(lease_id))",
+              ],
+              test_path: [
+                  '.get_context("internal-file-lease-descriptors")',
+              ],
+          }
+          for path, markers in forbidden.items():
+              text = Path(path).read_text()
+              for marker in markers:
+                  if marker in text:
+                      raise SystemExit(f"{path}: stale external reserved-context access remains: {marker!r}")
+          PY
+          cargo fmt --all
+          rm .github/workflows/agent-integrate-den-490.yml
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: keep lease descriptors in internal context namespace'
+          git push origin HEAD:agent/den-490-authoritative-lease-descriptors
