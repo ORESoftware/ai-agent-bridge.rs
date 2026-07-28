@@ -8,8 +8,8 @@ use ai_agent_bridge::config::Config;
 use ai_agent_bridge::embed::Embedder;
 use ai_agent_bridge::state::AppState;
 use ai_agent_bridge::{
-    blind_competition, http, lease_descriptors, lease_renewal, orchestration, policy, tcp,
-    workflow_security,
+    assignment_claims, blind_competition, http, lease_descriptors, lease_renewal,
+    orchestration, policy, policy_admission, tcp, workflow_security,
 };
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
@@ -24,6 +24,7 @@ async fn main() -> anyhow::Result<()> {
         config.api_auth_bearer.clone(),
         config.max_http_body_bytes,
     )?;
+    let tcp_auth = workflow_auth.clone();
     info!(
         http_port = config.http_port,
         tcp_port = config.tcp_port,
@@ -41,6 +42,8 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let state = build_state(config.clone(), embedder).await?;
+    let assignment_claim_policy =
+        assignment_claims::AssignmentClaimPolicy::from_env(state.clone())?;
 
     let http_addr = std::net::SocketAddr::new(config.host, config.http_port);
     let tcp_addr = std::net::SocketAddr::new(config.host, config.tcp_port);
@@ -52,7 +55,12 @@ async fn main() -> anyhow::Result<()> {
     let app = http::router(state.clone())
         .merge(orchestration::router(state.clone()))
         .merge(policy::router())
+        .merge(policy_admission::router(state.clone()))
         .merge(blind_competition::router(state.clone()))
+        .layer(axum::middleware::from_fn_with_state(
+            assignment_claim_policy,
+            assignment_claims::enforce,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             lease_renewal::intercept,
@@ -74,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
     });
     let tcp_state = state.clone();
     server_tasks.spawn(async move {
-        if let Err(e) = tcp::serve(tcp_state, tcp_listener).await {
+        if let Err(e) = tcp::serve(tcp_state, tcp_listener, tcp_auth).await {
             warn!(error = %e, "tcp server exited");
         }
     });
