@@ -70,11 +70,17 @@ struct AcquireCompatibleReq {
 }
 
 #[derive(Debug, Deserialize)]
-struct MutateCompatibleReq {
+struct RenewCompatibleReq {
     agent_key: String,
     fencing_token: u64,
     #[serde(default = "default_ttl_ms")]
     ttl_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReleaseCompatibleReq {
+    agent_key: String,
+    fencing_token: u64,
 }
 
 const fn default_ttl_ms() -> u64 {
@@ -246,7 +252,7 @@ async fn acquire(state: Arc<AppState>, bytes: &[u8]) -> Response {
 }
 
 async fn renew(state: Arc<AppState>, lease_id: &str, bytes: &[u8]) -> Response {
-    let req = match serde_json::from_slice::<MutateCompatibleReq>(bytes) {
+    let req = match serde_json::from_slice::<RenewCompatibleReq>(bytes) {
         Ok(req) => req,
         Err(_) => {
             return error_response(BridgeError::BadRequest(
@@ -305,7 +311,7 @@ async fn renew(state: Arc<AppState>, lease_id: &str, bytes: &[u8]) -> Response {
 }
 
 async fn release(state: Arc<AppState>, lease_id: &str, bytes: &[u8]) -> Response {
-    let req = match serde_json::from_slice::<MutateCompatibleReq>(bytes) {
+    let req = match serde_json::from_slice::<ReleaseCompatibleReq>(bytes) {
         Ok(req) => req,
         Err(_) => {
             return error_response(BridgeError::BadRequest(
