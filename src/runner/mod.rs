@@ -1,4 +1,5 @@
 mod bridge;
+mod claims;
 mod heartbeat;
 mod work;
 
@@ -13,8 +14,10 @@ use tracing::{error, info, warn};
 
 use crate::orchestration::{WorkflowAssignment, WorkflowView};
 use crate::providers::{parse_provider_configs, ProviderClient, ProviderConfig};
+use crate::types::AgentKind;
 
 use bridge::{BridgeClient, LeaseHandle};
+use claims::ClaimConfig;
 use heartbeat::{run_with_heartbeat, HeartbeatOutcome};
 use work::{
     configured_capabilities, eligible_assignment, failure_meta, infer_agent_kind, protocol_label,
@@ -38,6 +41,7 @@ struct ProviderWorker {
 pub struct Runner {
     bridge: BridgeClient,
     providers: Arc<Vec<ProviderWorker>>,
+    claims: ClaimConfig,
     poll_interval: Duration,
     max_concurrency: usize,
     concurrency: Arc<Semaphore>,
@@ -78,9 +82,18 @@ impl Runner {
             DEFAULT_MAX_OUTPUT_TOKENS,
         )
         .clamp(1, MAX_OUTPUT_TOKENS);
+        let claims = ClaimConfig::from_env()?;
+        if claims.enabled
+            && heartbeat::renewal_delay(claims.ttl_ms, lease_safety_margin_ms).is_none()
+        {
+            anyhow::bail!(
+                "assignment claim TTL must exceed the runner lease safety margin by at least 250ms"
+            );
+        }
         Ok(Self {
             bridge: BridgeClient::from_env()?,
             providers: Arc::new(providers),
+            claims,
             poll_interval: Duration::from_millis(poll_interval_ms),
             max_concurrency,
             concurrency: Arc::new(Semaphore::new(max_concurrency)),
@@ -91,11 +104,15 @@ impl Runner {
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
+        self.register_claim_owner().await?;
         self.register_providers().await?;
         info!(
             providers = self.providers.len(),
             max_concurrency = self.max_concurrency,
             poll_interval_ms = self.poll_interval.as_millis(),
+            distributed_claims = self.claims.enabled,
+            declared_replicas = self.claims.replica_count,
+            runner_instance = %self.claims.instance_id,
             "provider runner started"
         );
 
@@ -120,6 +137,29 @@ impl Runner {
             Ok(_all_permits) => info!("provider runner work drained"),
             Err(error) => warn!(%error, "provider runner semaphore closed during drain"),
         }
+        Ok(())
+    }
+
+    async fn register_claim_owner(&self) -> anyhow::Result<()> {
+        if !self.claims.enabled {
+            return Ok(());
+        }
+        self.bridge
+            .register_agent(
+                &self.claims.owner,
+                &format!("AI agent runner {}", self.claims.instance_id),
+                AgentKind::Other,
+                &["assignment-claims".into(), "fiducia-leases".into()],
+                "fiducia",
+                "assignment-claim",
+            )
+            .await?;
+        info!(
+            claim_owner = %self.claims.owner,
+            claim_repository = %self.claims.repository,
+            claim_ttl_ms = self.claims.ttl_ms,
+            "registered distributed assignment-claim owner"
+        );
         Ok(())
     }
 
@@ -173,6 +213,7 @@ impl Runner {
                 let bridge = self.bridge.clone();
                 let provider = provider.clone();
                 let workflow = workflow.clone();
+                let claims = self.claims.clone();
                 let in_flight = self.in_flight.clone();
                 let lease_safety_margin_ms = self.lease_safety_margin_ms;
                 let max_output_tokens = self.max_output_tokens;
@@ -183,6 +224,7 @@ impl Runner {
                         provider,
                         workflow,
                         assignment,
+                        claims,
                         lease_safety_margin_ms,
                         max_output_tokens,
                     )
@@ -203,10 +245,41 @@ async fn execute_assignment(
     provider: ProviderWorker,
     workflow: WorkflowView,
     assignment: WorkflowAssignment,
+    claims: ClaimConfig,
     lease_safety_margin_ms: u64,
     max_output_tokens: u32,
 ) {
-    let mut lease: Option<LeaseHandle> = None;
+    let claim = if claims.enabled {
+        let path = claims.path(&workflow.plan.id, assignment.ordinal);
+        match bridge
+            .acquire_lease(
+                "/file-leases/acquire",
+                "/file-leases/release",
+                &claims.repository,
+                &[path],
+                &claims.owner,
+                claims.ttl_ms,
+            )
+            .await
+        {
+            Ok(handle) => Some(handle),
+            Err(error) => {
+                info!(
+                    workflow_id = %workflow.plan.id,
+                    assignment_ordinal = assignment.ordinal,
+                    agent_key = %provider.config.name,
+                    runner_instance = %claims.instance_id,
+                    %error,
+                    "assignment claim not acquired; another runner may own the work"
+                );
+                return;
+            }
+        }
+    } else {
+        None
+    };
+
+    let mut file_lease: Option<LeaseHandle> = None;
     if let Some(requirement) = workflow
         .plan
         .file_lease
@@ -221,6 +294,7 @@ async fn execute_assignment(
                 safety_margin_ms = lease_safety_margin_ms,
                 "skipping assignment because the lease TTL cannot preserve its heartbeat margin"
             );
+            release_claim(&bridge, claim.as_ref(), &claims, &workflow, &assignment).await;
             return;
         }
         match bridge
@@ -234,27 +308,53 @@ async fn execute_assignment(
             )
             .await
         {
-            Ok(handle) => lease = Some(handle),
+            Ok(handle) => file_lease = Some(handle),
             Err(error) => {
                 warn!(
                     workflow_id = %workflow.plan.id,
                     agent_key = %provider.config.name,
                     %error,
-                    "Fiducia lease acquisition failed; assignment remains pending"
+                    "Fiducia file lease acquisition failed; assignment remains pending"
                 );
+                release_claim(&bridge, claim.as_ref(), &claims, &workflow, &assignment).await;
                 return;
             }
         }
     }
 
-    let fencing_token = lease.as_ref().map(|handle| handle.fencing_token);
+    let file_fencing_token = file_lease.as_ref().map(|handle| handle.fencing_token);
     let request = provider_request(&workflow, &assignment, max_output_tokens);
-    let execution = if let Some(handle) = lease.as_ref() {
+    let heartbeat_ttl_ms = claim
+        .iter()
+        .chain(file_lease.iter())
+        .map(|handle| handle.ttl_ms)
+        .min();
+    let execution = if let Some(ttl_ms) = heartbeat_ttl_ms {
+        let renewal_bridge = bridge.clone();
+        let renewal_claim = claim.clone();
+        let renewal_file_lease = file_lease.clone();
+        let claim_owner = claims.owner.clone();
+        let provider_agent_key = provider.config.name.clone();
         run_with_heartbeat(
             provider.client.execute(&request),
-            handle.ttl_ms,
+            ttl_ms,
             lease_safety_margin_ms,
-            || bridge.renew_lease(handle, &provider.config.name),
+            move || {
+                let bridge = renewal_bridge.clone();
+                let claim = renewal_claim.clone();
+                let file_lease = renewal_file_lease.clone();
+                let claim_owner = claim_owner.clone();
+                let provider_agent_key = provider_agent_key.clone();
+                async move {
+                    if let Some(handle) = claim.as_ref() {
+                        bridge.renew_lease(handle, &claim_owner).await?;
+                    }
+                    if let Some(handle) = file_lease.as_ref() {
+                        bridge.renew_lease(handle, &provider_agent_key).await?;
+                    }
+                    Ok::<_, bridge::BridgeClientError>(())
+                }
+            },
         )
         .await
     } else {
@@ -264,7 +364,7 @@ async fn execute_assignment(
         }
     };
 
-    let (content, mut meta, renewals, heartbeat_failed) = match execution {
+    let (content, mut meta, renewals) = match execution {
         HeartbeatOutcome::Completed {
             output: Ok(response),
             renewals,
@@ -276,10 +376,9 @@ async fn execute_assignment(
                 provider.config.protocol,
                 response.request_id.as_deref(),
                 response.usage,
-                fencing_token,
+                file_fencing_token,
             ),
             renewals,
-            false,
         ),
         HeartbeatOutcome::Completed {
             output: Err(error),
@@ -293,39 +392,67 @@ async fn execute_assignment(
                     &provider.config.model,
                     provider.config.protocol,
                     &error,
-                    fencing_token,
+                    file_fencing_token,
                 ),
                 renewals,
-                false,
             )
         }
         HeartbeatOutcome::LeaseLost { error, renewals } => {
-            let error = error.to_string();
             warn!(
                 workflow_id = %workflow.plan.id,
                 assignment_ordinal = assignment.ordinal,
                 agent_key = %provider.config.name,
-                fencing_token,
+                file_fencing_token = ?file_fencing_token,
+                claim_fencing_token = ?claim.as_ref().map(|handle| handle.fencing_token),
                 successful_renewals = renewals,
                 %error,
-                "Fiducia lease heartbeat failed; provider execution cancelled"
+                "assignment or file lease heartbeat failed; provider output discarded"
             );
-            (
-                "Provider execution cancelled because the Fiducia lease heartbeat failed."
-                    .to_string(),
-                failure_meta(
-                    &provider.config.name,
-                    &provider.config.model,
-                    provider.config.protocol,
-                    &error,
-                    fencing_token,
-                ),
-                renewals,
-                true,
+            release_file_lease(
+                &bridge,
+                file_lease.as_ref(),
+                &provider.config.name,
+                &workflow,
             )
+            .await;
+            release_claim(&bridge, claim.as_ref(), &claims, &workflow, &assignment).await;
+            return;
         }
     };
-    annotate_heartbeat(&mut meta, lease.is_some(), renewals, heartbeat_failed);
+
+    annotate_heartbeat(
+        &mut meta,
+        claim.is_some(),
+        file_lease.is_some(),
+        renewals,
+    );
+    if let Some(handle) = claim.as_ref() {
+        if let Err(error) = bridge.renew_lease(handle, &claims.owner).await {
+            warn!(
+                workflow_id = %workflow.plan.id,
+                assignment_ordinal = assignment.ordinal,
+                runner_instance = %claims.instance_id,
+                claim_fencing_token = handle.fencing_token,
+                %error,
+                "assignment claim became stale before submission; provider output discarded"
+            );
+            release_file_lease(
+                &bridge,
+                file_lease.as_ref(),
+                &provider.config.name,
+                &workflow,
+            )
+            .await;
+            release_claim(&bridge, claim.as_ref(), &claims, &workflow, &assignment).await;
+            return;
+        }
+        if let Some(object) = meta.as_object_mut() {
+            object.insert(
+                "assignment_claim".into(),
+                claims.metadata(&workflow.plan.id, assignment.ordinal, handle.fencing_token),
+            );
+        }
+    }
 
     match bridge
         .submit(&workflow.plan.id, &provider.config.name, &content, meta)
@@ -335,6 +462,7 @@ async fn execute_assignment(
             workflow_id = %workflow.plan.id,
             assignment_ordinal = submission.assignment_ordinal,
             agent_key = %provider.config.name,
+            runner_instance = %claims.instance_id,
             lease_renewals = renewals,
             "provider workflow submission accepted"
         ),
@@ -342,31 +470,75 @@ async fn execute_assignment(
             workflow_id = %workflow.plan.id,
             assignment_ordinal = assignment.ordinal,
             agent_key = %provider.config.name,
+            runner_instance = %claims.instance_id,
             %error,
             "provider result could not be submitted"
         ),
     }
 
-    if let Some(handle) = lease {
-        if let Err(error) = bridge.release_lease(&handle, &provider.config.name).await {
-            warn!(
-                workflow_id = %workflow.plan.id,
-                agent_key = %provider.config.name,
-                fencing_token = handle.fencing_token,
-                %error,
-                "Fiducia lease release failed; waiting for TTL expiry"
-            );
-        }
+    release_file_lease(
+        &bridge,
+        file_lease.as_ref(),
+        &provider.config.name,
+        &workflow,
+    )
+    .await;
+    release_claim(&bridge, claim.as_ref(), &claims, &workflow, &assignment).await;
+}
+
+async fn release_file_lease(
+    bridge: &BridgeClient,
+    lease: Option<&LeaseHandle>,
+    agent_key: &str,
+    workflow: &WorkflowView,
+) {
+    let Some(handle) = lease else {
+        return;
+    };
+    if let Err(error) = bridge.release_lease(handle, agent_key).await {
+        warn!(
+            workflow_id = %workflow.plan.id,
+            agent_key,
+            fencing_token = handle.fencing_token,
+            %error,
+            "Fiducia file lease release failed; waiting for TTL expiry"
+        );
     }
 }
 
-fn annotate_heartbeat(meta: &mut Value, leased: bool, renewals: u64, failed: bool) {
-    if !leased {
+async fn release_claim(
+    bridge: &BridgeClient,
+    claim: Option<&LeaseHandle>,
+    claims: &ClaimConfig,
+    workflow: &WorkflowView,
+    assignment: &WorkflowAssignment,
+) {
+    let Some(handle) = claim else {
         return;
+    };
+    if let Err(error) = bridge.release_lease(handle, &claims.owner).await {
+        warn!(
+            workflow_id = %workflow.plan.id,
+            assignment_ordinal = assignment.ordinal,
+            runner_instance = %claims.instance_id,
+            fencing_token = handle.fencing_token,
+            %error,
+            "assignment claim release failed; waiting for TTL expiry"
+        );
     }
+}
+
+fn annotate_heartbeat(
+    meta: &mut Value,
+    claimed: bool,
+    file_leased: bool,
+    renewals: u64,
+) {
     if let Some(object) = meta.as_object_mut() {
+        object.insert("assignment_claimed".into(), json!(claimed));
+        object.insert("file_leased".into(), json!(file_leased));
         object.insert("lease_renewals".into(), json!(renewals));
-        object.insert("lease_heartbeat_failed".into(), json!(failed));
+        object.insert("lease_heartbeat_failed".into(), json!(false));
     }
 }
 
