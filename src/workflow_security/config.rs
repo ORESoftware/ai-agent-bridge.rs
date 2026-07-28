@@ -77,7 +77,19 @@ impl WorkflowSecurity {
         }))
     }
 
-    fn authenticate(&self, token: &str) -> Option<AuthenticatedAdapter> {
+    pub fn authenticate_principal(&self, token: &str) -> Option<AuthenticatedPrincipal> {
+        if self.is_admin_token(token) {
+            return Some(AuthenticatedPrincipal::Operator);
+        }
+        self.authenticate(token)
+            .map(AuthenticatedPrincipal::Adapter)
+    }
+
+    pub fn authentication_required(&self) -> bool {
+        self.global_bearer.is_some() || self.scoped_mode()
+    }
+
+    pub(crate) fn authenticate(&self, token: &str) -> Option<AuthenticatedAdapter> {
         let mut matched = None;
         for credential in &self.credentials {
             let equal = crate::config::constant_time_eq(
@@ -95,7 +107,7 @@ impl WorkflowSecurity {
         matched
     }
 
-    fn is_admin_token(&self, token: &str) -> bool {
+    pub(crate) fn is_admin_token(&self, token: &str) -> bool {
         self.global_bearer
             .as_deref()
             .map(|expected| {
@@ -104,7 +116,7 @@ impl WorkflowSecurity {
             .unwrap_or(false)
     }
 
-    fn scoped_mode(&self) -> bool {
+    pub(crate) fn scoped_mode(&self) -> bool {
         !self.credentials.is_empty()
     }
 }
