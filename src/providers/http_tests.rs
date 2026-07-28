@@ -124,7 +124,9 @@ async fn mock_provider(State(state): State<MockState>, request: AxumRequest) -> 
 async fn spawn(state: MockState) -> (String, MockState) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let app = Router::new().fallback(mock_provider).with_state(state.clone());
+    let app = Router::new()
+        .fallback(mock_provider)
+        .with_state(state.clone());
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
@@ -323,7 +325,10 @@ async fn executes_all_provider_wire_contracts_and_normalizes_usage() {
                     Some(TEST_SECRET)
                 );
                 assert_eq!(
-                    captured.headers.get("anthropic-version").map(String::as_str),
+                    captured
+                        .headers
+                        .get("anthropic-version")
+                        .map(String::as_str),
                     Some("2023-06-01")
                 );
                 assert_eq!(captured.body["messages"][0]["content"], "Solve the issue");
@@ -443,10 +448,8 @@ async fn response_limit_applies_to_content_length_and_streamed_bodies() {
         Err(ProviderError::ResponseTooLarge)
     ));
 
-    let state = MockState::json(Value::Null).with_body(MockBody::Chunks(vec![
-        vec![b'x'; 40],
-        vec![b'y'; 40],
-    ]));
+    let state = MockState::json(Value::Null)
+        .with_body(MockBody::Chunks(vec![vec![b'x'; 40], vec![b'y'; 40]]));
     let (base, _) = spawn(state).await;
     let client = ProviderClient::with_api_key(
         config(
@@ -468,8 +471,8 @@ async fn response_limit_applies_to_content_length_and_streamed_bodies() {
 
 #[tokio::test]
 async fn timeout_and_invalid_response_fail_closed() {
-    let state = MockState::json(json!({"output_text":"too late"}))
-        .with_delay(Duration::from_millis(1_200));
+    let state =
+        MockState::json(json!({"output_text":"too late"})).with_delay(Duration::from_millis(1_200));
     let (base, _) = spawn(state).await;
     let client = ProviderClient::with_api_key(
         config(
@@ -488,8 +491,7 @@ async fn timeout_and_invalid_response_fail_closed() {
         Err(ProviderError::Transport)
     ));
 
-    let state = MockState::json(Value::Null)
-        .with_body(MockBody::Text("not-json".to_string()));
+    let state = MockState::json(Value::Null).with_body(MockBody::Text("not-json".to_string()));
     let (base, _) = spawn(state).await;
     let client = ProviderClient::with_api_key(
         config(

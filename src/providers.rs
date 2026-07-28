@@ -552,11 +552,9 @@ fn normalize_usage(protocol: ProviderProtocol, body: &Value) -> Value {
             &["output_tokens", "completion_tokens"],
             &["total_tokens"],
         ),
-        ProviderProtocol::AnthropicMessages => (
-            &["input_tokens"],
-            &["output_tokens"],
-            &["total_tokens"],
-        ),
+        ProviderProtocol::AnthropicMessages => {
+            (&["input_tokens"], &["output_tokens"], &["total_tokens"])
+        }
         ProviderProtocol::GeminiGenerateContent => (
             &["promptTokenCount", "prompt_token_count"],
             &["candidatesTokenCount", "candidates_token_count"],
@@ -570,8 +568,8 @@ fn normalize_usage(protocol: ProviderProtocol, body: &Value) -> Value {
     };
     let input_tokens = usage_u64(raw, input_keys).unwrap_or(0);
     let output_tokens = usage_u64(raw, output_keys).unwrap_or(0);
-    let total_tokens = usage_u64(raw, total_keys)
-        .unwrap_or_else(|| input_tokens.saturating_add(output_tokens));
+    let total_tokens =
+        usage_u64(raw, total_keys).unwrap_or_else(|| input_tokens.saturating_add(output_tokens));
     json!({
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
@@ -590,9 +588,7 @@ fn find_usage_u64(value: &Value, key: &str) -> Option<u64> {
             .get(key)
             .and_then(Value::as_u64)
             .or_else(|| map.values().find_map(|value| find_usage_u64(value, key))),
-        Value::Array(values) => values
-            .iter()
-            .find_map(|value| find_usage_u64(value, key)),
+        Value::Array(values) => values.iter().find_map(|value| find_usage_u64(value, key)),
         _ => None,
     }
 }
