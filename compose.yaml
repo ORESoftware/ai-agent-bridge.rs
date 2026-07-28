@@ -17,8 +17,8 @@ services:
       retries: 20
   bridge:
     build:
-      context: ..
-      dockerfile: fiducia-ai-agent-bridge.rs/Dockerfile
+      context: .
+      target: bridge
     environment:
       DATABASE_URL: postgres://fiducia:${POSTGRES_PASSWORD:-local-only}@postgres/fiducia_bridge
       API_AUTH_BEARER: ${API_AUTH_BEARER:-local-only-change-me}
