@@ -17,7 +17,8 @@ use tracing::{info, warn};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    fiducia_telemetry::init("fiducia-ai-agent-bridge");
+    // Keep the guard alive until shutdown so trace and metric providers flush.
+    let _telemetry = fiducia_telemetry::init("fiducia-ai-agent-bridge");
 
     let config = Config::from_env()?;
     let workflow_auth = workflow_security::WorkflowSecurity::from_env(
