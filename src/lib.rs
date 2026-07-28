@@ -5,9 +5,11 @@
 //! what the test suite exercises. Postgres persistence ([`db`]) is optional and
 //! compiled in only with `--features postgres`.
 
+pub mod assignment_claims;
 pub mod blind_competition;
 pub mod compat;
 pub mod config;
+mod context_access;
 pub mod control_plane;
 pub mod embed;
 pub mod error;
@@ -16,11 +18,13 @@ pub mod lease_descriptors;
 pub mod lease_renewal;
 pub mod orchestration;
 pub mod policy;
+pub mod policy_admission;
 pub mod preflight;
 pub mod providers;
 pub mod runner;
 pub mod state;
 pub mod tcp;
+mod tcp_security;
 pub mod types;
 pub mod workflow_security;
 
