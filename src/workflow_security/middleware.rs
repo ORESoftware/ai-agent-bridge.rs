@@ -142,9 +142,11 @@ fn access_rule(method: &Method, path: &str) -> Option<AccessRule> {
             scope: "channel:create",
             identity_field: Some("created_by"),
         },
-        (&Method::GET, "/channels")
-        | (&Method::POST, "/channels/search")
-        | (&Method::GET, path)
+        (&Method::GET, "/channels") | (&Method::POST, "/channels/search") => AccessRule {
+            scope: "channel:read",
+            identity_field: None,
+        },
+        (&Method::GET, path)
             if path.starts_with("/channels/")
                 && !path.ends_with("/context")
                 && !path.ends_with("/messages") =>
