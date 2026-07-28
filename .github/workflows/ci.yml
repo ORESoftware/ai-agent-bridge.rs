@@ -53,7 +53,7 @@ jobs:
         env:
           FIDUCIA_BRIDGE_TEST_DATABASE_URL: postgresql://bridge:bridge-test-only@localhost:5432/bridge_restart
         run: cargo test --locked --features postgres --test postgres_restart -- --ignored
-      - uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b # v2
+      - uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2.85.0
         with:
           tool: cargo-audit@0.22.2
       - run: cargo audit
