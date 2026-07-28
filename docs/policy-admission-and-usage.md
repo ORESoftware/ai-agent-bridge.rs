@@ -62,22 +62,29 @@ Before a vendor call, the runner:
 1. loads or creates the workflow admission;
 2. skips all work unless the admission is active and the provider is selected;
 3. acquires the distributed assignment claim and any required file lease;
-4. reserves one provider call and the phase concurrency against the admission;
-5. clamps `max_output_tokens` to the remaining admitted output-token budget.
+4. clamps `max_output_tokens` to the current remaining output-token budget;
+5. conservatively reserves one token per prompt/system byte plus framing overhead,
+   the full clamped output-token allowance, fixed call reserve, token-rate cost,
+   provider-call count, and phase concurrency in one atomic admission update.
+
+Concurrent providers therefore cannot all spend the same remaining output or cost
+budget. A failed call keeps its conservative reservation; budgets are never
+refunded after an external request has started.
 
 After the vendor attempt, the runner:
 
 1. extracts common OpenAI, Anthropic, Gemini, Kimi, or Qwen token fields;
 2. uses provider-reported micro-USD cost when present, otherwise computes cost from
    `AI_PROVIDER_PRICING_JSON`;
-3. reports token, cost, and elapsed-time usage before accepting the output;
+3. reports only actual input/output/cost above the conservative reservation plus
+   elapsed time before accepting the output;
 4. discards output and releases both leases if accounting is rejected or cannot be
    proven;
 5. validates the assignment claim again before submission;
 6. submits the result and uses the authoritative updated workflow response;
 7. completes the admission only when that response reports workflow completion;
-8. cancels the admission on heartbeat loss, stale claim, or post-execution
-   submission failure.
+8. cancels the admission on heartbeat loss, stale claim, reservation failure, or
+   post-execution submission failure.
 
 The runner now consumes the workflow response returned by the submission endpoint;
 it no longer attempts to deserialize a nonexistent top-level `submission` field.
@@ -91,13 +98,20 @@ it no longer attempts to deserialize a nonexistent top-level `submission` field.
   "codex": {
     "input_micro_usd_per_million": 1000,
     "output_micro_usd_per_million": 4000,
-    "estimated_call_cost_micro_usd": 5000,
+    "fixed_call_reserve_micro_usd": 5000,
     "max_context_tokens": 200000
   }
 }
 ```
 
-Rates and estimates are configuration, not provider API credentials, but should
+`fixed_call_reserve_micro_usd` covers non-token charges and any vendor-specific
+minimum or safety reserve. The legacy key `estimated_call_cost_micro_usd` is
+accepted as an alias. Token-rate cost for the conservatively reserved input and
+maximum output is added before the call. If a provider reports a cost above that
+reservation, the overage is checked after the response and the output is discarded
+when it exhausts the budget.
+
+Rates and reserves are configuration, not provider API credentials, but should
 remain environment-only because they may encode commercial terms. Missing provider
 pricing fails runner startup. Missing token usage after a provider response causes
 the output to be discarded because cost and token ceilings cannot be proven.
@@ -116,8 +130,8 @@ Provider usage remains separately attributed through `provider_agent_key`.
 
 ## Safety invariants
 
-- No managed vendor call starts without an active admission and a pre-call
-  provider-call/concurrency reservation.
+- No managed vendor call starts without an active admission and an atomic pre-call
+  token, cost, provider-call, and concurrency reservation.
 - No provider output is submitted before actual token, cost, and elapsed usage is
   accepted.
 - A one-unit overage terminally exhausts the admission; it is not a warning.
