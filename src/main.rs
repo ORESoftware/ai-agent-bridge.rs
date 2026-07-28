@@ -8,8 +8,8 @@ use ai_agent_bridge::config::Config;
 use ai_agent_bridge::embed::Embedder;
 use ai_agent_bridge::state::AppState;
 use ai_agent_bridge::{
-    assignment_claims, blind_competition, http, lease_renewal, orchestration, policy, tcp,
-    workflow_security,
+    assignment_claims, blind_competition, http, lease_renewal, orchestration, policy,
+    policy_admission, tcp, workflow_security,
 };
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
@@ -54,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
     let app = http::router(state.clone())
         .merge(orchestration::router(state.clone()))
         .merge(policy::router())
+        .merge(policy_admission::router(state.clone()))
         .merge(blind_competition::router(state.clone()))
         .layer(axum::middleware::from_fn_with_state(
             assignment_claim_policy,

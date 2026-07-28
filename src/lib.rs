@@ -16,6 +16,7 @@ pub mod http;
 pub mod lease_renewal;
 pub mod orchestration;
 pub mod policy;
+pub mod policy_admission;
 pub mod preflight;
 pub mod providers;
 pub mod runner;

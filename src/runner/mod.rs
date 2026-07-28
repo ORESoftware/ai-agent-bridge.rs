@@ -1,3 +1,4 @@
+mod admission;
 mod bridge;
 mod claims;
 mod heartbeat;
@@ -5,17 +6,19 @@ mod work;
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
 
-use crate::orchestration::{WorkflowAssignment, WorkflowView};
+use crate::orchestration::{WorkflowAssignment, WorkflowStage, WorkflowView};
+use crate::policy_admission::AdmissionRecord;
 use crate::providers::{parse_provider_configs, ProviderClient, ProviderConfig};
 use crate::types::AgentKind;
 
+use admission::AdmissionControl;
 use bridge::{BridgeClient, LeaseHandle};
 use claims::ClaimConfig;
 use heartbeat::{run_with_heartbeat, HeartbeatOutcome};
@@ -40,6 +43,7 @@ struct ProviderWorker {
 
 pub struct Runner {
     bridge: BridgeClient,
+    admission: AdmissionControl,
     providers: Arc<Vec<ProviderWorker>>,
     claims: ClaimConfig,
     poll_interval: Duration,
@@ -90,8 +94,10 @@ impl Runner {
                 "assignment claim TTL must exceed the runner lease safety margin by at least 250ms"
             );
         }
+        let admission = AdmissionControl::from_env(&providers, &claims)?;
         Ok(Self {
             bridge: BridgeClient::from_env()?,
+            admission,
             providers: Arc::new(providers),
             claims,
             poll_interval: Duration::from_millis(poll_interval_ms),
@@ -113,6 +119,7 @@ impl Runner {
             distributed_claims = self.claims.enabled,
             declared_replicas = self.claims.replica_count,
             runner_instance = %self.claims.instance_id,
+            admission_actor = %self.admission.actor(),
             "provider runner started"
         );
 
@@ -195,7 +202,29 @@ impl Runner {
             }
         };
         for workflow in workflows {
+            if workflow.status.pending_agents.is_empty() {
+                continue;
+            }
+            let admission = match self.admission.ensure(&workflow, &self.providers).await {
+                Ok(admission) => admission,
+                Err(error) => {
+                    warn!(
+                        workflow_id = %workflow.plan.id,
+                        %error,
+                        "workflow is not admitted; no provider calls will run"
+                    );
+                    continue;
+                }
+            };
             for provider in self.providers.iter() {
+                if !admission
+                    .policy
+                    .selected_agent_keys
+                    .iter()
+                    .any(|agent| agent == &provider.config.name)
+                {
+                    continue;
+                }
                 let Some(assignment) =
                     eligible_assignment(&workflow, &provider.config.name).cloned()
                 else {
@@ -211,6 +240,8 @@ impl Runner {
                     continue;
                 }
                 let bridge = self.bridge.clone();
+                let admission_control = self.admission.clone();
+                let admission_snapshot = admission.clone();
                 let provider = provider.clone();
                 let workflow = workflow.clone();
                 let claims = self.claims.clone();
@@ -221,6 +252,8 @@ impl Runner {
                     let _permit = permit;
                     execute_assignment(
                         bridge,
+                        admission_control,
+                        admission_snapshot,
                         provider,
                         workflow,
                         assignment,
@@ -240,8 +273,11 @@ pub async fn run_from_env() -> anyhow::Result<()> {
     Runner::from_env()?.run().await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_assignment(
     bridge: BridgeClient,
+    admission: AdmissionControl,
+    admission_snapshot: AdmissionRecord,
     provider: ProviderWorker,
     workflow: WorkflowView,
     assignment: WorkflowAssignment,
@@ -322,13 +358,80 @@ async fn execute_assignment(
         }
     }
 
+    let remaining_output_tokens = admission_snapshot
+        .policy
+        .budget
+        .max_output_tokens
+        .saturating_sub(admission_snapshot.usage.output_tokens);
+    if remaining_output_tokens == 0 {
+        let _ = admission
+            .cancel(
+                &workflow.plan.id,
+                "output token budget exhausted before provider call",
+            )
+            .await;
+        release_file_lease(
+            &bridge,
+            file_lease.as_ref(),
+            &provider.config.name,
+            &workflow,
+        )
+        .await;
+        release_claim(&bridge, claim.as_ref(), &claims, &workflow, &assignment).await;
+        return;
+    }
+    let effective_max_output_tokens = u64::from(max_output_tokens)
+        .min(remaining_output_tokens)
+        .try_into()
+        .unwrap_or(max_output_tokens);
+    let request = provider_request(&workflow, &assignment, effective_max_output_tokens);
+    let phase_concurrency = workflow
+        .plan
+        .assignments
+        .iter()
+        .filter(|candidate| candidate.phase == assignment.phase)
+        .count();
+    let phase_concurrency = u8::try_from(phase_concurrency).unwrap_or(u8::MAX);
+    let (reserved, reservation) = match admission
+        .reserve_call(
+            &workflow.plan.id,
+            &provider.config.name,
+            &request,
+            phase_concurrency.max(1),
+        )
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            warn!(
+                workflow_id = %workflow.plan.id,
+                assignment_ordinal = assignment.ordinal,
+                agent_key = %provider.config.name,
+                %error,
+                "policy budget did not admit the provider call"
+            );
+            let _ = admission
+                .cancel(&workflow.plan.id, "provider call reservation failed")
+                .await;
+            release_file_lease(
+                &bridge,
+                file_lease.as_ref(),
+                &provider.config.name,
+                &workflow,
+            )
+            .await;
+            release_claim(&bridge, claim.as_ref(), &claims, &workflow, &assignment).await;
+            return;
+        }
+    };
+
     let file_fencing_token = file_lease.as_ref().map(|handle| handle.fencing_token);
-    let request = provider_request(&workflow, &assignment, max_output_tokens);
     let heartbeat_ttl_ms = claim
         .iter()
         .chain(file_lease.iter())
         .map(|handle| handle.ttl_ms)
         .min();
+    let started = Instant::now();
     let execution = if let Some(ttl_ms) = heartbeat_ttl_ms {
         let renewal_bridge = bridge.clone();
         let renewal_claim = claim.clone();
@@ -363,28 +466,79 @@ async fn execute_assignment(
             renewals: 0,
         }
     };
+    let elapsed_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
 
     let (content, mut meta, renewals) = match execution {
         HeartbeatOutcome::Completed {
             output: Ok(response),
             renewals,
-        } => (
-            response.text,
-            success_meta(
-                &response.provider,
-                &response.model,
-                provider.config.protocol,
-                response.request_id.as_deref(),
-                response.usage,
-                file_fencing_token,
-            ),
-            renewals,
-        ),
+        } => {
+            if let Err(error) = admission
+                .report_response(
+                    &workflow.plan.id,
+                    &provider.config.name,
+                    &response.usage,
+                    elapsed_ms,
+                    reservation,
+                )
+                .await
+            {
+                warn!(
+                    workflow_id = %workflow.plan.id,
+                    assignment_ordinal = assignment.ordinal,
+                    agent_key = %provider.config.name,
+                    %error,
+                    "provider output exceeded or could not prove the admitted budget; discarded"
+                );
+                release_file_lease(
+                    &bridge,
+                    file_lease.as_ref(),
+                    &provider.config.name,
+                    &workflow,
+                )
+                .await;
+                release_claim(&bridge, claim.as_ref(), &claims, &workflow, &assignment).await;
+                return;
+            }
+            (
+                response.text,
+                success_meta(
+                    &response.provider,
+                    &response.model,
+                    provider.config.protocol,
+                    response.request_id.as_deref(),
+                    response.usage,
+                    file_fencing_token,
+                ),
+                renewals,
+            )
+        }
         HeartbeatOutcome::Completed {
             output: Err(error),
             renewals,
         } => {
             let error = error.to_string();
+            if let Err(accounting_error) = admission
+                .report_failure(&workflow.plan.id, &provider.config.name, elapsed_ms)
+                .await
+            {
+                warn!(
+                    workflow_id = %workflow.plan.id,
+                    assignment_ordinal = assignment.ordinal,
+                    agent_key = %provider.config.name,
+                    %accounting_error,
+                    "failed provider call could not be accounted; workflow output discarded"
+                );
+                release_file_lease(
+                    &bridge,
+                    file_lease.as_ref(),
+                    &provider.config.name,
+                    &workflow,
+                )
+                .await;
+                release_claim(&bridge, claim.as_ref(), &claims, &workflow, &assignment).await;
+                return;
+            }
             (
                 format!("Provider execution failed: {error}"),
                 failure_meta(
@@ -408,6 +562,9 @@ async fn execute_assignment(
                 %error,
                 "assignment or file lease heartbeat failed; provider output discarded"
             );
+            let _ = admission
+                .cancel(&workflow.plan.id, "Fiducia heartbeat failed")
+                .await;
             release_file_lease(
                 &bridge,
                 file_lease.as_ref(),
@@ -421,6 +578,14 @@ async fn execute_assignment(
     };
 
     annotate_heartbeat(&mut meta, claim.is_some(), file_lease.is_some(), renewals);
+    if let Some(object) = meta.as_object_mut() {
+        object.insert("policy_admitted".into(), json!(true));
+        object.insert(
+            "policy_version".into(),
+            json!(reserved.policy.policy_version),
+        );
+        object.insert("provider_elapsed_ms".into(), json!(elapsed_ms));
+    }
     if let Some(handle) = claim.as_ref() {
         if let Err(error) = bridge.renew_lease(handle, &claims.owner).await {
             warn!(
@@ -431,6 +596,12 @@ async fn execute_assignment(
                 %error,
                 "assignment claim became stale before submission; provider output discarded"
             );
+            let _ = admission
+                .cancel(
+                    &workflow.plan.id,
+                    "assignment claim became stale before submission",
+                )
+                .await;
             release_file_lease(
                 &bridge,
                 file_lease.as_ref(),
@@ -453,22 +624,41 @@ async fn execute_assignment(
         .submit(&workflow.plan.id, &provider.config.name, &content, meta)
         .await
     {
-        Ok(submission) => info!(
-            workflow_id = %workflow.plan.id,
-            assignment_ordinal = submission.assignment_ordinal,
-            agent_key = %provider.config.name,
-            runner_instance = %claims.instance_id,
-            lease_renewals = renewals,
-            "provider workflow submission accepted"
-        ),
-        Err(error) => error!(
-            workflow_id = %workflow.plan.id,
-            assignment_ordinal = assignment.ordinal,
-            agent_key = %provider.config.name,
-            runner_instance = %claims.instance_id,
-            %error,
-            "provider result could not be submitted"
-        ),
+        Ok(updated_workflow) => {
+            info!(
+                workflow_id = %workflow.plan.id,
+                assignment_ordinal = assignment.ordinal,
+                agent_key = %provider.config.name,
+                runner_instance = %claims.instance_id,
+                lease_renewals = renewals,
+                "provider workflow submission accepted"
+            );
+            if updated_workflow.status.stage == WorkflowStage::Completed {
+                if let Err(error) = admission.complete(&workflow.plan.id).await {
+                    warn!(
+                        workflow_id = %workflow.plan.id,
+                        %error,
+                        "workflow completed but policy admission could not be finalized"
+                    );
+                }
+            }
+        }
+        Err(error) => {
+            error!(
+                workflow_id = %workflow.plan.id,
+                assignment_ordinal = assignment.ordinal,
+                agent_key = %provider.config.name,
+                runner_instance = %claims.instance_id,
+                %error,
+                "provider result could not be submitted"
+            );
+            let _ = admission
+                .cancel(
+                    &workflow.plan.id,
+                    "workflow submission failed after provider execution",
+                )
+                .await;
+        }
     }
 
     release_file_lease(

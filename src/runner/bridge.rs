@@ -185,21 +185,20 @@ impl BridgeClient {
         agent_key: &str,
         content: &str,
         meta: Value,
-    ) -> Result<WorkflowSubmission, BridgeClientError> {
+    ) -> Result<WorkflowView, BridgeClientError> {
         let body = json!({
             "agent_key": agent_key,
             "content": content,
             "meta": meta,
         });
-        let response: Value = self
+        let response: WorkflowGetEnvelope = self
             .request(
                 Method::POST,
                 &format!("workflows/{workflow_id}/submissions"),
                 Some(body),
             )
             .await?;
-        serde_json::from_value(response["submission"].clone())
-            .map_err(|_| BridgeClientError::InvalidResponse)
+        Ok(response.workflow.into())
     }
 
     pub(crate) async fn acquire_lease(
