@@ -3,8 +3,7 @@ use std::collections::HashSet;
 use serde_json::{json, Value};
 
 use crate::orchestration::{
-    AssignmentRole, FileLeaseRequirement, WorkflowAssignment, WorkflowMode, WorkflowSubmission,
-    WorkflowView,
+    AssignmentRole, WorkflowAssignment, WorkflowMode, WorkflowSubmission, WorkflowView,
 };
 use crate::providers::{ProviderConfig, ProviderProtocol, ProviderRequest};
 use crate::types::AgentKind;
@@ -71,20 +70,6 @@ pub(crate) fn eligible_assignment<'a>(
         return None;
     }
     Some(assignment)
-}
-
-pub(crate) fn lease_is_safe(
-    requirement: &FileLeaseRequirement,
-    provider_timeout_secs: u64,
-    safety_margin_ms: u64,
-) -> bool {
-    if !requirement.required {
-        return true;
-    }
-    let minimum = provider_timeout_secs
-        .saturating_mul(1_000)
-        .saturating_add(safety_margin_ms);
-    requirement.ttl_ms >= minimum
 }
 
 pub(crate) fn provider_request(
@@ -344,19 +329,5 @@ mod tests {
         let request = provider_request(&workflow, &workflow.plan.assignments[2], 1000);
         assert!(request.prompt.contains("idea one"));
         assert!(request.prompt.contains("idea two"));
-    }
-
-    #[test]
-    fn lease_requires_timeout_safety_margin() {
-        let requirement = FileLeaseRequirement {
-            repository: "owner/repo".into(),
-            paths: vec!["src/lib.rs".into()],
-            required: true,
-            ttl_ms: 100_000,
-            acquire_path: "/file-leases/acquire".into(),
-            release_path: "/file-leases/release".into(),
-        };
-        assert!(!lease_is_safe(&requirement, 90, 15_000));
-        assert!(lease_is_safe(&requirement, 80, 15_000));
     }
 }
