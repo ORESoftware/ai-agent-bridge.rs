@@ -45,7 +45,7 @@ fn admission_lock() -> &'static Mutex<()> {
 fn load_plan(state: &AppState, workflow_id: &str) -> BridgeResult<WorkflowPlan> {
     let channel = format!("workflow-{workflow_id}");
     let entry = state
-        .get_context_key(&channel, WORKFLOW_PLAN_CONTEXT_KEY)?
+        .get_context_key_internal(&channel, WORKFLOW_PLAN_CONTEXT_KEY)?
         .ok_or_else(|| BridgeError::BadRequest("workflow plan is missing".into()))?;
     serde_json::from_value(entry.value)
         .map_err(|_| BridgeError::BadRequest("workflow plan is invalid".into()))
@@ -54,7 +54,7 @@ fn load_plan(state: &AppState, workflow_id: &str) -> BridgeResult<WorkflowPlan> 
 fn load_admission(state: &AppState, workflow_id: &str) -> BridgeResult<Option<AdmissionRecord>> {
     let channel = format!("workflow-{workflow_id}");
     state
-        .get_context_key(&channel, ADMISSION_CONTEXT_KEY)?
+        .get_context_key_internal(&channel, ADMISSION_CONTEXT_KEY)?
         .map(|entry| {
             serde_json::from_value(entry.value)
                 .map_err(|_| BridgeError::BadRequest("workflow admission is invalid".into()))
@@ -63,7 +63,7 @@ fn load_admission(state: &AppState, workflow_id: &str) -> BridgeResult<Option<Ad
 }
 
 fn persist_admission(state: &AppState, admission: &AdmissionRecord) -> BridgeResult<()> {
-    state.set_context(
+    state.set_context_internal(
         &format!("workflow-{}", admission.workflow_id),
         ADMISSION_CONTEXT_KEY,
         serde_json::to_value(admission)

@@ -235,7 +235,7 @@ pub(crate) fn claim_path(workflow_id: &str, assignment_ordinal: usize) -> String
 fn load_plan(state: &AppState, workflow_id: &str) -> Result<WorkflowPlan, BridgeError> {
     let channel = format!("workflow-{workflow_id}");
     let entry = state
-        .get_context_key(&channel, PLAN_CONTEXT_KEY)?
+        .get_context_key_internal(&channel, PLAN_CONTEXT_KEY)?
         .ok_or_else(|| BridgeError::BadRequest("workflow plan is missing".into()))?;
     serde_json::from_value(entry.value)
         .map_err(|_| BridgeError::BadRequest("workflow plan is invalid".into()))
