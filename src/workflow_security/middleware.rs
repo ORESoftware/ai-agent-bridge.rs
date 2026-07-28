@@ -47,7 +47,7 @@ pub async fn enforce(
     else {
         return error_response(StatusCode::UNAUTHORIZED, "unauthorized");
     };
-    if !identity.scopes.contains(rule.scope) {
+    if !identity.has_scope(rule.scope) {
         return error_response(StatusCode::FORBIDDEN, "scope_denied");
     }
     if let Some(field) = rule.identity_field {
@@ -130,10 +130,46 @@ fn access_rule(method: &Method, path: &str) -> Option<AccessRule> {
             scope: "agent:register",
             identity_field: Some("agent_key"),
         },
-        (&Method::GET, "/agents") => AccessRule {
+        (&Method::GET, "/agents") | (&Method::GET, "/agents/by-file") => AccessRule {
             scope: "agent:read",
             identity_field: None,
         },
+        (&Method::POST, "/channels") => AccessRule {
+            scope: "channel:create",
+            identity_field: Some("created_by"),
+        },
+        (&Method::POST, "/channels/resolve") => AccessRule {
+            scope: "channel:create",
+            identity_field: Some("created_by"),
+        },
+        (&Method::GET, "/channels")
+        | (&Method::POST, "/channels/search")
+        | (&Method::GET, path)
+            if path.starts_with("/channels/")
+                && !path.ends_with("/context")
+                && !path.ends_with("/messages") =>
+        {
+            AccessRule {
+                scope: "channel:read",
+                identity_field: None,
+            }
+        }
+        (&Method::GET, path)
+            if path.starts_with("/channels/") && path.ends_with("/context") =>
+        {
+            AccessRule {
+                scope: "context:read",
+                identity_field: None,
+            }
+        }
+        (&Method::POST | &Method::PUT, path)
+            if path.starts_with("/channels/") && path.ends_with("/context") =>
+        {
+            AccessRule {
+                scope: "context:write",
+                identity_field: Some("updated_by"),
+            }
+        }
         (&Method::POST, path)
             if path.starts_with("/channels/") && path.ends_with("/messages") =>
         {
