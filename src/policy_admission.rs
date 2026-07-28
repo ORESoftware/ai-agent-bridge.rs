@@ -18,7 +18,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 
 use crate::error::{BridgeError, BridgeResult};
 use crate::orchestration::{WorkflowMode, WorkflowPlan};
