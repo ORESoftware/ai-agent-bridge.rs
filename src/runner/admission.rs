@@ -9,14 +9,18 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::orchestration::{WorkflowMode, WorkflowView};
-use crate::policy::{DataSensitivity, PolicyRequest, ProviderCandidate, RequestedBudget, TaskRisk};
+use crate::policy::{
+    DataSensitivity, PolicyRequest, ProviderCandidate, RequestedBudget, TaskRisk,
+};
 use crate::policy_admission::{AdmissionRecord, AdmissionStatus, UsageDelta};
+use crate::providers::ProviderRequest;
 
 use super::{infer_agent_kind, ClaimConfig, ProviderWorker};
 
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
+const INPUT_TOKEN_OVERHEAD: u64 = 256;
 
 #[derive(Clone)]
 pub(crate) struct AdmissionControl {
@@ -33,10 +37,16 @@ pub(crate) struct AdmissionControl {
 struct ProviderPricing {
     input_micro_usd_per_million: u64,
     output_micro_usd_per_million: u64,
-    #[serde(default)]
-    estimated_call_cost_micro_usd: u64,
+    #[serde(default, alias = "estimated_call_cost_micro_usd")]
+    fixed_call_reserve_micro_usd: u64,
     #[serde(default)]
     max_context_tokens: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UsageReservation {
+    input_tokens: u64,
+    cost_micro_usd: u64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -53,10 +63,10 @@ pub(crate) enum AdmissionClientError {
     InvalidResponse,
     #[error("workflow admission is not active")]
     NotActive,
-    #[error("provider was not selected by policy")]
-    ProviderNotSelected,
     #[error("provider usage was missing token or pricing data")]
     UnpricedUsage,
+    #[error("provider input exceeds the configured context limit")]
+    InputTooLarge,
 }
 
 #[derive(Deserialize)]
@@ -85,12 +95,10 @@ impl AdmissionControl {
         }
         let host = base_url
             .host_str()
-            .ok_or_else(|| {
-                AdmissionClientError::InvalidConfig("bridge URL requires a host".into())
-            })?
+            .ok_or_else(|| AdmissionClientError::InvalidConfig("bridge URL requires a host".into()))?
             .to_ascii_lowercase();
-        let bearer =
-            env_opt("AI_AGENT_RUNNER_BRIDGE_BEARER").or_else(|| env_opt("API_AUTH_BEARER"));
+        let bearer = env_opt("AI_AGENT_RUNNER_BRIDGE_BEARER")
+            .or_else(|| env_opt("API_AUTH_BEARER"));
         if base_url.scheme() != "https" && !is_loopback_host(&host) {
             return Err(AdmissionClientError::InvalidConfig(
                 "remote bridge URLs must use HTTPS".into(),
@@ -125,19 +133,15 @@ impl AdmissionControl {
             }
         }
 
-        let actor =
-            env_opt("AI_AGENT_RUNNER_ADMISSION_ACTOR").unwrap_or_else(|| claims.owner.clone());
+        let actor = env_opt("AI_AGENT_RUNNER_ADMISSION_ACTOR")
+            .unwrap_or_else(|| claims.owner.clone());
         validate_actor(&actor)?;
         let approved_by = env_opt("AI_AGENT_RUNNER_POLICY_APPROVED_BY");
         if let Some(value) = &approved_by {
             validate_actor(value)?;
         }
         let timeout = Duration::from_secs(
-            env_u64(
-                "AI_AGENT_RUNNER_ADMISSION_TIMEOUT_SECS",
-                DEFAULT_TIMEOUT_SECS,
-            )
-            .max(1),
+            env_u64("AI_AGENT_RUNNER_ADMISSION_TIMEOUT_SECS", DEFAULT_TIMEOUT_SECS).max(1),
         );
         let max_response_bytes = env_usize(
             "AI_AGENT_RUNNER_MAX_ADMISSION_RESPONSE_BYTES",
@@ -151,7 +155,9 @@ impl AdmissionControl {
             .user_agent("fiducia-ai-agent-runner-admission/0.1")
             .build()
             .map_err(|_| {
-                AdmissionClientError::InvalidConfig("failed to build admission HTTP client".into())
+                AdmissionClientError::InvalidConfig(
+                    "failed to build admission HTTP client".into(),
+                )
             })?;
         Ok(Self {
             base_url,
@@ -197,18 +203,43 @@ impl AdmissionControl {
         &self,
         workflow_id: &str,
         provider_agent_key: &str,
+        request: &ProviderRequest,
         concurrency: u8,
-    ) -> Result<AdmissionRecord, AdmissionClientError> {
-        self.report_usage(
-            workflow_id,
-            provider_agent_key,
-            UsageDelta {
-                provider_calls: 1,
-                concurrency,
-                ..UsageDelta::default()
+    ) -> Result<(AdmissionRecord, UsageReservation), AdmissionClientError> {
+        let pricing = self
+            .pricing
+            .get(provider_agent_key)
+            .ok_or(AdmissionClientError::UnpricedUsage)?;
+        let input_tokens = conservative_input_tokens(request);
+        if pricing.max_context_tokens > 0 && input_tokens > pricing.max_context_tokens {
+            return Err(AdmissionClientError::InputTooLarge);
+        }
+        let token_cost = price_usage(
+            pricing,
+            input_tokens,
+            u64::from(request.max_output_tokens),
+        );
+        let cost_micro_usd = token_cost.saturating_add(pricing.fixed_call_reserve_micro_usd);
+        let admission = self
+            .report_usage(
+                workflow_id,
+                provider_agent_key,
+                UsageDelta {
+                    input_tokens,
+                    cost_micro_usd,
+                    provider_calls: 1,
+                    concurrency,
+                    ..UsageDelta::default()
+                },
+            )
+            .await?;
+        Ok((
+            admission,
+            UsageReservation {
+                input_tokens,
+                cost_micro_usd,
             },
-        )
-        .await
+        ))
     }
 
     pub(crate) async fn report_response(
@@ -217,6 +248,7 @@ impl AdmissionControl {
         provider_agent_key: &str,
         usage: &Value,
         elapsed_ms: u64,
+        reservation: UsageReservation,
     ) -> Result<AdmissionRecord, AdmissionClientError> {
         let pricing = self
             .pricing
@@ -242,15 +274,35 @@ impl AdmissionControl {
             ],
         )
         .ok_or(AdmissionClientError::UnpricedUsage)?;
-        let cost_micro_usd = find_first_u64(usage, &["cost_micro_usd", "costMicroUsd"])
-            .unwrap_or_else(|| price_usage(pricing, input_tokens, output_tokens));
+        let actual_cost = find_first_u64(usage, &["cost_micro_usd", "costMicroUsd"])
+            .unwrap_or_else(|| {
+                price_usage(pricing, input_tokens, output_tokens)
+                    .saturating_add(pricing.fixed_call_reserve_micro_usd)
+            });
         self.report_usage(
             workflow_id,
             provider_agent_key,
             UsageDelta {
-                input_tokens,
+                input_tokens: input_tokens.saturating_sub(reservation.input_tokens),
                 output_tokens,
-                cost_micro_usd,
+                cost_micro_usd: actual_cost.saturating_sub(reservation.cost_micro_usd),
+                elapsed_ms,
+                ..UsageDelta::default()
+            },
+        )
+        .await
+    }
+
+    pub(crate) async fn report_failure(
+        &self,
+        workflow_id: &str,
+        provider_agent_key: &str,
+        elapsed_ms: u64,
+    ) -> Result<AdmissionRecord, AdmissionClientError> {
+        self.report_usage(
+            workflow_id,
+            provider_agent_key,
+            UsageDelta {
                 elapsed_ms,
                 ..UsageDelta::default()
             },
@@ -353,7 +405,7 @@ impl AdmissionControl {
                     .any(|value| value == "restricted-data"),
                 health_score_bps: 10_000,
                 p95_latency_ms: 0,
-                estimated_cost_micro_usd: pricing.estimated_call_cost_micro_usd,
+                estimated_cost_micro_usd: pricing.fixed_call_reserve_micro_usd,
                 max_context_tokens: pricing.max_context_tokens,
             });
         }
@@ -460,11 +512,23 @@ fn risk_for_mode(mode: WorkflowMode) -> TaskRisk {
     }
 }
 
+fn conservative_input_tokens(request: &ProviderRequest) -> u64 {
+    let prompt = u64::try_from(request.prompt.len()).unwrap_or(u64::MAX);
+    let system = request
+        .system
+        .as_ref()
+        .map(|value| u64::try_from(value.len()).unwrap_or(u64::MAX))
+        .unwrap_or(0);
+    prompt
+        .saturating_add(system)
+        .saturating_add(INPUT_TOKEN_OVERHEAD)
+}
+
 fn price_usage(pricing: &ProviderPricing, input_tokens: u64, output_tokens: u64) -> u64 {
-    let input =
-        u128::from(input_tokens).saturating_mul(u128::from(pricing.input_micro_usd_per_million));
-    let output =
-        u128::from(output_tokens).saturating_mul(u128::from(pricing.output_micro_usd_per_million));
+    let input = u128::from(input_tokens)
+        .saturating_mul(u128::from(pricing.input_micro_usd_per_million));
+    let output = u128::from(output_tokens)
+        .saturating_mul(u128::from(pricing.output_micro_usd_per_million));
     let total = input.saturating_add(output).saturating_add(999_999) / 1_000_000;
     u64::try_from(total).unwrap_or(u64::MAX)
 }
@@ -552,15 +616,33 @@ fn is_loopback_host(host: &str) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn pricing_rounds_up_to_one_micro_dollar() {
-        let pricing = ProviderPricing {
+    fn pricing() -> ProviderPricing {
+        ProviderPricing {
             input_micro_usd_per_million: 10,
             output_micro_usd_per_million: 20,
-            estimated_call_cost_micro_usd: 1,
+            fixed_call_reserve_micro_usd: 3,
             max_context_tokens: 1000,
+        }
+    }
+
+    #[test]
+    fn pricing_rounds_up_to_one_micro_dollar() {
+        assert_eq!(price_usage(&pricing(), 1, 1), 1);
+    }
+
+    #[test]
+    fn conservative_reservation_includes_system_and_overhead() {
+        let request = ProviderRequest {
+            prompt: "abc".into(),
+            max_output_tokens: 10,
+            system: Some("xy".into()),
         };
-        assert_eq!(price_usage(&pricing, 1, 1), 1);
+        assert_eq!(conservative_input_tokens(&request), 261);
+        let token_cost = price_usage(&pricing(), 261, 10);
+        assert_eq!(
+            token_cost.saturating_add(pricing().fixed_call_reserve_micro_usd),
+            4
+        );
     }
 
     #[test]
