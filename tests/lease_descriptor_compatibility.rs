@@ -22,9 +22,12 @@ enum Operation {
     Release,
 }
 
+type RecordedCall = (Operation, Option<String>, Value);
+type RecordedCalls = Arc<Mutex<Vec<RecordedCall>>>;
+
 #[derive(Clone)]
 struct MockState {
-    calls: Arc<Mutex<Vec<(Operation, Option<String>, Value)>>>,
+    calls: RecordedCalls,
     active_token: Arc<AtomicU64>,
 }
 
