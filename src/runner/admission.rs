@@ -9,9 +9,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::orchestration::{WorkflowMode, WorkflowView};
-use crate::policy::{
-    DataSensitivity, PolicyRequest, ProviderCandidate, RequestedBudget, TaskRisk,
-};
+use crate::policy::{DataSensitivity, PolicyRequest, ProviderCandidate, RequestedBudget, TaskRisk};
 use crate::policy_admission::{AdmissionRecord, AdmissionStatus, UsageDelta};
 use crate::providers::ProviderRequest;
 
@@ -95,10 +93,12 @@ impl AdmissionControl {
         }
         let host = base_url
             .host_str()
-            .ok_or_else(|| AdmissionClientError::InvalidConfig("bridge URL requires a host".into()))?
+            .ok_or_else(|| {
+                AdmissionClientError::InvalidConfig("bridge URL requires a host".into())
+            })?
             .to_ascii_lowercase();
-        let bearer = env_opt("AI_AGENT_RUNNER_BRIDGE_BEARER")
-            .or_else(|| env_opt("API_AUTH_BEARER"));
+        let bearer =
+            env_opt("AI_AGENT_RUNNER_BRIDGE_BEARER").or_else(|| env_opt("API_AUTH_BEARER"));
         if base_url.scheme() != "https" && !is_loopback_host(&host) {
             return Err(AdmissionClientError::InvalidConfig(
                 "remote bridge URLs must use HTTPS".into(),
@@ -133,15 +133,19 @@ impl AdmissionControl {
             }
         }
 
-        let actor = env_opt("AI_AGENT_RUNNER_ADMISSION_ACTOR")
-            .unwrap_or_else(|| claims.owner.clone());
+        let actor =
+            env_opt("AI_AGENT_RUNNER_ADMISSION_ACTOR").unwrap_or_else(|| claims.owner.clone());
         validate_actor(&actor)?;
         let approved_by = env_opt("AI_AGENT_RUNNER_POLICY_APPROVED_BY");
         if let Some(value) = &approved_by {
             validate_actor(value)?;
         }
         let timeout = Duration::from_secs(
-            env_u64("AI_AGENT_RUNNER_ADMISSION_TIMEOUT_SECS", DEFAULT_TIMEOUT_SECS).max(1),
+            env_u64(
+                "AI_AGENT_RUNNER_ADMISSION_TIMEOUT_SECS",
+                DEFAULT_TIMEOUT_SECS,
+            )
+            .max(1),
         );
         let max_response_bytes = env_usize(
             "AI_AGENT_RUNNER_MAX_ADMISSION_RESPONSE_BYTES",
@@ -155,9 +159,7 @@ impl AdmissionControl {
             .user_agent("fiducia-ai-agent-runner-admission/0.1")
             .build()
             .map_err(|_| {
-                AdmissionClientError::InvalidConfig(
-                    "failed to build admission HTTP client".into(),
-                )
+                AdmissionClientError::InvalidConfig("failed to build admission HTTP client".into())
             })?;
         Ok(Self {
             base_url,
@@ -214,11 +216,7 @@ impl AdmissionControl {
         if pricing.max_context_tokens > 0 && input_tokens > pricing.max_context_tokens {
             return Err(AdmissionClientError::InputTooLarge);
         }
-        let token_cost = price_usage(
-            pricing,
-            input_tokens,
-            u64::from(request.max_output_tokens),
-        );
+        let token_cost = price_usage(pricing, input_tokens, u64::from(request.max_output_tokens));
         let cost_micro_usd = token_cost.saturating_add(pricing.fixed_call_reserve_micro_usd);
         let admission = self
             .report_usage(
@@ -525,10 +523,10 @@ fn conservative_input_tokens(request: &ProviderRequest) -> u64 {
 }
 
 fn price_usage(pricing: &ProviderPricing, input_tokens: u64, output_tokens: u64) -> u64 {
-    let input = u128::from(input_tokens)
-        .saturating_mul(u128::from(pricing.input_micro_usd_per_million));
-    let output = u128::from(output_tokens)
-        .saturating_mul(u128::from(pricing.output_micro_usd_per_million));
+    let input =
+        u128::from(input_tokens).saturating_mul(u128::from(pricing.input_micro_usd_per_million));
+    let output =
+        u128::from(output_tokens).saturating_mul(u128::from(pricing.output_micro_usd_per_million));
     let total = input.saturating_add(output).saturating_add(999_999) / 1_000_000;
     u64::try_from(total).unwrap_or(u64::MAX)
 }
