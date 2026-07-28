@@ -106,8 +106,8 @@ impl ControlPlaneClient {
         let mut bytes = Vec::new();
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk
-                .map_err(|_| BridgeError::ControlPlane("response read failed".to_string()))?;
+            let chunk =
+                chunk.map_err(|_| BridgeError::ControlPlane("response read failed".to_string()))?;
             if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
                 return Err(BridgeError::ControlPlane(
                     "response exceeded 1 MiB".to_string(),
