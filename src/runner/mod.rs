@@ -420,12 +420,7 @@ async fn execute_assignment(
         }
     };
 
-    annotate_heartbeat(
-        &mut meta,
-        claim.is_some(),
-        file_lease.is_some(),
-        renewals,
-    );
+    annotate_heartbeat(&mut meta, claim.is_some(), file_lease.is_some(), renewals);
     if let Some(handle) = claim.as_ref() {
         if let Err(error) = bridge.renew_lease(handle, &claims.owner).await {
             warn!(
@@ -528,12 +523,7 @@ async fn release_claim(
     }
 }
 
-fn annotate_heartbeat(
-    meta: &mut Value,
-    claimed: bool,
-    file_leased: bool,
-    renewals: u64,
-) {
+fn annotate_heartbeat(meta: &mut Value, claimed: bool, file_leased: bool, renewals: u64) {
     if let Some(object) = meta.as_object_mut() {
         object.insert("assignment_claimed".into(), json!(claimed));
         object.insert("file_leased".into(), json!(file_leased));

@@ -62,9 +62,7 @@ async fn spawn() -> (String, MockState) {
         current_token: Arc::new(AtomicU64::new(43)),
         calls: Arc::new(Mutex::new(Vec::new())),
     };
-    let control_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let control_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let control_addr = control_listener.local_addr().unwrap();
     let control_app = Router::new()
         .route("/v1/file-leases/renew", post(renew_handler))
@@ -87,18 +85,11 @@ async fn spawn() -> (String, MockState) {
             registered_at: now_ts(),
         })
         .unwrap();
-    let policy = AssignmentClaimPolicy::new(
-        state.clone(),
-        true,
-        CLAIM_REPOSITORY.into(),
-        60_000,
-    )
-    .unwrap();
-    let app = orchestration::router(state)
-        .layer(from_fn_with_state(policy, assignment_claims::enforce));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let policy =
+        AssignmentClaimPolicy::new(state.clone(), true, CLAIM_REPOSITORY.into(), 60_000).unwrap();
+    let app =
+        orchestration::router(state).layer(from_fn_with_state(policy, assignment_claims::enforce));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
@@ -122,10 +113,7 @@ async fn create_workflow(base: &str) -> String {
         .unwrap();
     assert!(response.status().is_success());
     let body = response.json::<Value>().await.unwrap();
-    body["workflow"]["plan"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string()
+    body["workflow"]["plan"]["id"].as_str().unwrap().to_string()
 }
 
 fn submission(workflow_id: &str, token: u64, ordinal: usize) -> Value {
@@ -169,7 +157,10 @@ async fn stale_replica_cannot_submit_after_successor_gets_new_token() {
     assert!(successor.status().is_success());
     let body = successor.json::<Value>().await.unwrap();
     assert_eq!(body["workflow"]["submissions"].as_array().unwrap().len(), 1);
-    assert_eq!(body["workflow"]["submissions"][0]["meta"]["assignment_claim"]["fencing_token"], 43);
+    assert_eq!(
+        body["workflow"]["submissions"][0]["meta"]["assignment_claim"]["fencing_token"],
+        43
+    );
 
     let calls = mock.calls.lock().unwrap();
     assert_eq!(calls.len(), 2);
