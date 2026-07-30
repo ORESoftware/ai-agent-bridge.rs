@@ -114,7 +114,9 @@ A production activation sequence is:
 5. set exact team/channel/thread allowlists;
 6. perform URL verification;
 7. send one bounded test command with `SLACK_BRIDGE_DRY_RUN=true`;
-8. change only `SLACK_BRIDGE_DRY_RUN=false` through the reviewed GitOps PR.
+8. restart the adapter, replay that exact signed `event_id`, and verify the
+   durable journal prevents a second workflow or Slack reply;
+9. change only `SLACK_BRIDGE_DRY_RUN=false` through the reviewed GitOps PR.
 
 No adapter path merges pull requests or writes directly to protected branches.
 
