@@ -37,7 +37,7 @@ jobs:
           base64 --decode /tmp/den-766-payload.b64 > /tmp/den-766-payload.tar.gz
           printf 'computed payload checksum: '
           sha256sum /tmp/den-766-payload.tar.gz | cut -d' ' -f1
-          echo '122c21161981d8df6d060ae49cb6b2421aae88bfaf16073fcee5142854d8e02b  /tmp/den-766-payload.tar.gz' | sha256sum --check --strict
+          echo 'a21532f22b5097b1a2cf15b185782866a3d9fe2214d0901e9a92880434dafad5  /tmp/den-766-payload.tar.gz' | sha256sum --check --strict
           tar --extract --gzip --file /tmp/den-766-payload.tar.gz --directory .
           rm -rf .github/den-766-payload
           rm -f .github/den-766-trigger
