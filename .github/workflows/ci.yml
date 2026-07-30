@@ -1,5 +1,5 @@
-# CI pipeline: formatting, clippy (warnings as errors), tests, a postgres-feature
-# check, and a flags-2-env config audit, on every PR and push to main.
+# CI pipeline: secret hygiene, formatting, clippy (warnings as errors), tests, a
+# postgres-feature check, and a flags-2-env config audit on every PR and push.
 name: CI
 
 on:
@@ -41,6 +41,8 @@ jobs:
         uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
         with:
           args: ./.github/workflows/ci.yml
+      - name: Audit provider credential hygiene
+        run: python3 scripts/audit-provider-secrets.py
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: "1.95.0"
