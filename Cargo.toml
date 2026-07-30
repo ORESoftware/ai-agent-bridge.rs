@@ -23,6 +23,10 @@ path = "src/main.rs"
 name = "fiducia-ai-agent-runner"
 path = "src/bin/fiducia-ai-agent-runner.rs"
 
+[[bin]]
+name = "fiducia-slack-bridge"
+path = "src/bin/fiducia-slack-bridge.rs"
+
 [lib]
 name = "ai_agent_bridge"
 path = "src/lib.rs"
@@ -44,6 +48,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 libc = "0.2"
+hmac = "0.12"
+sha2 = "0.10"
 # parking_lot RwLock: no lock poisoning (a panic under the lock can't cascade
 # into every later request), and no Result to unwrap.
 parking_lot = "0.12"

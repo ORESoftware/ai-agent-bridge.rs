@@ -22,6 +22,7 @@ pub mod policy_admission;
 pub mod preflight;
 pub mod providers;
 pub mod runner;
+pub mod slack_bridge;
 pub mod state;
 pub mod tcp;
 mod tcp_security;
