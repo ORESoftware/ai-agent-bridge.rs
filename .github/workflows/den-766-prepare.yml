@@ -48,6 +48,10 @@ jobs:
           base64 --decode /tmp/den-766-payload.b64 > /tmp/den-766-payload.tar.gz
           echo '122c21161981d8df6d060ae49cb6b2421aae88bfaf16073fcee5142854d8e02b  /tmp/den-766-payload.tar.gz' | sha256sum --check --strict
           tar --extract --gzip --file /tmp/den-766-payload.tar.gz --directory .
+          # DEN-766 is source-only and explicitly does not activate deployment.
+          # Keep the pre-existing image workflow untouched so the Actions token
+          # does not need the separate workflows permission.
+          git restore --source=HEAD -- .github/workflows/container-images.yml
           rm -rf .github/den-766-payload
           rm -f .github/den-766-trigger
           rm -f .github/workflows/den-766-prepare.yml
