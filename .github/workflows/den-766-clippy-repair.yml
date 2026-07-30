@@ -1,4 +1,5 @@
 name: DEN-766 one-shot clippy repair
+# Triggered after CI identified the exact collapsible-if finding.
 
 on:
   push:
