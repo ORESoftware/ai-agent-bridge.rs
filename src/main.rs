@@ -11,9 +11,19 @@ use ai_agent_bridge::{
     assignment_claims, blind_competition, http, lease_descriptors, lease_renewal, orchestration,
     policy, policy_admission, tcp, workflow_security,
 };
+use axum::extract::State;
+use axum::http::{header, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{info, warn};
+
+/// Global cap for ordinary in-flight HTTP handlers. Transport-specific resource
+/// caps still apply separately to long-lived SSE and TCP connections.
+const MAX_HTTP_IN_FLIGHT: usize = 1_024;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -31,6 +41,7 @@ async fn main() -> anyhow::Result<()> {
         tcp_port = config.tcp_port,
         embeddings = config.embeddings_url.as_deref().unwrap_or("local"),
         max_members = ai_agent_bridge::config::MAX_MEMBERS,
+        max_http_in_flight = MAX_HTTP_IN_FLIGHT,
         "starting ai-agent-bridge"
     );
 
@@ -53,6 +64,7 @@ async fn main() -> anyhow::Result<()> {
     let tcp_listener = TcpListener::bind(tcp_addr).await?;
     info!(%http_addr, %tcp_addr, "listening");
 
+    let http_admission = Arc::new(Semaphore::new(MAX_HTTP_IN_FLIGHT));
     let app = http::router(state.clone())
         .merge(orchestration::router(state.clone()))
         .merge(policy::router())
@@ -73,6 +85,10 @@ async fn main() -> anyhow::Result<()> {
         .layer(axum::middleware::from_fn_with_state(
             workflow_auth,
             workflow_security::enforce,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            http_admission,
+            enforce_http_admission,
         ));
 
     let mut server_tasks = JoinSet::new();
@@ -96,6 +112,36 @@ async fn main() -> anyhow::Result<()> {
     while server_tasks.join_next().await.is_some() {}
     state.flush_persistence().await;
     Ok(())
+}
+
+/// Shed excess ordinary HTTP work instead of allowing an authenticated client to
+/// queue an unbounded number of request futures. Probe and index routes bypass the
+/// limiter so overload remains observable. SSE lifetime is bounded separately by
+/// `MAX_SSE_CONNECTIONS`; this permit covers only creation of the stream response.
+async fn enforce_http_admission(
+    State(admission): State<Arc<Semaphore>>,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    if matches!(req.uri().path(), "/" | "/health" | "/healthz" | "/readyz") {
+        return next.run(req).await;
+    }
+
+    let Ok(permit) = admission.try_acquire_owned() else {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, "1")],
+            Json(serde_json::json!({
+                "ok": false,
+                "error": "http_capacity_exceeded"
+            })),
+        )
+            .into_response();
+    };
+
+    let response = next.run(req).await;
+    drop(permit);
+    response
 }
 
 #[cfg(feature = "postgres")]
