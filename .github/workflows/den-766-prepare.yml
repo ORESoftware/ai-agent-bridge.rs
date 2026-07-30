@@ -4,22 +4,29 @@ on:
   push:
     branches:
       - agent/den-766-slack-dual-model-router
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
 
 concurrency:
-  group: den-766-prepare-${{ github.ref }}
+  group: den-766-prepare-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   prepare:
-    if: github.repository == 'ORESoftware/ai-agent-bridge.rs' && github.ref_name == 'agent/den-766-slack-dual-model-router'
+    if: >-
+      github.repository == 'ORESoftware/ai-agent-bridge.rs' &&
+      ((github.event_name == 'push' && github.ref_name == 'agent/den-766-slack-dual-model-router') ||
+       (github.event_name == 'pull_request' && github.head_ref == 'agent/den-766-slack-dual-model-router' && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.head_ref || github.ref_name }}
           persist-credentials: false
 
       - name: Verify and install the reviewed patch payload
@@ -31,6 +38,7 @@ jobs:
           echo '122c21161981d8df6d060ae49cb6b2421aae88bfaf16073fcee5142854d8e02b  /tmp/den-766-payload.tar.gz' | sha256sum --check --strict
           tar --extract --gzip --file /tmp/den-766-payload.tar.gz --directory .
           rm -rf .github/den-766-payload
+          rm -f .github/den-766-trigger
           rm -f .github/workflows/den-766-prepare.yml
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
@@ -70,11 +78,12 @@ jobs:
       - name: Push the review commit
         env:
           GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: ${{ github.head_ref || github.ref_name }}
         shell: bash
         run: |
           set -euo pipefail
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "HEAD:${TARGET_BRANCH}"
 
       - name: Report validation result
         shell: bash
