@@ -1,5 +1,5 @@
-# CI pipeline: formatting, clippy (warnings as errors), tests, a postgres-feature
-# check, and a flags-2-env config audit, on every PR and push to main.
+# CI pipeline: secret hygiene, formatting, clippy (warnings as errors), tests, a
+# postgres-feature check, and a flags-2-env config audit on every PR and push.
 name: CI
 
 on:
@@ -15,78 +15,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  den-766-repair:
-    if: github.event_name == 'pull_request' && github.head_ref == 'agent/den-766-slack-dual-model-router' && github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: agent/den-766-slack-dual-model-router
-          fetch-depth: 0
-          persist-credentials: true
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          toolchain: "1.95.0"
-          components: rustfmt, clippy
-      - name: Collapse the successful-post journal condition
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('src/slack_bridge.rs')
-          source = path.read_text(encoding='utf-8')
-          old = '''        if app
-              .post_slack_reply(&event.channel, &event.thread_ts, &text)
-              .await
-              .is_ok()
-          {
-              if app
-                  .store
-                  .mark_posted(&event.event_id, model.agent_key)
-                  .is_err()
-              {
-                  warn!("failed to persist partial-failure reply marker");
-                  emit_metric("journal_failure");
-                  return;
-              }
-          }
-'''
-          new = '''        if app
-              .post_slack_reply(&event.channel, &event.thread_ts, &text)
-              .await
-              .is_ok()
-              && app
-                  .store
-                  .mark_posted(&event.event_id, model.agent_key)
-                  .is_err()
-          {
-              warn!("failed to persist partial-failure reply marker");
-              emit_metric("journal_failure");
-              return;
-          }
-'''
-          if source.count(old) != 1:
-              raise SystemExit('expected exactly one partial-failure journal block')
-          path.write_text(source.replace(old, new, 1), encoding='utf-8')
-          PY
-          cargo fmt --all
-          cargo clippy --all-targets --locked --features postgres -- -D warnings
-          cargo test --all-targets --locked
-          git diff --check
-      - name: Commit the permanent source repair
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src/slack_bridge.rs
-          git commit -m 'fix(DEN-766): satisfy Slack bridge clippy gate'
-          git push origin HEAD:agent/den-766-slack-dual-model-router
-
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -113,6 +41,8 @@ jobs:
         uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
         with:
           args: ./.github/workflows/ci.yml
+      - name: Audit provider credential hygiene
+        run: python3 scripts/audit-provider-secrets.py
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: "1.95.0"
