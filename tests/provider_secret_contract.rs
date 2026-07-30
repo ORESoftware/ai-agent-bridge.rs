@@ -1,6 +1,4 @@
-use ai_agent_bridge::providers::{
-    ProviderClient, ProviderConfig, ProviderError, ProviderProtocol,
-};
+use ai_agent_bridge::providers::{ProviderClient, ProviderConfig, ProviderError, ProviderProtocol};
 
 const ENV_NAME: &str = "DEN_318_OPENAI_API_KEY_MUST_NOT_EXIST";
 
