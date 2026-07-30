@@ -21,8 +21,9 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{info, warn};
 
-const DEFAULT_MAX_HTTP_IN_FLIGHT: usize = 1_024;
-const MAX_HTTP_IN_FLIGHT: usize = 65_536;
+/// Global cap for ordinary in-flight HTTP handlers. Transport-specific resource
+/// caps still apply separately to long-lived SSE and TCP connections.
+const MAX_HTTP_IN_FLIGHT: usize = 1_024;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -30,7 +31,6 @@ async fn main() -> anyhow::Result<()> {
     let _telemetry = fiducia_telemetry::init("fiducia-ai-agent-bridge");
 
     let config = Config::from_env()?;
-    let max_http_in_flight = max_http_in_flight_from_env();
     let workflow_auth = workflow_security::WorkflowSecurity::from_env(
         config.api_auth_bearer.clone(),
         config.max_http_body_bytes,
@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
         tcp_port = config.tcp_port,
         embeddings = config.embeddings_url.as_deref().unwrap_or("local"),
         max_members = ai_agent_bridge::config::MAX_MEMBERS,
-        max_http_in_flight,
+        max_http_in_flight = MAX_HTTP_IN_FLIGHT,
         "starting ai-agent-bridge"
     );
 
@@ -64,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
     let tcp_listener = TcpListener::bind(tcp_addr).await?;
     info!(%http_addr, %tcp_addr, "listening");
 
-    let http_admission = Arc::new(Semaphore::new(max_http_in_flight));
+    let http_admission = Arc::new(Semaphore::new(MAX_HTTP_IN_FLIGHT));
     let app = http::router(state.clone())
         .merge(orchestration::router(state.clone()))
         .merge(policy::router())
@@ -112,15 +112,6 @@ async fn main() -> anyhow::Result<()> {
     while server_tasks.join_next().await.is_some() {}
     state.flush_persistence().await;
     Ok(())
-}
-
-fn max_http_in_flight_from_env() -> usize {
-    std::env::var("MAX_HTTP_IN_FLIGHT")
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_MAX_HTTP_IN_FLIGHT)
-        .min(MAX_HTTP_IN_FLIGHT)
 }
 
 /// Shed excess ordinary HTTP work instead of allowing an authenticated client to
