@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 MAX_FILE_BYTES = 2 * 1024 * 1024
+CONFIG_SUFFIXES = {".json", ".yaml", ".yml", ".toml", ".env", ".example"}
 ALLOWED_PLACEHOLDER_PREFIXES = (
     "${",
     "$(",
@@ -41,7 +42,7 @@ OPENAI_ASSIGNMENT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 DIRECT_API_KEY_FIELD_PATTERN = re.compile(
-    r"(?:[\"\']api_key[\"\']\s*:|^\s*api_key\s*:)",
+    r"(?:[\"\']api_key[\"\']\s*:|^\s*api_key\s*[:=])",
     re.IGNORECASE,
 )
 
@@ -90,10 +91,11 @@ def scan_file(path: Path) -> list[tuple[int, str]]:
 
     text = data.decode("utf-8", errors="replace")
     findings: list[tuple[int, str]] = []
+    check_direct_fields = path.suffix.lower() in CONFIG_SUFFIXES
     for line_number, line in enumerate(text.splitlines(), start=1):
         if OPENAI_KEY_PATTERN.search(line):
             findings.append((line_number, "OPENAI_KEY_MATERIAL"))
-        if DIRECT_API_KEY_FIELD_PATTERN.search(line):
+        if check_direct_fields and DIRECT_API_KEY_FIELD_PATTERN.search(line):
             findings.append((line_number, "DIRECT_API_KEY_FIELD"))
         assignment = OPENAI_ASSIGNMENT_PATTERN.match(line)
         if assignment and not assignment_is_safe(assignment.group(1)):
