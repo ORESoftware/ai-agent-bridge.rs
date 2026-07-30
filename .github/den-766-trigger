@@ -1,0 +1,1 @@
+Trigger the one-shot DEN-766 preparation workflow after the branch ref was restored from its staging commit chain.
