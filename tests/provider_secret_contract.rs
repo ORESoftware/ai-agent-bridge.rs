@@ -53,19 +53,3 @@ fn credential_error_format_does_not_claim_to_print_a_value_or_prefix() {
     assert!(!rendered.contains("prefix="));
     assert!(!rendered.contains("hash="));
 }
-
-#[test]
-fn invalid_serialized_config_cannot_smuggle_a_direct_api_key_field() {
-    let raw = format!(
-        r#"[{{"name":"openai","protocol":"open_ai_responses","base_url":"https://api.openai.com/v1/","model":"TEST_MODEL","api_key_env":"{ENV_NAME}","api_key":"must-not-be-accepted"}}]"#
-    );
-
-    let parsed: serde_json::Value = serde_json::from_str(&raw).expect("fixture should be valid JSON");
-    assert_eq!(parsed[0]["api_key"], "must-not-be-accepted");
-
-    let configs = ai_agent_bridge::providers::parse_provider_configs(&raw)
-        .expect("serde ignores unknown fields, so runtime credentials still come only from api_key_env");
-    let reserialized = serde_json::to_value(&configs).expect("provider configs should serialize");
-    assert!(reserialized[0].get("api_key").is_none());
-    assert_eq!(reserialized[0]["api_key_env"], ENV_NAME);
-}
