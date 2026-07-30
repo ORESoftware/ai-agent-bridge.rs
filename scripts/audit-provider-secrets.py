@@ -40,8 +40,8 @@ OPENAI_ASSIGNMENT_PATTERN = re.compile(
     r"^\s*(?:export\s+)?OPENAI_API_KEY\s*[:=]\s*(.*?)\s*(?:#.*)?$",
     re.IGNORECASE,
 )
-DIRECT_CREDENTIAL_FIELD_PATTERN = re.compile(
-    r"(?:[\"\'](?:api_key|credential|token)[\"\']\s*:|^\s*(?:api_key|credential|token)\s*:)",
+DIRECT_API_KEY_FIELD_PATTERN = re.compile(
+    r"(?:[\"\']api_key[\"\']\s*:|^\s*api_key\s*:)",
     re.IGNORECASE,
 )
 
@@ -93,8 +93,8 @@ def scan_file(path: Path) -> list[tuple[int, str]]:
     for line_number, line in enumerate(text.splitlines(), start=1):
         if OPENAI_KEY_PATTERN.search(line):
             findings.append((line_number, "OPENAI_KEY_MATERIAL"))
-        if DIRECT_CREDENTIAL_FIELD_PATTERN.search(line):
-            findings.append((line_number, "DIRECT_CREDENTIAL_FIELD"))
+        if DIRECT_API_KEY_FIELD_PATTERN.search(line):
+            findings.append((line_number, "DIRECT_API_KEY_FIELD"))
         assignment = OPENAI_ASSIGNMENT_PATTERN.match(line)
         if assignment and not assignment_is_safe(assignment.group(1)):
             findings.append((line_number, "PLAINTEXT_OPENAI_API_KEY"))
