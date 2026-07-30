@@ -33,11 +33,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat .github/den-766-payload/part* > /tmp/den-766-payload.b64
+          cat \
+            .github/den-766-payload/fix00 \
+            .github/den-766-payload/fix01 \
+            .github/den-766-payload/fix02a \
+            .github/den-766-payload/fix02b \
+            .github/den-766-payload/fix02c \
+            .github/den-766-payload/fix02d \
+            .github/den-766-payload/fix03 \
+            .github/den-766-payload/part01 \
+            .github/den-766-payload/part02 \
+            .github/den-766-payload/part03 \
+            > /tmp/den-766-payload.b64
           base64 --decode /tmp/den-766-payload.b64 > /tmp/den-766-payload.tar.gz
-          printf 'computed payload checksum: '
-          sha256sum /tmp/den-766-payload.tar.gz | cut -d' ' -f1
-          echo 'a21532f22b5097b1a2cf15b185782866a3d9fe2214d0901e9a92880434dafad5  /tmp/den-766-payload.tar.gz' | sha256sum --check --strict
+          echo '122c21161981d8df6d060ae49cb6b2421aae88bfaf16073fcee5142854d8e02b  /tmp/den-766-payload.tar.gz' | sha256sum --check --strict
           tar --extract --gzip --file /tmp/den-766-payload.tar.gz --directory .
           rm -rf .github/den-766-payload
           rm -f .github/den-766-trigger
