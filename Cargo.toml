@@ -30,6 +30,7 @@ path = "src/lib.rs"
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
 axum = "0.8"
+tower = { version = "0.5", features = ["limit"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
