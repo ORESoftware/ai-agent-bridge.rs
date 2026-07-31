@@ -1,0 +1,132 @@
+name: apply DEN-523 bounded provider retries
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-den523-retries
+  cancel-in-progress: true
+
+jobs:
+  integrate:
+    if: github.event.pull_request.head.ref == 'agent/den-523-bounded-provider-retries'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout writable feature branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/den-523-bounded-provider-retries
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+          submodules: recursive
+
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt, clippy
+
+      - name: Apply, validate, and publish retry integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          carrier='scripts/ci/apply-den523-retries.py'
+          if [[ ! -f "$carrier" ]]; then
+            echo 'DEN-523 carrier already consumed; no integration work remains.'
+            exit 0
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/ci/apply-den523-retries.py')
+          lines = path.read_text(encoding='utf-8').splitlines()
+          target = (
+              '        "    admission: AdmissionControl,\\n    retry_policies: RetryPolicies,'
+              '\\n    shutdown_tx: watch::Sender<bool>,\\n    providers: Arc<Vec<ProviderWorker>>,'
+          )
+          matches = [index for index, line in enumerate(lines) if line == target]
+          if len(matches) != 1:
+              raise SystemExit(f'expected one malformed retry header, found {len(matches)}')
+          index = matches[0]
+          if index + 1 >= len(lines) or lines[index + 1] != '",':
+              raise SystemExit('malformed retry header does not have the expected closing line')
+          lines[index:index + 2] = [
+              '        """    admission: AdmissionControl,',
+              '    retry_policies: RetryPolicies,',
+              '    shutdown_tx: watch::Sender<bool>,',
+              '    providers: Arc<Vec<ProviderWorker>>,',
+              '""",',
+          ]
+          path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+
+          python3 -m py_compile "$carrier"
+          python3 "$carrier"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          failure = Path('src/providers/failure.rs')
+          text = failure.read_text(encoding='utf-8')
+          old = 'use std::time::{Duration, SystemTime};'
+          new = 'use std::time::SystemTime;'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one duplicate Duration import, found {text.count(old)}')
+          failure.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          retry = Path('src/runner/retry.rs')
+          lines = retry.read_text(encoding='utf-8').splitlines()
+          target = [
+              '        let mut value = input(1);',
+              '        value.retryable_statuses = vec![401];',
+              '        assert!(value.validate("codex").is_err());',
+              '        value.retryable_statuses = vec![422];',
+              '        assert!(value.validate("codex").is_err());',
+          ]
+          matches = [
+              index
+              for index in range(len(lines) - len(target) + 1)
+              if lines[index:index + len(target)] == target
+          ]
+          if len(matches) != 1:
+              raise SystemExit(f'expected one consuming-validator test, found {len(matches)}')
+          index = matches[0]
+          lines[index:index + len(target)] = [
+              '        let mut authentication = input(1);',
+              '        authentication.retryable_statuses = vec![401];',
+              '        assert!(authentication.validate("codex").is_err());',
+              '',
+              '        let mut validation = input(1);',
+              '        validation.retryable_statuses = vec![422];',
+              '        assert!(validation.validate("codex").is_err());',
+          ]
+          retry.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+
+          cargo check --all-targets --features postgres
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --locked --features postgres -- -D warnings
+          cargo test --all-targets --locked --features postgres
+          git diff --check
+
+          git rm -f "$carrier"
+          git add Cargo.toml Cargo.lock .cli-flags.toml src docs
+          actual="$(git diff --cached --name-only | sort)"
+          case "$actual" in
+            *'.github/workflows/apply-den523-retries.yml'*)
+              echo 'refusing product push that mutates the workflow carrier' >&2
+              exit 1
+              ;;
+          esac
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat(retry): add bounded reserved provider retries'
+          git push origin HEAD:agent/den-523-bounded-provider-retries

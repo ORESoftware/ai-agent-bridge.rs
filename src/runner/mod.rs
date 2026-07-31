@@ -2,6 +2,8 @@ mod admission;
 mod bridge;
 mod claims;
 mod heartbeat;
+mod retry;
+mod retry_execution;
 mod work;
 
 use std::collections::HashSet;
@@ -10,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use serde_json::{json, Value};
-use tokio::sync::Semaphore;
+use tokio::sync::{watch, Semaphore};
 use tracing::{error, info, warn};
 
 use crate::orchestration::{WorkflowAssignment, WorkflowStage, WorkflowView};
@@ -22,6 +24,8 @@ use admission::AdmissionControl;
 use bridge::{BridgeClient, LeaseHandle};
 use claims::ClaimConfig;
 use heartbeat::{run_with_heartbeat, HeartbeatOutcome};
+use retry::{RetryPolicies, RetryPolicy};
+use retry_execution::RetryRun;
 use work::{
     configured_capabilities, eligible_assignment, failure_meta, infer_agent_kind, protocol_label,
     provider_request, success_meta,
@@ -44,7 +48,10 @@ struct ProviderWorker {
 pub struct Runner {
     bridge: BridgeClient,
     admission: AdmissionControl,
+    retry_policies: RetryPolicies,
+    shutdown_tx: watch::Sender<bool>,
     providers: Arc<Vec<ProviderWorker>>,
+
     claims: ClaimConfig,
     poll_interval: Duration,
     max_concurrency: usize,
@@ -95,9 +102,13 @@ impl Runner {
             );
         }
         let admission = AdmissionControl::from_env(&providers, &claims)?;
+        let retry_policies = RetryPolicies::from_env(&providers)?;
+        let (shutdown_tx, _) = watch::channel(false);
         Ok(Self {
             bridge: BridgeClient::from_env()?,
             admission,
+            retry_policies,
+            shutdown_tx,
             providers: Arc::new(providers),
             claims,
             poll_interval: Duration::from_millis(poll_interval_ms),
@@ -129,6 +140,7 @@ impl Runner {
             tokio::select! {
                 _ = shutdown_signal() => {
                     info!("provider runner shutdown requested");
+                    let _ = self.shutdown_tx.send(true);
                     break;
                 }
                 _ = interval.tick() => self.poll_once().await,
@@ -248,6 +260,9 @@ impl Runner {
                 let in_flight = self.in_flight.clone();
                 let lease_safety_margin_ms = self.lease_safety_margin_ms;
                 let max_output_tokens = self.max_output_tokens;
+                let retry_policy = self.retry_policies.policy(&provider.config.name);
+                let retry_guard_interval = self.retry_policies.guard_interval();
+                let shutdown = self.shutdown_tx.subscribe();
                 tokio::spawn(async move {
                     let _permit = permit;
                     execute_assignment(
@@ -258,6 +273,9 @@ impl Runner {
                         workflow,
                         assignment,
                         claims,
+                        retry_policy,
+                        retry_guard_interval,
+                        shutdown,
                         lease_safety_margin_ms,
                         max_output_tokens,
                     )
@@ -282,6 +300,9 @@ async fn execute_assignment(
     workflow: WorkflowView,
     assignment: WorkflowAssignment,
     claims: ClaimConfig,
+    retry_policy: RetryPolicy,
+    retry_guard_interval: Duration,
+    mut shutdown: watch::Receiver<bool>,
     lease_safety_margin_ms: u64,
     max_output_tokens: u32,
 ) {
@@ -431,6 +452,23 @@ async fn execute_assignment(
         .chain(file_lease.iter())
         .map(|handle| handle.ttl_ms)
         .min();
+    let retry_seed = format!(
+        "{}/{}/{}/{}",
+        workflow.plan.id, assignment.ordinal, provider.config.name, claims.instance_id
+    );
+    let retry_future = retry_execution::execute(
+        &retry_policy,
+        retry_guard_interval,
+        &retry_seed,
+        &admission,
+        &bridge,
+        &provider,
+        &workflow,
+        &assignment,
+        &request,
+        reservation,
+        &mut shutdown,
+    );
     let started = Instant::now();
     let execution = if let Some(ttl_ms) = heartbeat_ttl_ms {
         let renewal_bridge = bridge.clone();
@@ -438,31 +476,26 @@ async fn execute_assignment(
         let renewal_file_lease = file_lease.clone();
         let claim_owner = claims.owner.clone();
         let provider_agent_key = provider.config.name.clone();
-        run_with_heartbeat(
-            provider.client.execute(&request),
-            ttl_ms,
-            lease_safety_margin_ms,
-            move || {
-                let bridge = renewal_bridge.clone();
-                let claim = renewal_claim.clone();
-                let file_lease = renewal_file_lease.clone();
-                let claim_owner = claim_owner.clone();
-                let provider_agent_key = provider_agent_key.clone();
-                async move {
-                    if let Some(handle) = claim.as_ref() {
-                        bridge.renew_lease(handle, &claim_owner).await?;
-                    }
-                    if let Some(handle) = file_lease.as_ref() {
-                        bridge.renew_lease(handle, &provider_agent_key).await?;
-                    }
-                    Ok::<_, bridge::BridgeClientError>(())
+        run_with_heartbeat(retry_future, ttl_ms, lease_safety_margin_ms, move || {
+            let bridge = renewal_bridge.clone();
+            let claim = renewal_claim.clone();
+            let file_lease = renewal_file_lease.clone();
+            let claim_owner = claim_owner.clone();
+            let provider_agent_key = provider_agent_key.clone();
+            async move {
+                if let Some(handle) = claim.as_ref() {
+                    bridge.renew_lease(handle, &claim_owner).await?;
                 }
-            },
-        )
+                if let Some(handle) = file_lease.as_ref() {
+                    bridge.renew_lease(handle, &provider_agent_key).await?;
+                }
+                Ok::<_, bridge::BridgeClientError>(())
+            }
+        })
         .await
     } else {
         HeartbeatOutcome::Completed {
-            output: provider.client.execute(&request).await,
+            output: retry_future.await,
             renewals: 0,
         }
     };
@@ -470,16 +503,17 @@ async fn execute_assignment(
 
     let (content, mut meta, renewals) = match execution {
         HeartbeatOutcome::Completed {
-            output: Ok(response),
+            output: RetryRun::Success(success),
             renewals,
         } => {
+            let retry_meta = retry_execution::audits_json(&success.audits, success.total_delay);
             if let Err(error) = admission
                 .report_response(
                     &workflow.plan.id,
                     &provider.config.name,
-                    &response.usage,
+                    &success.response.usage,
                     elapsed_ms,
-                    reservation,
+                    success.reservation,
                 )
                 .await
             {
@@ -500,21 +534,26 @@ async fn execute_assignment(
                 release_claim(&bridge, claim.as_ref(), &claims, &workflow, &assignment).await;
                 return;
             }
-            (
-                response.text,
-                success_meta(
-                    &response.provider,
-                    &response.model,
-                    provider.config.protocol,
-                    response.request_id.as_deref(),
-                    response.usage,
-                    file_fencing_token,
-                ),
-                renewals,
-            )
+            let mut meta = success_meta(
+                &success.response.provider,
+                &success.response.model,
+                provider.config.protocol,
+                success.response.request_id.as_deref(),
+                success.response.usage,
+                file_fencing_token,
+            );
+            if let Some(object) = meta.as_object_mut() {
+                object.insert("provider_retries".into(), retry_meta);
+            }
+            (success.response.text, meta, renewals)
         }
         HeartbeatOutcome::Completed {
-            output: Err(error),
+            output:
+                RetryRun::FinalFailure {
+                    error,
+                    audits,
+                    total_delay,
+                },
             renewals,
         } => {
             let error = error.to_string();
@@ -539,17 +578,55 @@ async fn execute_assignment(
                 release_claim(&bridge, claim.as_ref(), &claims, &workflow, &assignment).await;
                 return;
             }
+            let mut meta = failure_meta(
+                &provider.config.name,
+                &provider.config.model,
+                provider.config.protocol,
+                &error,
+                file_fencing_token,
+            );
+            if let Some(object) = meta.as_object_mut() {
+                object.insert(
+                    "provider_retries".into(),
+                    retry_execution::audits_json(&audits, total_delay),
+                );
+            }
             (
                 format!("Provider execution failed: {error}"),
-                failure_meta(
-                    &provider.config.name,
-                    &provider.config.model,
-                    provider.config.protocol,
-                    &error,
-                    file_fencing_token,
-                ),
+                meta,
                 renewals,
             )
+        }
+        HeartbeatOutcome::Completed {
+            output:
+                RetryRun::Aborted {
+                    reason,
+                    audits,
+                    total_delay,
+                },
+            renewals,
+        } => {
+            let reason = retry_execution::abort_reason(reason);
+            warn!(
+                workflow_id = %workflow.plan.id,
+                assignment_ordinal = assignment.ordinal,
+                agent_key = %provider.config.name,
+                retry_count = audits.len(),
+                retry_delay_ms = total_delay.as_millis(),
+                lease_renewals = renewals,
+                cancellation_reason = reason,
+                "provider attempt or retry cancelled; output discarded"
+            );
+            let _ = admission.cancel(&workflow.plan.id, reason).await;
+            release_file_lease(
+                &bridge,
+                file_lease.as_ref(),
+                &provider.config.name,
+                &workflow,
+            )
+            .await;
+            release_claim(&bridge, claim.as_ref(), &claims, &workflow, &assignment).await;
+            return;
         }
         HeartbeatOutcome::LeaseLost { error, renewals } => {
             warn!(

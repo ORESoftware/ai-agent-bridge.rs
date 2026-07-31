@@ -168,7 +168,6 @@ impl BridgeClient {
             .collect())
     }
 
-    #[allow(dead_code)]
     pub(crate) async fn get_workflow(
         &self,
         workflow_id: &str,

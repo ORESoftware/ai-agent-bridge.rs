@@ -212,6 +212,29 @@ impl AdmissionControl {
         request: &ProviderRequest,
         concurrency: u8,
     ) -> Result<(AdmissionRecord, UsageReservation), AdmissionClientError> {
+        self.reserve_attempt(workflow_id, provider_agent_key, request, concurrency, false)
+            .await
+    }
+
+    pub(crate) async fn reserve_retry(
+        &self,
+        workflow_id: &str,
+        provider_agent_key: &str,
+        request: &ProviderRequest,
+        concurrency: u8,
+    ) -> Result<(AdmissionRecord, UsageReservation), AdmissionClientError> {
+        self.reserve_attempt(workflow_id, provider_agent_key, request, concurrency, true)
+            .await
+    }
+
+    async fn reserve_attempt(
+        &self,
+        workflow_id: &str,
+        provider_agent_key: &str,
+        request: &ProviderRequest,
+        concurrency: u8,
+        is_retry: bool,
+    ) -> Result<(AdmissionRecord, UsageReservation), AdmissionClientError> {
         let pricing = self
             .pricing
             .get(provider_agent_key)
@@ -231,6 +254,7 @@ impl AdmissionControl {
                     input_tokens,
                     output_tokens,
                     cost_micro_usd,
+                    retries: if is_retry { 1 } else { 0 },
                     provider_calls: 1,
                     concurrency,
                     ..UsageDelta::default()
@@ -365,6 +389,13 @@ impl AdmissionControl {
             )
             .await?;
         validate_active(response.admission)
+    }
+
+    pub(crate) async fn ensure_active(
+        &self,
+        workflow_id: &str,
+    ) -> Result<AdmissionRecord, AdmissionClientError> {
+        validate_active(self.get(workflow_id).await?)
     }
 
     async fn get(&self, workflow_id: &str) -> Result<AdmissionRecord, AdmissionClientError> {

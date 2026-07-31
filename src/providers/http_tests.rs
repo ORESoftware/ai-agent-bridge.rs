@@ -387,7 +387,10 @@ async fn redirects_are_not_followed_and_errors_are_redacted() {
     let error = client.execute(&request()).await.unwrap_err();
     assert!(matches!(
         error,
-        ProviderError::HttpStatus(StatusCode::TEMPORARY_REDIRECT)
+        ProviderError::HttpStatus {
+            status: StatusCode::TEMPORARY_REDIRECT,
+            ..
+        }
     ));
     let rendered = error.to_string();
     assert!(!rendered.contains(TEST_SECRET));
@@ -419,12 +422,49 @@ async fn non_success_responses_do_not_leak_bodies_or_credentials() {
     let error = client.execute(&request()).await.unwrap_err();
     assert!(matches!(
         error,
-        ProviderError::HttpStatus(StatusCode::TOO_MANY_REQUESTS)
+        ProviderError::HttpStatus {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            ..
+        }
     ));
     let rendered = error.to_string();
     assert!(!rendered.contains(TEST_SECRET));
     assert!(!rendered.contains("billing denied"));
     assert!(!rendered.contains("script"));
+}
+
+#[tokio::test]
+async fn retry_metadata_is_bounded_and_redacted() {
+    let overloaded = StatusCode::from_u16(529).unwrap();
+    let state = MockState::json(json!({
+        "error": {
+            "type": "overloaded_error",
+            "message": "provider-controlled secret body"
+        }
+    }))
+    .with_status(overloaded)
+    .with_header("retry-after", "3");
+    let (base, _) = spawn(state).await;
+    let client = ProviderClient::with_api_key(
+        config(
+            "claude",
+            ProviderProtocol::AnthropicMessages,
+            format!("{base}v1/"),
+            "claude-test",
+            1024,
+            5,
+        ),
+        TEST_SECRET,
+    )
+    .unwrap();
+    let error = client.execute(&request()).await.unwrap_err();
+    assert_eq!(error.http_status(), Some(overloaded));
+    assert_eq!(error.retry_after(), Some(Duration::from_secs(3)));
+    assert_eq!(error.failure_kind(), Some(ProviderFailureKind::Overloaded));
+    let rendered = error.to_string();
+    assert!(!rendered.contains(TEST_SECRET));
+    assert!(!rendered.contains("provider-controlled"));
+    assert!(!rendered.contains("secret body"));
 }
 
 #[tokio::test]
@@ -488,7 +528,7 @@ async fn timeout_and_invalid_response_fail_closed() {
     .unwrap();
     assert!(matches!(
         client.execute(&request()).await,
-        Err(ProviderError::Transport)
+        Err(ProviderError::Transport { .. })
     ));
 
     let state = MockState::json(Value::Null).with_body(MockBody::Text("not-json".to_string()));
