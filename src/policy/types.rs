@@ -167,7 +167,7 @@ pub struct PolicyRequest {
     pub providers: Vec<ProviderCandidate>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BudgetLimits {
     pub max_providers: u8,
     pub max_rounds: u8,
