@@ -47,38 +47,45 @@ jobs:
                   raise SystemExit(f'{path}: expected one match, found {count}: {old!r}')
               file.write_text(text.replace(old, new, 1), encoding='utf-8')
 
-          replace_once(
-              'src/policy/evaluate.rs',
-              '''    let effective_risk = effective_risk(request, &required_capabilities);
-          let profile = budget_profile(effective_risk);
-          let budget = clamp_budget(&request.requested_budget, profile);
-          let mut reasons = Vec::new();
-          ''',
-              '''    let effective_risk = effective_risk(request, &required_capabilities);
-          let mut reasons = Vec::new();
-          ''',
-          )
-          replace_once(
-              'src/policy/evaluate.rs',
-              '    let required_mode = safer_mode(safer_mode(base_required_mode, protocol_mode), reviewer_mode);\n',
-              '''    let required_mode = safer_mode(safer_mode(base_required_mode, protocol_mode), reviewer_mode);
-          let budget_risk = match required_mode {
-              WorkflowMode::Single => effective_risk,
-              WorkflowMode::Sequential => effective_risk.max(TaskRisk::Medium),
-              WorkflowMode::Competitive | WorkflowMode::Consensus => {
-                  effective_risk.max(TaskRisk::High)
-              }
-          };
-          let profile = budget_profile(budget_risk);
-          let budget = clamp_budget(&request.requested_budget, profile);
-          if budget_risk > effective_risk {
-              reasons.push(format!(
-                  "budget profile elevated from {:?} to {:?} because execution mode {:?} requires multiple bounded providers",
-                  effective_risk, budget_risk, required_mode
-              ));
-          }
-          ''',
-          )
+          def edit_lines(path: str, editor) -> None:
+              file = Path(path)
+              lines = file.read_text(encoding='utf-8').splitlines()
+              editor(lines)
+              file.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+          def patch_policy_budget(lines: list[str]) -> None:
+              profile_line = '    let profile = budget_profile(effective_risk);'
+              budget_line = '    let budget = clamp_budget(&request.requested_budget, profile);'
+              required_line = (
+                  '    let required_mode = '
+                  'safer_mode(safer_mode(base_required_mode, protocol_mode), reviewer_mode);'
+              )
+              if lines.count(profile_line) != 1 or lines.count(budget_line) != 1:
+                  raise SystemExit('legacy policy budget lines are missing or duplicated')
+              lines.remove(profile_line)
+              lines.remove(budget_line)
+              if lines.count(required_line) != 1:
+                  raise SystemExit('required-mode line is missing or duplicated')
+              index = lines.index(required_line) + 1
+              lines[index:index] = [
+                  '    let budget_risk = match required_mode {',
+                  '        WorkflowMode::Single => effective_risk,',
+                  '        WorkflowMode::Sequential => effective_risk.max(TaskRisk::Medium),',
+                  '        WorkflowMode::Competitive | WorkflowMode::Consensus => {',
+                  '            effective_risk.max(TaskRisk::High)',
+                  '        }',
+                  '    };',
+                  '    let profile = budget_profile(budget_risk);',
+                  '    let budget = clamp_budget(&request.requested_budget, profile);',
+                  '    if budget_risk > effective_risk {',
+                  '        reasons.push(format!(',
+                  '            "budget profile elevated from {:?} to {:?} because execution mode {:?} requires multiple bounded providers",',
+                  '            effective_risk, budget_risk, required_mode',
+                  '        ));',
+                  '    }',
+              ]
+
+          edit_lines('src/policy/evaluate.rs', patch_policy_budget)
 
           replace_once(
               'src/policy_admission.rs',
