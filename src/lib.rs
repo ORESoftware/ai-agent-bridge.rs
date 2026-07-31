@@ -22,10 +22,6 @@ pub mod policy_admission;
 pub mod preflight;
 pub mod providers;
 pub mod runner;
-#[expect(
-    clippy::collapsible_if,
-    reason = "keep Slack delivery and durable journal persistence as explicit ordered side effects"
-)]
 pub mod slack_bridge;
 pub mod state;
 pub mod tcp;
