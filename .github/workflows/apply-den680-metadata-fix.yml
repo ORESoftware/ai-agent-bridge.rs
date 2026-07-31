@@ -1,0 +1,203 @@
+name: apply DEN-680 Prometheus metadata fix
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-den680-prometheus-metadata-fix
+  cancel-in-progress: true
+
+jobs:
+  fix:
+    if: github.event.pull_request.head.ref == 'agent/den-680-prometheus-metrics'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout writable feature branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+          submodules: recursive
+
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt, clippy
+
+      - name: Emit one metadata declaration and classify only 2xx as success
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          metrics = Path('src/metrics.rs')
+          text = metrics.read_text(encoding='utf-8')
+          old_calls = '''        capacity_gauge(
+              &mut output,
+              "agents",
+              snapshot.agents,
+              snapshot.max_agents,
+          );
+          capacity_gauge(
+              &mut output,
+              "channels",
+              snapshot.channels,
+              snapshot.max_channels,
+          );
+          capacity_gauge(
+              &mut output,
+              "file_leases",
+              snapshot.active_file_leases,
+              snapshot.max_file_leases,
+          );
+          capacity_gauge(
+              &mut output,
+              "sse_connections",
+              snapshot.active_sse_connections,
+              snapshot.max_sse_connections,
+          );
+          capacity_gauge(
+              &mut output,
+              "tcp_connections",
+              self.tcp_active.load(Ordering::Relaxed),
+              snapshot.max_tcp_connections,
+          );
+          '''
+          new_calls = '''        capacity_family(
+              &mut output,
+              &[
+                  ("agents", snapshot.agents, snapshot.max_agents),
+                  ("channels", snapshot.channels, snapshot.max_channels),
+                  (
+                      "file_leases",
+                      snapshot.active_file_leases,
+                      snapshot.max_file_leases,
+                  ),
+                  (
+                      "sse_connections",
+                      snapshot.active_sse_connections,
+                      snapshot.max_sse_connections,
+                  ),
+                  (
+                      "tcp_connections",
+                      self.tcp_active.load(Ordering::Relaxed),
+                      snapshot.max_tcp_connections,
+                  ),
+              ],
+          );
+          '''
+          if text.count(old_calls) != 1:
+              raise SystemExit('capacity call block missing or duplicated')
+          text = text.replace(old_calls, new_calls, 1)
+
+          old_fn = '''fn capacity_gauge(output: &mut String, resource: &str, current: u64, limit: u64) {
+              metric_header(
+                  output,
+                  "ai_agent_bridge_capacity",
+                  "Current usage and configured limit for bounded bridge resources.",
+                  "gauge",
+              );
+              let _ = writeln!(
+                  output,
+                  "ai_agent_bridge_capacity{{resource=\\\"{resource}\\\",kind=\\\"current\\\"}} {current}"
+              );
+              let _ = writeln!(
+                  output,
+                  "ai_agent_bridge_capacity{{resource=\\\"{resource}\\\",kind=\\\"limit\\\"}} {limit}"
+              );
+          }
+          '''
+          new_fn = '''fn capacity_family(output: &mut String, values: &[(&str, u64, u64)]) {
+              metric_header(
+                  output,
+                  "ai_agent_bridge_capacity",
+                  "Current usage and configured limit for bounded bridge resources.",
+                  "gauge",
+              );
+              for (resource, current, limit) in values {
+                  let _ = writeln!(
+                      output,
+                      "ai_agent_bridge_capacity{{resource=\\\"{resource}\\\",kind=\\\"current\\\"}} {current}"
+                  );
+                  let _ = writeln!(
+                      output,
+                      "ai_agent_bridge_capacity{{resource=\\\"{resource}\\\",kind=\\\"limit\\\"}} {limit}"
+                  );
+              }
+          }
+          '''
+          if text.count(old_fn) != 1:
+              raise SystemExit('capacity helper missing or duplicated')
+          metrics.write_text(text.replace(old_fn, new_fn, 1), encoding='utf-8')
+
+          control = Path('src/control_plane.rs')
+          text = control.read_text(encoding='utf-8')
+          old = '            200..=399 => crate::metrics::ControlPlaneResult::Success,\n'
+          new = '            200..=299 => crate::metrics::ControlPlaneResult::Success,\n'
+          if text.count(old) != 1:
+              raise SystemExit('control-plane result classification marker missing')
+          control.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          tests = Path('tests/metrics.rs')
+          text = tests.read_text(encoding='utf-8')
+          addition = '''
+
+          #[test]
+          fn registry_declares_each_prometheus_metadata_line_once() {
+              let state = common::state();
+              let text = metrics::global().render(&state);
+              let mut help = std::collections::BTreeSet::new();
+              let mut metric_types = std::collections::BTreeSet::new();
+
+              for line in text.lines() {
+                  if let Some(name) = line.strip_prefix("# HELP ").and_then(|line| line.split_whitespace().next()) {
+                      assert!(help.insert(name), "duplicate HELP metadata for {name}");
+                  }
+                  if let Some(name) = line.strip_prefix("# TYPE ").and_then(|line| line.split_whitespace().next()) {
+                      assert!(metric_types.insert(name), "duplicate TYPE metadata for {name}");
+                  }
+              }
+
+              assert_eq!(
+                  text.matches("# HELP ai_agent_bridge_capacity ").count(),
+                  1,
+              );
+              assert_eq!(
+                  text.matches("# TYPE ai_agent_bridge_capacity gauge").count(),
+                  1,
+              );
+          }
+          '''
+          if 'registry_declares_each_prometheus_metadata_line_once' in text:
+              raise SystemExit('metadata uniqueness test already exists')
+          tests.write_text(text + addition, encoding='utf-8')
+          PY
+
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --locked --features postgres -- -D warnings
+          cargo test --all-targets --locked
+          cargo test --all-targets --locked --features postgres
+          git diff --check
+
+      - name: Remove one-shot workflow and commit the semantic fix
+        env:
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/apply-den680-metadata-fix.yml
+          git add src tests
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix(metrics): emit valid metadata and strict success classes'
+          git push origin "HEAD:${HEAD_BRANCH}"
