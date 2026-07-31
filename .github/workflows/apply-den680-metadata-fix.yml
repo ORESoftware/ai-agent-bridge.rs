@@ -41,37 +41,16 @@ jobs:
 
           metrics = Path('src/metrics.rs')
           text = metrics.read_text(encoding='utf-8')
-          old_calls = '''        capacity_gauge(
+          calls_start_marker = '''        capacity_gauge(
               &mut output,
               "agents",
-              snapshot.agents,
-              snapshot.max_agents,
-          );
-          capacity_gauge(
-              &mut output,
-              "channels",
-              snapshot.channels,
-              snapshot.max_channels,
-          );
-          capacity_gauge(
-              &mut output,
-              "file_leases",
-              snapshot.active_file_leases,
-              snapshot.max_file_leases,
-          );
-          capacity_gauge(
-              &mut output,
-              "sse_connections",
-              snapshot.active_sse_connections,
-              snapshot.max_sse_connections,
-          );
-          capacity_gauge(
-              &mut output,
-              "tcp_connections",
-              self.tcp_active.load(Ordering::Relaxed),
-              snapshot.max_tcp_connections,
-          );
           '''
+          calls_start = text.find(calls_start_marker)
+          if calls_start == -1:
+              raise SystemExit('first capacity call marker missing')
+          calls_end = text.find('\n\n        output', calls_start)
+          if calls_end == -1:
+              raise SystemExit('capacity call block end marker missing')
           new_calls = '''        capacity_family(
               &mut output,
               &[
@@ -93,30 +72,16 @@ jobs:
                       snapshot.max_tcp_connections,
                   ),
               ],
-          );
-          '''
-          if text.count(old_calls) != 1:
-              raise SystemExit('capacity call block missing or duplicated')
-          text = text.replace(old_calls, new_calls, 1)
+          );'''
+          text = text[:calls_start] + new_calls + text[calls_end:]
 
-          old_fn = '''fn capacity_gauge(output: &mut String, resource: &str, current: u64, limit: u64) {
-              metric_header(
-                  output,
-                  "ai_agent_bridge_capacity",
-                  "Current usage and configured limit for bounded bridge resources.",
-                  "gauge",
-              );
-              let _ = writeln!(
-                  output,
-                  "ai_agent_bridge_capacity{{resource=\\\"{resource}\\\",kind=\\\"current\\\"}} {current}"
-              );
-              let _ = writeln!(
-                  output,
-                  "ai_agent_bridge_capacity{{resource=\\\"{resource}\\\",kind=\\\"limit\\\"}} {limit}"
-              );
-          }
-          '''
-          new_fn = '''fn capacity_family(output: &mut String, values: &[(&str, u64, u64)]) {
+          helper_start = text.find('fn capacity_gauge(')
+          if helper_start == -1:
+              raise SystemExit('capacity helper marker missing')
+          helper_end = text.find('\n\nfn format_bound', helper_start)
+          if helper_end == -1:
+              raise SystemExit('capacity helper end marker missing')
+          new_helper = '''fn capacity_family(output: &mut String, values: &[(&str, u64, u64)]) {
               metric_header(
                   output,
                   "ai_agent_bridge_capacity",
@@ -133,11 +98,11 @@ jobs:
                       "ai_agent_bridge_capacity{{resource=\\\"{resource}\\\",kind=\\\"limit\\\"}} {limit}"
                   );
               }
-          }
-          '''
-          if text.count(old_fn) != 1:
-              raise SystemExit('capacity helper missing or duplicated')
-          metrics.write_text(text.replace(old_fn, new_fn, 1), encoding='utf-8')
+          }'''
+          metrics.write_text(
+              text[:helper_start] + new_helper + text[helper_end:],
+              encoding='utf-8',
+          )
 
           control = Path('src/control_plane.rs')
           text = control.read_text(encoding='utf-8')
@@ -159,18 +124,24 @@ jobs:
               let mut metric_types = std::collections::BTreeSet::new();
 
               for line in text.lines() {
-                  if let Some(name) = line.strip_prefix("# HELP ").and_then(|line| line.split_whitespace().next()) {
+                  if let Some(name) = line
+                      .strip_prefix("# HELP ")
+                      .and_then(|line| line.split_whitespace().next())
+                  {
                       assert!(help.insert(name), "duplicate HELP metadata for {name}");
                   }
-                  if let Some(name) = line.strip_prefix("# TYPE ").and_then(|line| line.split_whitespace().next()) {
-                      assert!(metric_types.insert(name), "duplicate TYPE metadata for {name}");
+                  if let Some(name) = line
+                      .strip_prefix("# TYPE ")
+                      .and_then(|line| line.split_whitespace().next())
+                  {
+                      assert!(
+                          metric_types.insert(name),
+                          "duplicate TYPE metadata for {name}"
+                      );
                   }
               }
 
-              assert_eq!(
-                  text.matches("# HELP ai_agent_bridge_capacity ").count(),
-                  1,
-              );
+              assert_eq!(text.matches("# HELP ai_agent_bridge_capacity ").count(), 1);
               assert_eq!(
                   text.matches("# TYPE ai_agent_bridge_capacity gauge").count(),
                   1,
