@@ -5,10 +5,12 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches:
+      - main
+      - agent/den-1227-runner-prometheus-metrics
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -16,6 +18,7 @@ concurrency:
 
 jobs:
   test:
+    if: github.event_name == 'pull_request' || github.ref_name == 'main'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     services:
@@ -61,3 +64,104 @@ jobs:
       - run: cargo audit
       - run: make -B -C vendor/flags-2-env all
       - run: vendor/flags-2-env/build/flags2env audit .cli-flags.toml
+
+  integrate-runner-metrics:
+    if: >-
+      github.event_name == 'push' &&
+      github.ref_name == 'agent/den-1227-runner-prometheus-metrics' &&
+      github.event.head_commit.message == 'chore(ci): trigger DEN-1227 integration'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_DB: bridge_restart
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: bridge-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bridge -d bridge_restart"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout writable feature branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+          submodules: recursive
+
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt, clippy
+
+      - name: Apply lifecycle instrumentation
+        run: python3 scripts/ci/apply-den1227-runner-metrics.py
+
+      - name: Add full health-listener endpoint coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/runner_health.rs')
+          text = path.read_text(encoding='utf-8')
+          marker = '''        assert_eq!(live.status(), StatusCode::OK);
+
+        let not_ready = client
+          '''
+          replacement = '''        assert_eq!(live.status(), StatusCode::OK);
+
+        let metrics = client
+            .get(format!("http://{address}/metrics"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(metrics.status(), StatusCode::OK);
+        assert!(metrics
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/plain")));
+        let metrics = metrics.text().await.unwrap();
+        assert!(metrics.contains("ai_agent_runner_build_info"));
+        assert!(metrics.contains("ai_agent_runner_ready 0"));
+
+        let not_ready = client
+          '''
+          if text.count(marker) != 1:
+              raise SystemExit('runner health HTTP test marker missing or duplicated')
+          path.write_text(text.replace(marker, replacement, 1), encoding='utf-8')
+          PY
+
+      - name: Validate Rust runner metrics and durability contracts
+        env:
+          FIDUCIA_BRIDGE_TEST_DATABASE_URL: postgresql://bridge:bridge-test-only@localhost:5432/bridge_restart
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --locked --features postgres -- -D warnings
+          cargo test --all-targets --locked
+          cargo test --all-targets --locked --features postgres
+          cargo test --locked --features postgres --test postgres_restart -- --ignored
+          git diff --check
+
+      - name: Commit validated product code
+        env:
+          HEAD_BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git add src tests docs
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat(runner-metrics): expose bounded provider-runner metrics'
+          git push origin "HEAD:${HEAD_BRANCH}"
