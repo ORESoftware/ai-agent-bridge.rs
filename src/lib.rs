@@ -2,8 +2,8 @@
 //! agents. See `README.md` and `docs/agents-guide.md`.
 //!
 //! The in-memory core ([`state`], [`embed`]) has no external dependencies and is
-//! what the test suite exercises. Postgres persistence ([`db`]) is optional and
-//! compiled in only with `--features postgres`.
+//! what the test suite exercises. Postgres persistence (the `db` module) is
+//! optional and compiled in only with `--features postgres`.
 
 pub mod assignment_claims;
 pub mod blind_competition;
@@ -27,6 +27,7 @@ pub mod runner;
     reason = "keep Slack delivery and durable journal persistence as explicit ordered side effects"
 )]
 pub mod slack_bridge;
+pub mod slack_project_bindings;
 pub mod state;
 pub mod tcp;
 mod tcp_security;
