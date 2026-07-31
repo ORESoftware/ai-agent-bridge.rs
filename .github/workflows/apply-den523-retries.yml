@@ -1,0 +1,58 @@
+name: apply DEN-523 bounded provider retries
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-den523-retries
+  cancel-in-progress: true
+
+jobs:
+  integrate:
+    if: github.event.pull_request.head.ref == 'agent/den-523-bounded-provider-retries'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact feature head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+          submodules: recursive
+
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt, clippy
+
+      - name: Apply retry integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/apply-den523-retries.py
+          cargo check --all-targets --features postgres
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --locked --features postgres -- -D warnings
+          cargo test --all-targets --locked --features postgres
+          git diff --check
+
+      - name: Commit product code and remove temporary integration files
+        env:
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/apply-den523-retries.yml scripts/ci/apply-den523-retries.py
+          git add Cargo.toml Cargo.lock .cli-flags.toml src docs
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat(retry): add bounded reserved provider retries'
+          git push origin "HEAD:${HEAD_BRANCH}"
