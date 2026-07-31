@@ -2,6 +2,8 @@
 
 `GET /metrics` exposes Prometheus text format from the bridge HTTP listener. It is public like `/healthz` and `/readyz`; production access must be restricted by Kubernetes NetworkPolicy and the central Prometheus scrape configuration.
 
+Each metric family emits exactly one `HELP` line and one `TYPE` line before its samples. Dependency request results classify only HTTP `2xx` responses as success; redirects remain a distinct non-success outcome and are never folded into healthy control-plane traffic.
+
 ## Cardinality and privacy rules
 
 Metric labels are limited to fixed enums such as status class, result, reason, dependency, persistence mode, resource, and capacity kind.
