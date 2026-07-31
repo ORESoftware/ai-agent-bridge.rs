@@ -38,19 +38,14 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           metrics = Path('src/metrics.rs')
           text = metrics.read_text(encoding='utf-8')
-          calls_start_marker = '''        capacity_gauge(
-              &mut output,
-              "agents",
-          '''
-          calls_start = text.find(calls_start_marker)
-          if calls_start == -1:
-              raise SystemExit('first capacity call marker missing')
-          calls_end = text.find('\n\n        output', calls_start)
-          if calls_end == -1:
-              raise SystemExit('capacity call block end marker missing')
+          calls_pattern = re.compile(
+              r'        capacity_gauge\(\n.*?snapshot\.max_tcp_connections,\n        \);\n',
+              re.DOTALL,
+          )
           new_calls = '''        capacity_family(
               &mut output,
               &[
@@ -72,15 +67,16 @@ jobs:
                       snapshot.max_tcp_connections,
                   ),
               ],
-          );'''
-          text = text[:calls_start] + new_calls + text[calls_end:]
+          );
+          '''
+          text, count = calls_pattern.subn(new_calls, text, count=1)
+          if count != 1:
+              raise SystemExit(f'expected one capacity call block, replaced {count}')
 
-          helper_start = text.find('fn capacity_gauge(')
-          if helper_start == -1:
-              raise SystemExit('capacity helper marker missing')
-          helper_end = text.find('\n\nfn format_bound', helper_start)
-          if helper_end == -1:
-              raise SystemExit('capacity helper end marker missing')
+          helper_pattern = re.compile(
+              r'fn capacity_gauge\(.*?\n\}\n\nfn format_bound',
+              re.DOTALL,
+          )
           new_helper = '''fn capacity_family(output: &mut String, values: &[(&str, u64, u64)]) {
               metric_header(
                   output,
@@ -98,11 +94,13 @@ jobs:
                       "ai_agent_bridge_capacity{{resource=\\\"{resource}\\\",kind=\\\"limit\\\"}} {limit}"
                   );
               }
-          }'''
-          metrics.write_text(
-              text[:helper_start] + new_helper + text[helper_end:],
-              encoding='utf-8',
-          )
+          }
+
+          fn format_bound'''
+          text, count = helper_pattern.subn(new_helper, text, count=1)
+          if count != 1:
+              raise SystemExit(f'expected one capacity helper, replaced {count}')
+          metrics.write_text(text, encoding='utf-8')
 
           control = Path('src/control_plane.rs')
           text = control.read_text(encoding='utf-8')
