@@ -40,39 +40,80 @@ jobs:
           from pathlib import Path
 
           metrics = Path('src/metrics.rs')
-          text = metrics.read_text(encoding='utf-8')
-          first_call = '''        capacity_gauge(&mut output, "agents", snapshot.agents, snapshot.max_agents);
-          '''
-          replacement = '''        metric_header(
-              &mut output,
-              "ai_agent_bridge_capacity",
-              "Current usage and configured limit for bounded bridge resources.",
-              "gauge",
-          );
-          capacity_gauge(&mut output, "agents", snapshot.agents, snapshot.max_agents);
-          '''
-          if text.count(first_call) != 1:
-              raise SystemExit('first capacity sample marker missing or duplicated')
-          text = text.replace(first_call, replacement, 1)
+          lines = metrics.read_text(encoding='utf-8').splitlines()
 
-          helper_header = '''    metric_header(
-              output,
-              "ai_agent_bridge_capacity",
-              "Current usage and configured limit for bounded bridge resources.",
-              "gauge",
-          );
-          '''
-          if text.count(helper_header) != 1:
-              raise SystemExit('capacity helper metadata marker missing or duplicated')
-          metrics.write_text(text.replace(helper_header, '', 1), encoding='utf-8')
+          first_call_indexes = [
+              index
+              for index, line in enumerate(lines)
+              if line.strip()
+              == 'capacity_gauge(&mut output, "agents", snapshot.agents, snapshot.max_agents);'
+          ]
+          if len(first_call_indexes) != 1:
+              raise SystemExit(
+                  f'expected one first capacity sample, found {len(first_call_indexes)}'
+              )
+          first_call_index = first_call_indexes[0]
+          indent = lines[first_call_index][:-len(lines[first_call_index].lstrip())]
+          lines[first_call_index:first_call_index] = [
+              f'{indent}metric_header(',
+              f'{indent}    &mut output,',
+              f'{indent}    "ai_agent_bridge_capacity",',
+              f'{indent}    "Current usage and configured limit for bounded bridge resources.",',
+              f'{indent}    "gauge",',
+              f'{indent});',
+          ]
+
+          helper_indexes = [
+              index
+              for index, line in enumerate(lines)
+              if line.startswith('fn capacity_gauge(')
+          ]
+          if len(helper_indexes) != 1:
+              raise SystemExit(
+                  f'expected one capacity helper, found {len(helper_indexes)}'
+              )
+          helper_index = helper_indexes[0]
+          metadata_start = next(
+              (
+                  index
+                  for index in range(helper_index + 1, min(helper_index + 20, len(lines)))
+                  if lines[index].strip() == 'metric_header('
+              ),
+              None,
+          )
+          if metadata_start is None:
+              raise SystemExit('capacity helper metadata call is missing')
+          metadata_end = next(
+              (
+                  index
+                  for index in range(metadata_start + 1, min(metadata_start + 15, len(lines)))
+                  if lines[index].strip() == ');'
+              ),
+              None,
+          )
+          if metadata_end is None:
+              raise SystemExit('capacity helper metadata call is unterminated')
+          del lines[metadata_start : metadata_end + 1]
+          metrics.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
           control = Path('src/control_plane.rs')
-          text = control.read_text(encoding='utf-8')
-          old = '            200..=399 => crate::metrics::ControlPlaneResult::Success,\n'
-          new = '            200..=299 => crate::metrics::ControlPlaneResult::Success,\n'
-          if text.count(old) != 1:
-              raise SystemExit('control-plane result classification marker missing')
-          control.write_text(text.replace(old, new, 1), encoding='utf-8')
+          lines = control.read_text(encoding='utf-8').splitlines()
+          result_indexes = [
+              index
+              for index, line in enumerate(lines)
+              if line.strip()
+              == '200..=399 => crate::metrics::ControlPlaneResult::Success,'
+          ]
+          if len(result_indexes) != 1:
+              raise SystemExit(
+                  f'expected one control-plane success arm, found {len(result_indexes)}'
+              )
+          index = result_indexes[0]
+          arm_indent = lines[index][:-len(lines[index].lstrip())]
+          lines[index] = (
+              f'{arm_indent}200..=299 => crate::metrics::ControlPlaneResult::Success,'
+          )
+          control.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
           tests = Path('tests/metrics.rs')
           text = tests.read_text(encoding='utf-8')
