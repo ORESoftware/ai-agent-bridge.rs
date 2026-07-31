@@ -82,24 +82,32 @@ jobs:
           failure.write_text(text.replace(old, new, 1), encoding='utf-8')
 
           retry = Path('src/runner/retry.rs')
-          text = retry.read_text(encoding='utf-8')
-          old = '''        let mut value = input(1);
-          value.retryable_statuses = vec![401];
-          assert!(value.validate("codex").is_err());
-          value.retryable_statuses = vec![422];
-          assert!(value.validate("codex").is_err());
-          '''
-          new = '''        let mut authentication = input(1);
-          authentication.retryable_statuses = vec![401];
-          assert!(authentication.validate("codex").is_err());
-
-          let mut validation = input(1);
-          validation.retryable_statuses = vec![422];
-          assert!(validation.validate("codex").is_err());
-          '''
-          if text.count(old) != 1:
-              raise SystemExit(f'expected one consuming-validator test, found {text.count(old)}')
-          retry.write_text(text.replace(old, new, 1), encoding='utf-8')
+          lines = retry.read_text(encoding='utf-8').splitlines()
+          target = [
+              '        let mut value = input(1);',
+              '        value.retryable_statuses = vec![401];',
+              '        assert!(value.validate("codex").is_err());',
+              '        value.retryable_statuses = vec![422];',
+              '        assert!(value.validate("codex").is_err());',
+          ]
+          matches = [
+              index
+              for index in range(len(lines) - len(target) + 1)
+              if lines[index:index + len(target)] == target
+          ]
+          if len(matches) != 1:
+              raise SystemExit(f'expected one consuming-validator test, found {len(matches)}')
+          index = matches[0]
+          lines[index:index + len(target)] = [
+              '        let mut authentication = input(1);',
+              '        authentication.retryable_statuses = vec![401];',
+              '        assert!(authentication.validate("codex").is_err());',
+              '',
+              '        let mut validation = input(1);',
+              '        validation.retryable_statuses = vec![422];',
+              '        assert!(validation.validate("codex").is_err());',
+          ]
+          retry.write_text('\n'.join(lines) + '\n', encoding='utf-8')
           PY
 
           cargo check --all-targets --features postgres
