@@ -1,9 +1,11 @@
 name: DEN-766 one-shot clippy repair
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/den-766-slack-dual-model-router
+      - main
+    types:
+      - synchronize
 
 permissions:
   contents: write
@@ -14,6 +16,7 @@ concurrency:
 
 jobs:
   repair:
+    if: github.event.pull_request.head.ref == 'agent/den-766-slack-dual-model-router'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
