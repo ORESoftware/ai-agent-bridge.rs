@@ -17,10 +17,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
-      - name: Checkout exact feature head
+      - name: Checkout writable feature branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: agent/den-523-bounded-provider-retries
           fetch-depth: 0
           persist-credentials: true
           show-progress: false
@@ -32,11 +32,43 @@ jobs:
           toolchain: '1.95.0'
           components: rustfmt, clippy
 
-      - name: Apply retry integration
+      - name: Apply, validate, and publish retry integration
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/ci/apply-den523-retries.py
+          carrier='scripts/ci/apply-den523-retries.py'
+          if [[ ! -f "$carrier" ]]; then
+            echo 'DEN-523 carrier already consumed; no integration work remains.'
+            exit 0
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/ci/apply-den523-retries.py')
+          lines = path.read_text(encoding='utf-8').splitlines()
+          target = (
+              '        "    admission: AdmissionControl,\\n    retry_policies: RetryPolicies,'
+              '\\n    shutdown_tx: watch::Sender<bool>,\\n    providers: Arc<Vec<ProviderWorker>>,'
+          )
+          matches = [index for index, line in enumerate(lines) if line == target]
+          if len(matches) != 1:
+              raise SystemExit(f'expected one malformed retry header, found {len(matches)}')
+          index = matches[0]
+          if index + 1 >= len(lines) or lines[index + 1] != '",':
+              raise SystemExit('malformed retry header does not have the expected closing line')
+          lines[index:index + 2] = [
+              '        """    admission: AdmissionControl,',
+              '    retry_policies: RetryPolicies,',
+              '    shutdown_tx: watch::Sender<bool>,',
+              '    providers: Arc<Vec<ProviderWorker>>,',
+              '""",',
+          ]
+          path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+
+          python3 -m py_compile "$carrier"
+          python3 "$carrier"
           cargo check --all-targets --features postgres
           cargo fmt --all
           cargo fmt --all -- --check
@@ -44,15 +76,16 @@ jobs:
           cargo test --all-targets --locked --features postgres
           git diff --check
 
-      - name: Commit product code and remove temporary integration files
-        env:
-          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          git rm .github/workflows/apply-den523-retries.yml scripts/ci/apply-den523-retries.py
+          git rm "$carrier"
           git add Cargo.toml Cargo.lock .cli-flags.toml src docs
+          actual="$(git diff --cached --name-only | sort)"
+          case "$actual" in
+            *'.github/workflows/apply-den523-retries.yml'*)
+              echo 'refusing product push that mutates the workflow carrier' >&2
+              exit 1
+              ;;
+          esac
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'feat(retry): add bounded reserved provider retries'
-          git push origin "HEAD:${HEAD_BRANCH}"
+          git push origin HEAD:agent/den-523-bounded-provider-retries
