@@ -52,7 +52,6 @@ jobs:
               'use crate::policy::{self, BudgetLimits, PolicyRequest};',
               'use crate::policy::{self, BudgetLimits, ExecutionTarget, PolicyRequest};',
           )
-
           replace_once(
               'src/policy_admission/storage.rs',
               '    if decision.mode != plan.mode {\n',
@@ -92,11 +91,7 @@ jobs:
           )
           replace_once(
               'src/runner/admission.rs',
-              '''        Ok(PolicyRequest {
-              task_risk: risk_for_mode(workflow.plan.mode),
-              data_sensitivity,
-              requested_mode: Some(workflow.plan.mode),
-          ''',
+              '        Ok(PolicyRequest {\n',
               '''        let required_agent_keys = workflow
               .plan
               .assignments
@@ -110,9 +105,12 @@ jobs:
               .find(|assignment| assignment.role == AssignmentRole::Reviewer)
               .map(|assignment| assignment.agent_key.clone());
           Ok(PolicyRequest {
-              task_risk: risk_for_mode(workflow.plan.mode),
-              data_sensitivity,
-              requested_mode: Some(workflow.plan.mode),
+          ''',
+          )
+          replace_once(
+              'src/runner/admission.rs',
+              '            requested_mode: Some(workflow.plan.mode),\n',
+              '''            requested_mode: Some(workflow.plan.mode),
               requested_protocol: None,
               requested_degradation: None,
               required_agent_keys,
