@@ -66,9 +66,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git rm -f \
-            .github/workflows/apply-den523-retries.yml \
-            .github/workflows/fix-den523-patch-script.yml
+          git rm -f .github/workflows/apply-den523-retries.yml
+          if [[ -e .github/workflows/fix-den523-patch-script.yml ]]; then
+            git rm -f .github/workflows/fix-den523-patch-script.yml
+          fi
           git add src/runner/retry.rs
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
