@@ -14,8 +14,6 @@ pub fn evaluate(request: &PolicyRequest) -> Result<PolicyDecision, String> {
     }
 
     let effective_risk = effective_risk(request, &required_capabilities);
-    let profile = budget_profile(effective_risk);
-    let budget = clamp_budget(&request.requested_budget, profile);
     let mut reasons = Vec::new();
     if effective_risk > request.task_risk {
         reasons.push(
@@ -38,6 +36,21 @@ pub fn evaluate(request: &PolicyRequest) -> Result<PolicyDecision, String> {
         .map(|_| WorkflowMode::Consensus)
         .unwrap_or(WorkflowMode::Single);
     let required_mode = safer_mode(safer_mode(base_required_mode, protocol_mode), reviewer_mode);
+    let budget_risk = match required_mode {
+        WorkflowMode::Single => effective_risk,
+        WorkflowMode::Sequential => effective_risk.max(TaskRisk::Medium),
+        WorkflowMode::Competitive | WorkflowMode::Consensus => {
+            effective_risk.max(TaskRisk::High)
+        }
+    };
+    let profile = budget_profile(budget_risk);
+    let budget = clamp_budget(&request.requested_budget, profile);
+    if budget_risk > effective_risk {
+        reasons.push(format!(
+            "budget profile elevated from {:?} to {:?} because execution mode {:?} requires multiple bounded providers",
+            effective_risk, budget_risk, required_mode
+        ));
+    }
     let mut mode = safer_mode(default_requested_mode, required_mode);
     if mode != default_requested_mode {
         reasons.push(format!(

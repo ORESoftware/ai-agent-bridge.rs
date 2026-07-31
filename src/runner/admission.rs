@@ -8,8 +8,11 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::orchestration::{WorkflowMode, WorkflowView};
-use crate::policy::{DataSensitivity, PolicyRequest, ProviderCandidate, RequestedBudget, TaskRisk};
+use crate::orchestration::{AssignmentRole, WorkflowMode, WorkflowView};
+use crate::policy::{
+    DataSensitivity, PolicyRequest, ProviderAvailability, ProviderCandidate, RequestedBudget,
+    TaskRisk,
+};
 use crate::policy_admission::{AdmissionRecord, AdmissionStatus, UsageDelta};
 use crate::providers::ProviderRequest;
 
@@ -400,12 +403,15 @@ impl AdmissionControl {
                 kind: infer_agent_kind(&provider.config),
                 model: provider.config.model.clone(),
                 available: true,
+                availability: ProviderAvailability::Available,
                 capabilities: provider.capabilities.clone(),
                 trusted_for_restricted: provider
                     .capabilities
                     .iter()
                     .any(|value| value == "restricted-data"),
+                historical_quality_bps: 10_000,
                 health_score_bps: 10_000,
+                recent_error_rate_bps: 0,
                 p95_latency_ms: 0,
                 estimated_cost_micro_usd: pricing.fixed_call_reserve_micro_usd,
                 max_context_tokens: pricing.max_context_tokens,
@@ -448,10 +454,26 @@ impl AdmissionControl {
             .get("expected_duration_ms")
             .and_then(Value::as_u64)
             .unwrap_or(0);
+        let required_agent_keys = workflow
+            .plan
+            .assignments
+            .iter()
+            .map(|assignment| assignment.agent_key.clone())
+            .collect();
+        let required_reviewer_agent_key = workflow
+            .plan
+            .assignments
+            .iter()
+            .find(|assignment| assignment.role == AssignmentRole::Reviewer)
+            .map(|assignment| assignment.agent_key.clone());
         Ok(PolicyRequest {
             task_risk: risk_for_mode(workflow.plan.mode),
             data_sensitivity,
             requested_mode: Some(workflow.plan.mode),
+            requested_protocol: None,
+            requested_degradation: None,
+            required_agent_keys,
+            required_reviewer_agent_key,
             required_capabilities: workflow.plan.required_capabilities.clone(),
             requires_repository_write: workflow
                 .plan
