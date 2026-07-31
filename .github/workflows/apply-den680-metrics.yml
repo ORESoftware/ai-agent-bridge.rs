@@ -74,12 +74,13 @@ jobs:
         run: |
           set -euo pipefail
           git add src tests docs
-          changed="$(git diff --cached --name-only | sort)"
-          printf '%s\n' "$changed"
-          if grep -Eq '^scripts/ci/|^\.github/workflows/apply-den680' <<<"$changed"; then
-            echo 'one-shot carrier remained staged' >&2
+          retained="$(git diff --cached --diff-filter=ACMR --name-only | sort)"
+          printf '%s\n' "$retained"
+          if grep -Eq '^scripts/ci/|^\.github/workflows/apply-den680' <<<"$retained"; then
+            echo 'one-shot carrier would remain in the branch' >&2
             exit 1
           fi
+          test "$(git diff --cached --diff-filter=D --name-only | grep -Ec '^(scripts/ci/apply-den680-metrics.py|\.github/workflows/apply-den680-metrics.yml)$')" -eq 2
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'feat(metrics): expose bounded Prometheus bridge metrics'
