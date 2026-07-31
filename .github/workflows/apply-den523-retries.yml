@@ -69,6 +69,39 @@ jobs:
 
           python3 -m py_compile "$carrier"
           python3 "$carrier"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          failure = Path('src/providers/failure.rs')
+          text = failure.read_text(encoding='utf-8')
+          old = 'use std::time::{Duration, SystemTime};'
+          new = 'use std::time::SystemTime;'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one duplicate Duration import, found {text.count(old)}')
+          failure.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          retry = Path('src/runner/retry.rs')
+          text = retry.read_text(encoding='utf-8')
+          old = '''        let mut value = input(1);
+          value.retryable_statuses = vec![401];
+          assert!(value.validate("codex").is_err());
+          value.retryable_statuses = vec![422];
+          assert!(value.validate("codex").is_err());
+          '''
+          new = '''        let mut authentication = input(1);
+          authentication.retryable_statuses = vec![401];
+          assert!(authentication.validate("codex").is_err());
+
+          let mut validation = input(1);
+          validation.retryable_statuses = vec![422];
+          assert!(validation.validate("codex").is_err());
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one consuming-validator test, found {text.count(old)}')
+          retry.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
           cargo check --all-targets --features postgres
           cargo fmt --all
           cargo fmt --all -- --check
