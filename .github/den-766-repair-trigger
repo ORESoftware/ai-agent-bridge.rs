@@ -1,2 +1,0 @@
-Trigger the checksum-pinned one-shot DEN-766 Clippy repair workflow.
-Requested after canonical CI isolated clippy::collapsible_if in the partial-failure journal path.
