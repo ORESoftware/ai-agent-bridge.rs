@@ -23,7 +23,7 @@ Provider retries are disabled unless `AI_PROVIDER_RETRY_POLICY_JSON` explicitly 
 
 The configuration is environment-only. It contains no credentials, prompts, repository paths, or URLs. Unknown providers, unknown fields, more than five retries, unsafe statuses, and delays outside the absolute bounds fail runner startup.
 
-Status `409` is accepted only when an operator explicitly lists it for a provider whose API documents that outcome as transient. Authentication, permission, validation, redirect, oversized-response, and invalid-response failures cannot be configured as retryable.
+The absolute configurable HTTP-status allowlist is `408`, `409`, `425`, `429`, `500`, `502`, `503`, `504`, and `529`. Other 5xx responses are rejected during configuration validation rather than being treated as generically transient. Status `409` is accepted only when an operator explicitly lists it for a provider whose API documents that outcome as transient. Authentication, permission, validation, redirect, oversized-response, and invalid-response failures cannot be configured as retryable.
 
 ## Transport ambiguity
 
