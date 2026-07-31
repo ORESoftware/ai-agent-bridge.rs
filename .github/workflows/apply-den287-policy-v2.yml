@@ -1,0 +1,146 @@
+name: apply DEN-287 policy v2 integration
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-den287-policy-v2
+  cancel-in-progress: true
+
+jobs:
+  integrate:
+    if: github.event.pull_request.head.ref == 'agent/den-287-policy-v2-degradation'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact feature head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+          submodules: recursive
+
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt, clippy
+
+      - name: Apply admission and runner integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one match, found {count}: {old!r}')
+              file.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'src/policy_admission.rs',
+              'use crate::policy::{self, BudgetLimits, PolicyRequest};',
+              'use crate::policy::{self, BudgetLimits, ExecutionTarget, PolicyRequest};',
+          )
+
+          storage_marker = '''    if decision.mode != plan.mode {
+          '''
+          storage_replacement = '''    if decision.execution_target != ExecutionTarget::StandardWorkflow {
+              return Err(AdmissionFailure::new(
+                  StatusCode::CONFLICT,
+                  "specialized_executor_required",
+                  "policy requires the blind-competition or adversarial-review executor; standard workflow admission is not permitted",
+              ));
+          }
+          if decision.mode != plan.mode {
+          '''
+          replace_once('src/policy_admission/storage.rs', storage_marker, storage_replacement)
+
+          replace_once(
+              'src/runner/admission.rs',
+              'use crate::orchestration::{WorkflowMode, WorkflowView};',
+              'use crate::orchestration::{AssignmentRole, WorkflowMode, WorkflowView};',
+          )
+          replace_once(
+              'src/runner/admission.rs',
+              'use crate::policy::{DataSensitivity, PolicyRequest, ProviderCandidate, RequestedBudget, TaskRisk};',
+              'use crate::policy::{\n    DataSensitivity, PolicyRequest, ProviderAvailability, ProviderCandidate, RequestedBudget,\n    TaskRisk,\n};',
+          )
+          replace_once(
+              'src/runner/admission.rs',
+              '''                available: true,
+                  capabilities: provider.capabilities.clone(),
+          ''',
+              '''                available: true,
+                  availability: ProviderAvailability::Available,
+                  capabilities: provider.capabilities.clone(),
+          ''',
+          )
+          replace_once(
+              'src/runner/admission.rs',
+              '''                health_score_bps: 10_000,
+                  p95_latency_ms: 0,
+          ''',
+              '''                historical_quality_bps: 10_000,
+                  health_score_bps: 10_000,
+                  recent_error_rate_bps: 0,
+                  p95_latency_ms: 0,
+          ''',
+          )
+          request_marker = '''        Ok(PolicyRequest {
+              task_risk: risk_for_mode(workflow.plan.mode),
+              data_sensitivity,
+              requested_mode: Some(workflow.plan.mode),
+          '''
+          request_replacement = '''        let required_agent_keys = workflow
+              .plan
+              .assignments
+              .iter()
+              .map(|assignment| assignment.agent_key.clone())
+              .collect();
+          let required_reviewer_agent_key = workflow
+              .plan
+              .assignments
+              .iter()
+              .find(|assignment| assignment.role == AssignmentRole::Reviewer)
+              .map(|assignment| assignment.agent_key.clone());
+          Ok(PolicyRequest {
+              task_risk: risk_for_mode(workflow.plan.mode),
+              data_sensitivity,
+              requested_mode: Some(workflow.plan.mode),
+              requested_protocol: None,
+              requested_degradation: None,
+              required_agent_keys,
+              required_reviewer_agent_key,
+          '''
+          replace_once('src/runner/admission.rs', request_marker, request_replacement)
+          PY
+
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --locked --features postgres -- -D warnings
+          cargo test --all-targets --locked --features postgres
+          git diff --check
+
+      - name: Commit integrated source and remove one-shot workflow
+        env:
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/apply-den287-policy-v2.yml
+          git add -- '*.rs'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat(policy): integrate v2 admission and runner contracts'
+          git push origin "HEAD:${HEAD_BRANCH}"
