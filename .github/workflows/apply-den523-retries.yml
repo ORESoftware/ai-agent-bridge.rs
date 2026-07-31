@@ -117,7 +117,7 @@ jobs:
           cargo test --all-targets --locked --features postgres
           git diff --check
 
-          git rm "$carrier"
+          git rm -f "$carrier"
           git add Cargo.toml Cargo.lock .cli-flags.toml src docs
           actual="$(git diff --cached --name-only | sort)"
           case "$actual" in
