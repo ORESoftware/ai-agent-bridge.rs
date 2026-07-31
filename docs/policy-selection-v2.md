@@ -32,6 +32,18 @@ The endpoint never creates a workflow, admission, provider request, assignment c
 
 Standard workflow admission rejects a policy decision whose executor is `blind_competition` or `adversarial_review`; callers must use the specialized route. This prevents a blind or adversarial decision from being silently executed as an ordinary consensus workflow.
 
+## Mode-shaped budget profiles
+
+The policy first derives the minimum safe execution mode from risk, data sensitivity, repository-write intent, requested protocol, and required reviewer. It then selects a profile capable of representing that mode:
+
+- `single` keeps the effective risk profile;
+- `sequential` uses at least the medium-risk profile;
+- `competitive` and `consensus` use at least the high-risk profile.
+
+This does not grant unlimited budget. It prevents an explicit multi-provider protocol from being made impossible merely because the original task-risk field was low. Every caller-supplied maximum remains a hard ceiling: clamping can reduce provider count, tokens, time, retries, concurrency, or cost below the mode profile, after which the declared degradation behavior decides whether to reduce, require approval, queue, or deny.
+
+The dry-run reasons identify whenever the execution shape raises the profile. Admission still reserves and accounts actual work against the resulting immutable ceilings.
+
 ## Provider signals
 
 Provider ranking is deterministic and bounded. The order is:
