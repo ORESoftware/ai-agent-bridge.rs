@@ -53,9 +53,10 @@ jobs:
               'use crate::policy::{self, BudgetLimits, ExecutionTarget, PolicyRequest};',
           )
 
-          storage_marker = '''    if decision.mode != plan.mode {
-          '''
-          storage_replacement = '''    if decision.execution_target != ExecutionTarget::StandardWorkflow {
+          replace_once(
+              'src/policy_admission/storage.rs',
+              '    if decision.mode != plan.mode {\n',
+              '''    if decision.execution_target != ExecutionTarget::StandardWorkflow {
               return Err(AdmissionFailure::new(
                   StatusCode::CONFLICT,
                   "specialized_executor_required",
@@ -63,8 +64,8 @@ jobs:
               ));
           }
           if decision.mode != plan.mode {
-          '''
-          replace_once('src/policy_admission/storage.rs', storage_marker, storage_replacement)
+          ''',
+          )
 
           replace_once(
               'src/runner/admission.rs',
@@ -74,35 +75,29 @@ jobs:
           replace_once(
               'src/runner/admission.rs',
               'use crate::policy::{DataSensitivity, PolicyRequest, ProviderCandidate, RequestedBudget, TaskRisk};',
-              'use crate::policy::{\n    DataSensitivity, PolicyRequest, ProviderAvailability, ProviderCandidate, RequestedBudget,\n    TaskRisk,\n};',
+              '''use crate::policy::{
+              DataSensitivity, PolicyRequest, ProviderAvailability, ProviderCandidate, RequestedBudget,
+              TaskRisk,
+          };''',
           )
           replace_once(
               'src/runner/admission.rs',
-              '''                available: true,
-                  capabilities: provider.capabilities.clone(),
-          ''',
-              '''                available: true,
-                  availability: ProviderAvailability::Available,
-                  capabilities: provider.capabilities.clone(),
-          ''',
+              '                available: true,\n                capabilities: provider.capabilities.clone(),\n',
+              '                available: true,\n                availability: ProviderAvailability::Available,\n                capabilities: provider.capabilities.clone(),\n',
           )
           replace_once(
               'src/runner/admission.rs',
-              '''                health_score_bps: 10_000,
-                  p95_latency_ms: 0,
-          ''',
-              '''                historical_quality_bps: 10_000,
-                  health_score_bps: 10_000,
-                  recent_error_rate_bps: 0,
-                  p95_latency_ms: 0,
-          ''',
+              '                health_score_bps: 10_000,\n                p95_latency_ms: 0,\n',
+              '                historical_quality_bps: 10_000,\n                health_score_bps: 10_000,\n                recent_error_rate_bps: 0,\n                p95_latency_ms: 0,\n',
           )
-          request_marker = '''        Ok(PolicyRequest {
+          replace_once(
+              'src/runner/admission.rs',
+              '''        Ok(PolicyRequest {
               task_risk: risk_for_mode(workflow.plan.mode),
               data_sensitivity,
               requested_mode: Some(workflow.plan.mode),
-          '''
-          request_replacement = '''        let required_agent_keys = workflow
+          ''',
+              '''        let required_agent_keys = workflow
               .plan
               .assignments
               .iter()
@@ -122,8 +117,8 @@ jobs:
               requested_degradation: None,
               required_agent_keys,
               required_reviewer_agent_key,
-          '''
-          replace_once('src/runner/admission.rs', request_marker, request_replacement)
+          ''',
+          )
           PY
 
           cargo fmt --all
