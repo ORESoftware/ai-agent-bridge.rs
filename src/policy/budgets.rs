@@ -88,32 +88,12 @@ fn clamp_u64(requested: Option<u64>, profile: u64, absolute: u64) -> u64 {
     requested.unwrap_or(profile).max(1).min(profile).min(absolute)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn denied_decision(
-    mode: WorkflowMode,
-    budget: BudgetLimits,
-    require_human_approval: bool,
-    require_fiducia_lease: bool,
-    degradation_behavior: DegradationBehavior,
-    reasons: Vec<String>,
-    denial_reason: String,
-) -> PolicyDecision {
-    PolicyDecision {
-        policy_version: POLICY_VERSION,
-        allowed: false,
-        mode,
-        selected_providers: Vec::new(),
-        budget,
-        require_human_approval,
-        require_fiducia_lease,
-        degradation_behavior,
-        reasons,
-        denial_reason: Some(denial_reason),
-    }
-}
-
 const fn default_true() -> bool {
     true
+}
+
+const fn default_quality_score_bps() -> u16 {
+    10_000
 }
 
 const fn default_health_score_bps() -> u16 {

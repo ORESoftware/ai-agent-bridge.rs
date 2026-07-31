@@ -3,9 +3,9 @@ mod tests {
     use crate::embed::Embedder;
     use crate::orchestration::{WorkflowAssignment, WorkflowPlan};
     use crate::policy::{
-        DataSensitivity, ProviderCandidate, RequestedBudget, TaskRisk,
+        DataSensitivity, ProviderAvailability, ProviderCandidate, RequestedBudget, TaskRisk,
     };
-    use crate::types::{AgentKind, now_ts};
+    use crate::types::{now_ts, AgentKind};
 
     use super::*;
 
@@ -64,6 +64,10 @@ mod tests {
                 task_risk: TaskRisk::Low,
                 data_sensitivity: DataSensitivity::Internal,
                 requested_mode: Some(WorkflowMode::Single),
+                requested_protocol: None,
+                requested_degradation: None,
+                required_agent_keys: vec!["codex".into()],
+                required_reviewer_agent_key: None,
                 required_capabilities: vec!["rust".into()],
                 requires_repository_write: false,
                 expected_duration_ms: 0,
@@ -76,9 +80,12 @@ mod tests {
                     kind: AgentKind::Codex,
                     model: "codex-test".into(),
                     available: true,
+                    availability: ProviderAvailability::Available,
                     capabilities: vec!["rust".into()],
                     trusted_for_restricted: false,
+                    historical_quality_bps: 10_000,
                     health_score_bps: 10_000,
+                    recent_error_rate_bps: 0,
                     p95_latency_ms: 10,
                     estimated_cost_micro_usd: 0,
                     max_context_tokens: 100_000,
@@ -90,12 +97,11 @@ mod tests {
     #[tokio::test]
     async fn duplicate_admission_is_idempotent_and_insert_only() {
         let state = state_with_plan(WorkflowMode::Single).await;
-        let (first, created) =
-            create_admission(&state, "workflow-test", request(100)).unwrap();
+        let (first, created) = create_admission(&state, "workflow-test", request(100)).unwrap();
         assert!(created);
-        let (second, created) =
-            create_admission(&state, "workflow-test", request(1)).unwrap();
+        let (second, created) = create_admission(&state, "workflow-test", request(1)).unwrap();
         assert!(!created);
+        assert_eq!(first.policy.policy_version, "2026-07-31.v2");
         assert_eq!(first.policy.budget.max_cost_micro_usd, 100);
         assert_eq!(second.policy.budget.max_cost_micro_usd, 100);
     }
