@@ -96,3 +96,36 @@ async fn registry_records_bounded_http_message_and_lease_error_outcomes() {
     );
     assert!(!text.contains("opaque-id"));
 }
+
+#[test]
+fn registry_declares_each_prometheus_metadata_line_once() {
+    let state = common::state();
+    let text = metrics::global().render(&state);
+    let mut help = std::collections::BTreeSet::new();
+    let mut metric_types = std::collections::BTreeSet::new();
+
+    for line in text.lines() {
+        if let Some(name) = line
+            .strip_prefix("# HELP ")
+            .and_then(|line| line.split_whitespace().next())
+        {
+            assert!(help.insert(name), "duplicate HELP metadata for {name}");
+        }
+        if let Some(name) = line
+            .strip_prefix("# TYPE ")
+            .and_then(|line| line.split_whitespace().next())
+        {
+            assert!(
+                metric_types.insert(name),
+                "duplicate TYPE metadata for {name}"
+            );
+        }
+    }
+
+    assert_eq!(text.matches("# HELP ai_agent_bridge_capacity ").count(), 1);
+    assert_eq!(
+        text.matches("# TYPE ai_agent_bridge_capacity gauge")
+            .count(),
+        1,
+    );
+}

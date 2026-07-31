@@ -549,6 +549,12 @@ impl BridgeMetrics {
             "Control-plane request duration without URL or repository labels.",
         );
 
+        metric_header(
+            &mut output,
+            "ai_agent_bridge_capacity",
+            "Current usage and configured limit for bounded bridge resources.",
+            "gauge",
+        );
         capacity_gauge(&mut output, "agents", snapshot.agents, snapshot.max_agents);
         capacity_gauge(
             &mut output,
@@ -631,12 +637,6 @@ fn counter_family(
 }
 
 fn capacity_gauge(output: &mut String, resource: &str, current: u64, limit: u64) {
-    metric_header(
-        output,
-        "ai_agent_bridge_capacity",
-        "Current usage and configured limit for bounded bridge resources.",
-        "gauge",
-    );
     let _ = writeln!(
         output,
         "ai_agent_bridge_capacity{{resource=\"{resource}\",kind=\"current\"}} {current}"

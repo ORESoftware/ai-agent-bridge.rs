@@ -152,7 +152,7 @@ impl ControlPlaneClient {
             })
         };
         let result = match status {
-            200..=399 => crate::metrics::ControlPlaneResult::Success,
+            200..=299 => crate::metrics::ControlPlaneResult::Success,
             400..=499 => crate::metrics::ControlPlaneResult::ClientError,
             _ => crate::metrics::ControlPlaneResult::ServerError,
         };
