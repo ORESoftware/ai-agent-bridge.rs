@@ -1,11 +1,12 @@
 name: DEN-766 one-shot clippy repair
 
 on:
-  pull_request:
+  push:
     branches:
-      - main
-    types:
-      - synchronize
+      - agent/den-766-slack-dual-model-router
+    paths:
+      - .github/workflows/den-766-clippy-repair.yml
+      - .github/den-766-repair-trigger
 
 permissions:
   contents: write
@@ -16,7 +17,6 @@ concurrency:
 
 jobs:
   repair:
-    if: github.event.pull_request.head.ref == 'agent/den-766-slack-dual-model-router'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -81,11 +81,11 @@ jobs:
           cargo clippy --all-targets --locked --features postgres -- -D warnings
           cargo test --all-targets --locked
           cargo check --all-targets --locked --features postgres
-      - name: Commit the permanent source repair and remove this workflow
+      - name: Commit permanent source and remove temporary repair files
         shell: bash
         run: |
           set -euo pipefail
-          git rm .github/workflows/den-766-clippy-repair.yml
+          git rm .github/workflows/den-766-clippy-repair.yml .github/den-766-repair-trigger
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add src/slack_bridge.rs
