@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use axum::{
     extract::{DefaultBodyLimit, Path, Query, State},
-    http::StatusCode,
+    http::{header, StatusCode},
     middleware::{from_fn, from_fn_with_state, Next},
     response::sse::{Event as SseEvent, KeepAlive, Sse},
     response::{IntoResponse, Response},
@@ -34,6 +34,7 @@ impl From<BridgeError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        crate::metrics::global().observe_bridge_error(&self.0);
         let status =
             StatusCode::from_u16(self.0.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         (status, Json(self.0.payload())).into_response()
@@ -47,6 +48,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     let public = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(healthz))
+        .route("/metrics", get(prometheus_metrics))
         .route("/", get(index))
         // Backward-compatible claude-inbox contract (see crate::compat).
         .route("/health", get(health_compat))
@@ -135,6 +137,16 @@ async fn auth(
 
 async fn healthz() -> impl IntoResponse {
     Json(json!({ "ok": true, "service": "ai-agent-bridge" }))
+}
+
+async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        crate::metrics::global().render(&state),
+    )
 }
 
 async fn index() -> impl IntoResponse {

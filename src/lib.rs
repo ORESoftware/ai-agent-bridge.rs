@@ -16,6 +16,7 @@ pub mod error;
 pub mod http;
 pub mod lease_descriptors;
 pub mod lease_renewal;
+pub mod metrics;
 pub mod orchestration;
 pub mod policy;
 pub mod policy_admission;

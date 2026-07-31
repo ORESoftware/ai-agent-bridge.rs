@@ -13,6 +13,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use crate::error::BridgeError;
+use crate::metrics;
 use crate::state::AppState;
 use crate::tcp_security::TcpPrincipal;
 use crate::types::{Agent, AgentKind, Event, MemberRole, Role};
@@ -45,14 +46,17 @@ pub async fn serve(
         let permit = match conns.clone().try_acquire_owned() {
             Ok(p) => p,
             Err(_) => {
+                metrics::global().tcp_rejected();
                 warn!(peer = %peer, "tcp connection cap reached; dropping connection");
                 continue;
             }
         };
+        let connection_metrics = metrics::global().tcp_connection();
         let state = state.clone();
         let security = security.clone();
         tokio::spawn(async move {
             let _permit = permit; // released when the connection ends
+            let _connection_metrics = connection_metrics;
             if let Err(e) = handle_conn(state, socket, security).await {
                 debug!(peer = %peer, error = %e, "tcp connection closed");
             }
@@ -196,6 +200,7 @@ async fn handle_conn(
         let req: Req = match serde_json::from_str(line) {
             Ok(r) => r,
             Err(e) => {
+                metrics::global().tcp_frame(false);
                 write_line(
                     &writer,
                     &json!({ "ok": false, "error": "bad_request", "message": e.to_string() }),
@@ -208,6 +213,7 @@ async fn handle_conn(
         if let Req::Auth { token } = &req {
             match principal.authenticate(&security, token) {
                 Ok(next) => {
+                    metrics::global().tcp_frame(true);
                     principal = next;
                     write_line(
                         &writer,
@@ -215,26 +221,33 @@ async fn handle_conn(
                     )
                     .await?;
                 }
-                Err(error) => write_line(&writer, &error.payload()).await?,
+                Err(error) => {
+                    metrics::global().tcp_frame(false);
+                    write_line(&writer, &error.payload()).await?;
+                }
             }
             continue;
         }
         if matches!(req, Req::Ping) {
+            metrics::global().tcp_frame(true);
             write_line(&writer, &json!({ "ok": true, "op": "ping", "pong": true })).await?;
             continue;
         }
         if !principal.authenticated() {
+            metrics::global().tcp_frame(false);
             write_line(&writer, &BridgeError::Unauthorized.payload_json()).await?;
             continue;
         }
 
         if let Err(error) = principal.authorize(&req) {
+            metrics::global().tcp_frame(false);
             write_line(&writer, &error.payload()).await?;
             continue;
         }
 
         let response = dispatch(&state, &writer, req, &mut sub_tasks, &mut subscribed).await;
         if let Some(resp) = response {
+            metrics::global().tcp_frame(resp.get("ok").and_then(Value::as_bool).unwrap_or(false));
             write_line(&writer, &resp).await?;
         }
     }

@@ -8,8 +8,8 @@ use ai_agent_bridge::config::Config;
 use ai_agent_bridge::embed::Embedder;
 use ai_agent_bridge::state::AppState;
 use ai_agent_bridge::{
-    assignment_claims, blind_competition, http, lease_descriptors, lease_renewal, orchestration,
-    policy, policy_admission, tcp, workflow_security,
+    assignment_claims, blind_competition, http, lease_descriptors, lease_renewal, metrics,
+    orchestration, policy, policy_admission, tcp, workflow_security,
 };
 use axum::extract::State;
 use axum::http::{header, StatusCode};
@@ -89,7 +89,8 @@ async fn main() -> anyhow::Result<()> {
         .layer(axum::middleware::from_fn_with_state(
             http_admission,
             enforce_http_admission,
-        ));
+        ))
+        .layer(axum::middleware::from_fn(observe_http_metrics));
 
     let mut server_tasks = JoinSet::new();
     server_tasks.spawn(async move {
@@ -114,6 +115,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn observe_http_metrics(req: axum::extract::Request, next: Next) -> Response {
+    let started = metrics::global().http_started();
+    let response = next.run(req).await;
+    metrics::global().http_finished(started, response.status().as_u16());
+    response
+}
+
 /// Shed excess ordinary HTTP work instead of allowing an authenticated client to
 /// queue an unbounded number of request futures. Probe and index routes bypass the
 /// limiter so overload remains observable. SSE lifetime is bounded separately by
@@ -123,11 +131,15 @@ async fn enforce_http_admission(
     req: axum::extract::Request,
     next: Next,
 ) -> Response {
-    if matches!(req.uri().path(), "/" | "/health" | "/healthz" | "/readyz") {
+    if matches!(
+        req.uri().path(),
+        "/" | "/health" | "/healthz" | "/readyz" | "/metrics"
+    ) {
         return next.run(req).await;
     }
 
     let Ok(permit) = admission.try_acquire_owned() else {
+        metrics::global().http_capacity_rejected();
         return (
             StatusCode::TOO_MANY_REQUESTS,
             [(header::RETRY_AFTER, "1")],
