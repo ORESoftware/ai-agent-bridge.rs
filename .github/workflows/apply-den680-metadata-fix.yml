@@ -38,69 +38,33 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          import re
 
           metrics = Path('src/metrics.rs')
           text = metrics.read_text(encoding='utf-8')
-          calls_pattern = re.compile(
-              r'        capacity_gauge\(\n.*?snapshot\.max_tcp_connections,\n        \);\n',
-              re.DOTALL,
-          )
-          new_calls = '''        capacity_family(
+          first_call = '''        capacity_gauge(&mut output, "agents", snapshot.agents, snapshot.max_agents);
+          '''
+          replacement = '''        metric_header(
               &mut output,
-              &[
-                  ("agents", snapshot.agents, snapshot.max_agents),
-                  ("channels", snapshot.channels, snapshot.max_channels),
-                  (
-                      "file_leases",
-                      snapshot.active_file_leases,
-                      snapshot.max_file_leases,
-                  ),
-                  (
-                      "sse_connections",
-                      snapshot.active_sse_connections,
-                      snapshot.max_sse_connections,
-                  ),
-                  (
-                      "tcp_connections",
-                      self.tcp_active.load(Ordering::Relaxed),
-                      snapshot.max_tcp_connections,
-                  ),
-              ],
+              "ai_agent_bridge_capacity",
+              "Current usage and configured limit for bounded bridge resources.",
+              "gauge",
+          );
+          capacity_gauge(&mut output, "agents", snapshot.agents, snapshot.max_agents);
+          '''
+          if text.count(first_call) != 1:
+              raise SystemExit('first capacity sample marker missing or duplicated')
+          text = text.replace(first_call, replacement, 1)
+
+          helper_header = '''    metric_header(
+              output,
+              "ai_agent_bridge_capacity",
+              "Current usage and configured limit for bounded bridge resources.",
+              "gauge",
           );
           '''
-          text, count = calls_pattern.subn(new_calls, text, count=1)
-          if count != 1:
-              raise SystemExit(f'expected one capacity call block, replaced {count}')
-
-          helper_pattern = re.compile(
-              r'fn capacity_gauge\(.*?\n\}\n\nfn format_bound',
-              re.DOTALL,
-          )
-          new_helper = '''fn capacity_family(output: &mut String, values: &[(&str, u64, u64)]) {
-              metric_header(
-                  output,
-                  "ai_agent_bridge_capacity",
-                  "Current usage and configured limit for bounded bridge resources.",
-                  "gauge",
-              );
-              for (resource, current, limit) in values {
-                  let _ = writeln!(
-                      output,
-                      "ai_agent_bridge_capacity{{resource=\\\"{resource}\\\",kind=\\\"current\\\"}} {current}"
-                  );
-                  let _ = writeln!(
-                      output,
-                      "ai_agent_bridge_capacity{{resource=\\\"{resource}\\\",kind=\\\"limit\\\"}} {limit}"
-                  );
-              }
-          }
-
-          fn format_bound'''
-          text, count = helper_pattern.subn(new_helper, text, count=1)
-          if count != 1:
-              raise SystemExit(f'expected one capacity helper, replaced {count}')
-          metrics.write_text(text, encoding='utf-8')
+          if text.count(helper_header) != 1:
+              raise SystemExit('capacity helper metadata marker missing or duplicated')
+          metrics.write_text(text.replace(helper_header, '', 1), encoding='utf-8')
 
           control = Path('src/control_plane.rs')
           text = control.read_text(encoding='utf-8')
