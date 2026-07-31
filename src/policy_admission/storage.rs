@@ -98,7 +98,14 @@ fn create_admission(
                 .unwrap_or_else(|| "policy denied managed execution".into()),
         ));
     }
-    if decision.mode != plan.mode {
+    if decision.execution_target != ExecutionTarget::StandardWorkflow {
+    return Err(AdmissionFailure::new(
+        StatusCode::CONFLICT,
+        "specialized_executor_required",
+        "policy requires the blind-competition or adversarial-review executor; standard workflow admission is not permitted",
+    ));
+}
+if decision.mode != plan.mode {
         return Err(AdmissionFailure::new(
             StatusCode::CONFLICT,
             "policy_mode_escalated",
