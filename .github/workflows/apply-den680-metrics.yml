@@ -1,0 +1,86 @@
+name: apply DEN-680 Prometheus metrics
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-den680-prometheus-metrics
+  cancel-in-progress: true
+
+jobs:
+  integrate:
+    if: github.event.pull_request.head.ref == 'agent/den-680-prometheus-metrics'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_DB: bridge_restart
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: bridge-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bridge -d bridge_restart"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout writable feature branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+          submodules: recursive
+
+      - name: Install Rust 1.95
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt, clippy
+
+      - name: Apply bounded metrics instrumentation
+        run: python3 scripts/ci/apply-den680-metrics.py
+
+      - name: Validate Rust metrics and durability contracts
+        env:
+          FIDUCIA_BRIDGE_TEST_DATABASE_URL: postgresql://bridge:bridge-test-only@localhost:5432/bridge_restart
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --locked --features postgres -- -D warnings
+          cargo test --all-targets --locked
+          cargo test --all-targets --locked --features postgres
+          cargo test --locked --features postgres --test postgres_restart -- --ignored
+          git diff --check
+
+      - name: Remove one-shot integration carriers
+        run: |
+          set -euo pipefail
+          git rm scripts/ci/apply-den680-metrics.py
+          git rm .github/workflows/apply-den680-metrics.yml
+
+      - name: Commit only product tests and documentation
+        env:
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          git add src tests docs
+          changed="$(git diff --cached --name-only | sort)"
+          printf '%s\n' "$changed"
+          if grep -Eq '^scripts/ci/|^\.github/workflows/apply-den680' <<<"$changed"; then
+            echo 'one-shot carrier remained staged' >&2
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat(metrics): expose bounded Prometheus bridge metrics'
+          git push origin "HEAD:${HEAD_BRANCH}"
