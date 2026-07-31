@@ -1,5 +1,4 @@
 name: DEN-766 one-shot clippy repair
-# Triggered after CI identified the exact collapsible-if finding.
 
 on:
   push:
@@ -15,8 +14,8 @@ concurrency:
 
 jobs:
   repair:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -25,9 +24,9 @@ jobs:
           persist-credentials: true
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
-          toolchain: stable
+          toolchain: "1.95.0"
           components: rustfmt,clippy
-      - name: Collapse the successful-post journal condition
+      - name: Collapse only the successful-post journal condition
         shell: bash
         run: |
           set -euo pipefail
@@ -72,13 +71,14 @@ jobs:
           PY
           cargo fmt --all
           git diff --check
-      - name: Validate the repaired branch
+      - name: Validate the repaired product tree
         shell: bash
         run: |
           set -euo pipefail
           cargo clippy --all-targets --locked --features postgres -- -D warnings
           cargo test --all-targets --locked
-      - name: Commit permanent repair and remove this workflow
+          cargo check --all-targets --locked --features postgres
+      - name: Commit the permanent source repair and remove this workflow
         shell: bash
         run: |
           set -euo pipefail
@@ -86,5 +86,5 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add src/slack_bridge.rs
-          git commit -m 'fix(DEN-766): satisfy Slack bridge clippy gate'
+          git commit -m 'fix(DEN-766): preserve reply semantics and satisfy Clippy'
           git push origin HEAD:agent/den-766-slack-dual-model-router
