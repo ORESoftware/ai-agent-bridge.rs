@@ -324,7 +324,7 @@ fn deterministic_backoff(
 }
 
 fn status_may_be_retried(status: u16) -> bool {
-    matches!(status, 408 | 409 | 425 | 429) || (500..=599).contains(&status)
+    matches!(status, 408 | 409 | 425 | 429 | 500 | 502 | 503 | 504 | 529)
 }
 
 const fn default_base_delay_ms() -> u64 {
