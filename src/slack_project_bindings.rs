@@ -46,7 +46,10 @@ impl WritePolicy {
             (_, RequestedCapability::ReadOnly)
             | (Self::LinearOnly | Self::DraftPullRequest, RequestedCapability::LinearWrite)
             | (Self::DraftPullRequest, RequestedCapability::RepositoryWrite) => true,
-            (Self::ReadOnly, RequestedCapability::LinearWrite | RequestedCapability::RepositoryWrite)
+            (
+                Self::ReadOnly,
+                RequestedCapability::LinearWrite | RequestedCapability::RepositoryWrite,
+            )
             | (Self::LinearOnly, RequestedCapability::RepositoryWrite) => false,
         }
     }
@@ -490,10 +493,7 @@ mod tests {
     fn resolves_default_project_repository_mode_and_issue() {
         let resolved = registry().resolve(&request()).unwrap();
         assert_eq!(resolved.linear_team_key, "DEN");
-        assert_eq!(
-            resolved.repository,
-            "oresoftware/ai-agent-bridge.rs"
-        );
+        assert_eq!(resolved.repository, "oresoftware/ai-agent-bridge.rs");
         assert_eq!(resolved.agent_mode, AgentMode::BothParallel);
         assert_eq!(resolved.issue.unwrap().number, 1042);
     }
@@ -548,10 +548,7 @@ mod tests {
             Some("oresoftware/ai-agent-coordinator.rs".to_string());
         allowed_repository.requested_agent_mode = Some(AgentMode::Review);
         let resolved = registry().resolve(&allowed_repository).unwrap();
-        assert_eq!(
-            resolved.repository,
-            "oresoftware/ai-agent-coordinator.rs"
-        );
+        assert_eq!(resolved.repository, "oresoftware/ai-agent-coordinator.rs");
         assert_eq!(resolved.agent_mode, AgentMode::Review);
 
         let mut bad_mode = request();
@@ -566,7 +563,8 @@ mod tests {
     fn enforces_write_policy_without_widening_repository_access() {
         let mut document = valid_document();
         document["bindings"][0]["write_policy"] = serde_json::json!("linear_only");
-        let registry = SlackProjectRegistry::from_json(&serde_json::to_vec(&document).unwrap()).unwrap();
+        let registry =
+            SlackProjectRegistry::from_json(&serde_json::to_vec(&document).unwrap()).unwrap();
 
         let mut linear_write = request();
         linear_write.requested_capability = RequestedCapability::LinearWrite;
@@ -613,8 +611,7 @@ mod tests {
         ));
 
         let mut invalid_budget = valid_document();
-        invalid_budget["bindings"][0]["budget_policy"]["max_spend_cents"] =
-            serde_json::json!(0);
+        invalid_budget["bindings"][0]["budget_policy"]["max_spend_cents"] = serde_json::json!(0);
         assert!(matches!(
             SlackProjectRegistry::from_json(&serde_json::to_vec(&invalid_budget).unwrap()),
             Err(RegistryError::InvalidBudget)
