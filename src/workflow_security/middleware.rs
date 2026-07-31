@@ -252,7 +252,7 @@ fn contains_reserved_context_key(body: Option<&serde_json::Value>) -> bool {
 }
 
 fn is_public_path(path: &str) -> bool {
-    matches!(path, "/" | "/health" | "/healthz" | "/readyz")
+    matches!(path, "/" | "/health" | "/healthz" | "/readyz" | "/metrics")
 }
 
 fn error_response(status: StatusCode, error: &'static str) -> Response {
