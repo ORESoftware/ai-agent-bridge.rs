@@ -453,6 +453,7 @@ dependencies = [
  "fiducia-telemetry",
  "futures",
  "hmac",
+ "httpdate",
  "libc",
  "parking_lot",
  "reqwest",

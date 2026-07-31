@@ -108,9 +108,8 @@ impl RetryPolicies {
         raw: Option<&str>,
     ) -> Result<Self, RetryConfigError> {
         let document = match raw.map(str::trim).filter(|value| !value.is_empty()) {
-            Some(raw) => serde_json::from_str::<RetryDocument>(raw).map_err(|_| {
-                RetryConfigError::Invalid(format!("{CONFIG_ENV} is invalid JSON"))
-            })?,
+            Some(raw) => serde_json::from_str::<RetryDocument>(raw)
+                .map_err(|_| RetryConfigError::Invalid(format!("{CONFIG_ENV} is invalid JSON")))?,
             None => RetryDocument::default(),
         };
         let configured_names = providers
@@ -231,10 +230,6 @@ impl RetryPolicy {
             .expect("built-in retry defaults are valid")
     }
 
-    pub(crate) fn max_retries(&self) -> u8 {
-        self.max_retries
-    }
-
     pub(crate) fn plan(
         &self,
         error: &ProviderError,
@@ -324,10 +319,7 @@ fn deterministic_backoff(
     let digest = hasher.finalize();
     let sample = u16::from_be_bytes([digest[0], digest[1]]);
     let jitter_bps = 5_000u64.saturating_add(u64::from(sample) % 5_001);
-    let jittered = exponential
-        .saturating_mul(jitter_bps)
-        .saturating_add(9_999)
-        / 10_000;
+    let jittered = exponential.saturating_mul(jitter_bps).saturating_add(9_999) / 10_000;
     Duration::from_millis(jittered.max(1).min(max_delay_ms))
 }
 
@@ -389,9 +381,7 @@ mod tests {
             Some(Duration::from_secs(10)),
             Some(ProviderFailureKind::RateLimited),
         );
-        let plan = policy
-            .plan(&error, 1, Duration::ZERO, "seed")
-            .unwrap();
+        let plan = policy.plan(&error, 1, Duration::ZERO, "seed").unwrap();
         assert_eq!(plan.delay, Duration::from_millis(2_000));
         assert_eq!(plan.delay_source, RetryDelaySource::RetryAfter);
         assert_eq!(plan.reason, RetryReason::RateLimited(429));
@@ -434,9 +424,7 @@ mod tests {
         let mut configured = input(2);
         configured.retryable_statuses.push(409);
         let configured = configured.validate("codex").unwrap();
-        assert!(configured
-            .plan(&error, 1, Duration::ZERO, "seed")
-            .is_some());
+        assert!(configured.plan(&error, 1, Duration::ZERO, "seed").is_some());
     }
 
     #[test]
@@ -454,10 +442,12 @@ mod tests {
 
     #[test]
     fn retry_configuration_rejects_auth_and_validation_statuses() {
-        let mut value = input(1);
-        value.retryable_statuses = vec![401];
-        assert!(value.validate("codex").is_err());
-        value.retryable_statuses = vec![422];
-        assert!(value.validate("codex").is_err());
+        let mut authentication = input(1);
+        authentication.retryable_statuses = vec![401];
+        assert!(authentication.validate("codex").is_err());
+
+        let mut validation = input(1);
+        validation.retryable_statuses = vec![422];
+        assert!(validation.validate("codex").is_err());
     }
 }

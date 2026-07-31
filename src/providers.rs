@@ -46,6 +46,8 @@ pub enum ProviderProtocol {
     OpenAiCompatibleChat,
 }
 
+include!("providers/failure.rs");
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ProviderConfig {
     pub name: String,
@@ -105,24 +107,6 @@ struct ValidatedProviderConfig {
     raw: ProviderConfig,
     base_url: Url,
     allowed_hosts: HashSet<String>,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ProviderError {
-    #[error("invalid provider configuration: {0}")]
-    InvalidConfig(String),
-    #[error("provider credential environment variable '{0}' is missing or empty")]
-    MissingCredential(String),
-    #[error("provider prompt exceeds the configured byte limit")]
-    PromptTooLarge,
-    #[error("provider request failed")]
-    Transport,
-    #[error("provider returned HTTP {0}")]
-    HttpStatus(StatusCode),
-    #[error("provider response exceeded the configured byte limit")]
-    ResponseTooLarge,
-    #[error("provider response did not contain usable text")]
-    InvalidResponse,
 }
 
 impl ProviderConfig {
@@ -270,14 +254,21 @@ impl ProviderClient {
                 .map_err(|_| ProviderError::InvalidConfig("invalid header value".into()))?;
             builder = builder.header(name, value);
         }
-        let response = builder
-            .json(&prepared.body)
-            .send()
-            .await
-            .map_err(|_| ProviderError::Transport)?;
+        let response = builder.json(&prepared.body).send().await.map_err(|error| {
+            ProviderError::Transport {
+                kind: classify_transport(&error),
+            }
+        })?;
         let status = response.status();
+        let retry_after = parse_retry_after(response.headers());
         if !status.is_success() {
-            return Err(ProviderError::HttpStatus(status));
+            let bytes = read_bounded(response, self.config.raw.max_response_bytes).await?;
+            let failure_kind = parse_provider_failure(self.config.raw.protocol, &bytes);
+            return Err(ProviderError::HttpStatus {
+                status,
+                retry_after,
+                failure_kind,
+            });
         }
         let request_id = request_id(response.headers());
         let bytes = read_bounded(response, self.config.raw.max_response_bytes).await?;
@@ -457,7 +448,9 @@ async fn read_bounded(
     let mut bytes = Vec::new();
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|_| ProviderError::Transport)?;
+        let chunk = chunk.map_err(|_| ProviderError::Transport {
+            kind: ProviderTransportKind::ResponseBody,
+        })?;
         if bytes.len().saturating_add(chunk.len()) > max_bytes {
             return Err(ProviderError::ResponseTooLarge);
         }
