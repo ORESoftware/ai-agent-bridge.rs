@@ -69,7 +69,10 @@ async fn metrics_endpoint_exposes_valid_bounded_text_without_identity_labels() {
         "sensitive message body",
         "secret/repository",
     ] {
-        assert!(!text.contains(forbidden), "sensitive value leaked: {forbidden}");
+        assert!(
+            !text.contains(forbidden),
+            "sensitive value leaked: {forbidden}"
+        );
     }
 }
 
@@ -80,16 +83,16 @@ async fn registry_records_bounded_http_message_and_lease_error_outcomes() {
     metrics::global().http_finished(started, 429);
     metrics::global().http_capacity_rejected();
     metrics::global().observe_message(std::time::Duration::from_millis(2), 0, 3);
-    metrics::global().observe_bridge_error(&ai_agent_bridge::error::BridgeError::StaleFencingToken(
-        "opaque-id".into(),
-    ));
+    metrics::global().observe_bridge_error(
+        &ai_agent_bridge::error::BridgeError::StaleFencingToken("opaque-id".into()),
+    );
 
     let text = metrics::global().render(&state);
     assert!(text.contains("ai_agent_bridge_http_requests_total{status_class=\"4xx\"}"));
     assert!(text.contains("ai_agent_bridge_http_rejected_total{reason=\"capacity\"}"));
     assert!(text.contains("ai_agent_bridge_messages_total{result=\"no_subscribers\"}"));
-    assert!(text.contains(
-        "ai_agent_bridge_file_lease_errors_total{reason=\"stale_fencing_token\"}"
-    ));
+    assert!(
+        text.contains("ai_agent_bridge_file_lease_errors_total{reason=\"stale_fencing_token\"}")
+    );
     assert!(!text.contains("opaque-id"));
 }

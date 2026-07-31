@@ -13,6 +13,7 @@ use tokio::sync::broadcast;
 use crate::config::{Config, MAX_MEMBERS};
 use crate::embed::{cosine, Embedder};
 use crate::error::{BridgeError, BridgeResult};
+use crate::metrics::StateMetricsSnapshot;
 use crate::types::*;
 
 /// Max bytes for an `agent_key` (matches the DB `varchar(120)` columns).
@@ -171,6 +172,90 @@ impl AppState {
 
     pub fn inbox_message_count(&self) -> u64 {
         self.inbox_count.load(Ordering::Relaxed)
+    }
+
+    pub fn metrics_snapshot(&self) -> StateMetricsSnapshot {
+        let now = Instant::now();
+        let agents = self.agents.read().len() as u64;
+        let (
+            channels,
+            members,
+            retained_messages,
+            total_messages,
+            context_keys,
+            broadcast_queue_depth,
+        ) = {
+            let channels = self.channels.read();
+            (
+                channels.len() as u64,
+                channels
+                    .values()
+                    .map(|channel| channel.members.len() as u64)
+                    .sum(),
+                channels
+                    .values()
+                    .map(|channel| channel.messages.len() as u64)
+                    .sum(),
+                channels.values().map(|channel| channel.message_count).sum(),
+                channels
+                    .values()
+                    .map(|channel| channel.context.len() as u64)
+                    .sum(),
+                channels
+                    .values()
+                    .map(|channel| channel.tx.len() as u64)
+                    .sum(),
+            )
+        };
+        let active_file_leases = self
+            .file_leases
+            .read()
+            .values()
+            .filter(|lease| lease.expires_at > now)
+            .count() as u64;
+        let active_sse_connections =
+            self.config
+                .max_sse_connections
+                .saturating_sub(self.sse_connections.available_permits()) as u64;
+
+        #[cfg(feature = "postgres")]
+        let (persistence_mode, persistence_ready, persistence_queue_depth, persistence_shed_writes) =
+            if self.db.is_some() {
+                (
+                    "postgres",
+                    true,
+                    PERSIST_CONCURRENCY.saturating_sub(self.persist_sem.available_permits()) as u64,
+                    self.shed_persist_writes.load(Ordering::Relaxed),
+                )
+            } else {
+                ("memory", true, 0, 0)
+            };
+        #[cfg(not(feature = "postgres"))]
+        let (persistence_mode, persistence_ready, persistence_queue_depth, persistence_shed_writes) =
+            ("memory", true, 0, 0);
+
+        StateMetricsSnapshot {
+            agents,
+            channels,
+            members,
+            retained_messages,
+            total_messages,
+            context_keys,
+            broadcast_queue_depth,
+            active_file_leases,
+            inbox_messages: self.inbox_message_count(),
+            active_sse_connections,
+            max_agents: self.config.max_agents as u64,
+            max_channels: self.config.max_channels as u64,
+            max_file_leases: self.config.max_file_leases as u64,
+            max_sse_connections: self.config.max_sse_connections as u64,
+            max_tcp_connections: self.config.max_tcp_connections as u64,
+            persistence_mode,
+            persistence_ready,
+            persistence_queue_depth,
+            persistence_shed_writes,
+            control_plane_configured: self.control_plane.is_some(),
+        }
     }
 
     #[cfg(feature = "postgres")]
@@ -899,6 +984,7 @@ impl AppState {
         content: &str,
         meta: serde_json::Value,
     ) -> BridgeResult<Message> {
+        let started = Instant::now();
         let from = from.trim();
         if from.is_empty() {
             return Err(BridgeError::BadRequest(
@@ -935,7 +1021,7 @@ impl AppState {
         self.join(slug, from, MemberRole::Member)?;
 
         let budget = self.config.max_channel_history_bytes;
-        let message = {
+        let (message, evicted, receivers) = {
             let mut chans = self.channels.write();
             let ch = chans
                 .get_mut(slug)
@@ -958,6 +1044,7 @@ impl AppState {
             };
             ch.history_bytes += message_retained_bytes(&message);
             ch.messages.push_back(message.clone());
+            let mut evicted = 0_u64;
             // Evict oldest by count AND by total retained bytes (always keep >= 1),
             // so one hot channel can't hoard ~1 GiB of history.
             while ch.messages.len() > ch.history_limit
@@ -967,15 +1054,17 @@ impl AppState {
                     ch.history_bytes = ch
                         .history_bytes
                         .saturating_sub(message_retained_bytes(&old));
+                    evicted = evicted.saturating_add(1);
                 }
             }
             // Broadcast under the write lock so live delivery order matches `seq`
             // (two concurrent posts can't be observed out of order). send is
             // non-blocking, so holding the lock across it is safe and brief.
-            let _ = ch.tx.send(Event::Message(message.clone()));
-            message
+            let receivers = ch.tx.send(Event::Message(message.clone())).unwrap_or(0);
+            (message, evicted, receivers)
         };
         self.persist_message(&message);
+        crate::metrics::global().observe_message(started.elapsed(), receivers, evicted);
         Ok(message)
     }
 

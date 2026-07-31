@@ -178,8 +178,7 @@ impl BridgeMetrics {
     }
 
     pub fn http_capacity_rejected(&self) {
-        self.http_capacity_rejected
-            .fetch_add(1, Ordering::Relaxed);
+        self.http_capacity_rejected.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn tcp_connection(&self) -> TcpConnectionGuard<'_> {
@@ -203,8 +202,7 @@ impl BridgeMetrics {
     pub fn observe_message(&self, duration: Duration, receivers: usize, evicted: u64) {
         self.messages_accepted.fetch_add(1, Ordering::Relaxed);
         if receivers == 0 {
-            self.messages_no_subscribers
-                .fetch_add(1, Ordering::Relaxed);
+            self.messages_no_subscribers.fetch_add(1, Ordering::Relaxed);
         }
         self.messages_evicted.fetch_add(evicted, Ordering::Relaxed);
         self.message_send_duration.observe(duration);
@@ -229,14 +227,12 @@ impl BridgeMetrics {
     }
 
     pub fn control_plane_started(&self) -> Instant {
-        self.control_plane_in_flight
-            .fetch_add(1, Ordering::Relaxed);
+        self.control_plane_in_flight.fetch_add(1, Ordering::Relaxed);
         Instant::now()
     }
 
     pub fn control_plane_finished(&self, started: Instant, result: ControlPlaneResult) {
-        self.control_plane_in_flight
-            .fetch_sub(1, Ordering::Relaxed);
+        self.control_plane_in_flight.fetch_sub(1, Ordering::Relaxed);
         match result {
             ControlPlaneResult::Success => {
                 self.control_plane_success.fetch_add(1, Ordering::Relaxed);
@@ -522,7 +518,10 @@ impl BridgeMetrics {
             "Control-plane requests grouped by bounded result.",
             "result",
             &[
-                ("success", self.control_plane_success.load(Ordering::Relaxed)),
+                (
+                    "success",
+                    self.control_plane_success.load(Ordering::Relaxed),
+                ),
                 (
                     "client_error",
                     self.control_plane_client_error.load(Ordering::Relaxed),
@@ -550,12 +549,7 @@ impl BridgeMetrics {
             "Control-plane request duration without URL or repository labels.",
         );
 
-        capacity_gauge(
-            &mut output,
-            "agents",
-            snapshot.agents,
-            snapshot.max_agents,
-        );
+        capacity_gauge(&mut output, "agents", snapshot.agents, snapshot.max_agents);
         capacity_gauge(
             &mut output,
             "channels",

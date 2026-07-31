@@ -74,6 +74,7 @@ impl ControlPlaneClient {
         body: Option<&Value>,
         query: &[(&str, &str)],
     ) -> BridgeResult<ControlPlaneResponse> {
+        let started = crate::metrics::global().control_plane_started();
         let mut request = self
             .http
             .request(method, format!("{}{path}", self.base_url))
@@ -84,21 +85,32 @@ impl ControlPlaneClient {
         if let Some(body) = body {
             request = request.json(body);
         }
-        let response = request.send().await.map_err(|error| {
-            let detail = if error.is_timeout() {
-                "request timed out"
-            } else if error.is_connect() {
-                "connection failed"
-            } else {
-                "request failed"
-            };
-            BridgeError::ControlPlane(detail.to_string())
-        })?;
+        let response = match request.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                crate::metrics::global().control_plane_finished(
+                    started,
+                    crate::metrics::ControlPlaneResult::TransportError,
+                );
+                let detail = if error.is_timeout() {
+                    "request timed out"
+                } else if error.is_connect() {
+                    "connection failed"
+                } else {
+                    "request failed"
+                };
+                return Err(BridgeError::ControlPlane(detail.to_string()));
+            }
+        };
         let status = response.status().as_u16();
         if response
             .content_length()
             .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
         {
+            crate::metrics::global().control_plane_finished(
+                started,
+                crate::metrics::ControlPlaneResult::TransportError,
+            );
             return Err(BridgeError::ControlPlane(
                 "response exceeded 1 MiB".to_string(),
             ));
@@ -106,9 +118,23 @@ impl ControlPlaneClient {
         let mut bytes = Vec::new();
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
-            let chunk =
-                chunk.map_err(|_| BridgeError::ControlPlane("response read failed".to_string()))?;
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(_) => {
+                    crate::metrics::global().control_plane_finished(
+                        started,
+                        crate::metrics::ControlPlaneResult::TransportError,
+                    );
+                    return Err(BridgeError::ControlPlane(
+                        "response read failed".to_string(),
+                    ));
+                }
+            };
             if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+                crate::metrics::global().control_plane_finished(
+                    started,
+                    crate::metrics::ControlPlaneResult::TransportError,
+                );
                 return Err(BridgeError::ControlPlane(
                     "response exceeded 1 MiB".to_string(),
                 ));
@@ -125,6 +151,12 @@ impl ControlPlaneClient {
                 })
             })
         };
+        let result = match status {
+            200..=399 => crate::metrics::ControlPlaneResult::Success,
+            400..=499 => crate::metrics::ControlPlaneResult::ClientError,
+            _ => crate::metrics::ControlPlaneResult::ServerError,
+        };
+        crate::metrics::global().control_plane_finished(started, result);
         Ok(ControlPlaneResponse { status, body })
     }
 }
