@@ -2,8 +2,8 @@
 //! agents. See `README.md` and `docs/agents-guide.md`.
 //!
 //! The in-memory core ([`state`], [`embed`]) has no external dependencies and is
-//! what the test suite exercises. Postgres persistence ([`db`]) is optional and
-//! compiled in only with `--features postgres`.
+//! what the test suite exercises. Postgres persistence (the `db` module) is
+//! optional and compiled in only with `--features postgres`.
 
 pub mod assignment_claims;
 pub mod blind_competition;
@@ -38,5 +38,3 @@ pub mod workflow_security;
 pub mod db;
 
 pub use config::Config;
-pub use embed::Embedder;
-pub use state::AppState;
