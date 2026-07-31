@@ -10,7 +10,7 @@ columns = ["options", "env", "type", "description"]
 allow_unknown = false
 
 [env]
-ignore = ["DATABASE_URL", "RDS_DATABASE_URL", "API_AUTH_BEARER", "AI_AGENT_BRIDGE_TOKEN", "CLAUDE_INBOX_TOKEN", "EMBEDDINGS_API_AUTH_BEARER", "EMBEDDINGS_BEARER", "FIDUCIA_CONTROL_PLANE_SECRET", "FIDUCIA_INTERNAL_SECRET", "WORKFLOW_ADAPTER_AUTH_JSON", "AI_PROVIDER_CONFIG_JSON", "AI_PROVIDER_PRICING_JSON", "AI_AGENT_RUNNER_BRIDGE_BEARER"]
+ignore = ["DATABASE_URL", "RDS_DATABASE_URL", "API_AUTH_BEARER", "AI_AGENT_BRIDGE_TOKEN", "CLAUDE_INBOX_TOKEN", "EMBEDDINGS_API_AUTH_BEARER", "EMBEDDINGS_BEARER", "FIDUCIA_CONTROL_PLANE_SECRET", "FIDUCIA_INTERNAL_SECRET", "WORKFLOW_ADAPTER_AUTH_JSON", "AI_PROVIDER_CONFIG_JSON", "AI_PROVIDER_PRICING_JSON", "AI_AGENT_RUNNER_BRIDGE_BEARER", "SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN", "SLACK_BRIDGE_BEARER"]
 
 [flags.host]
 env = "HOST"
@@ -231,3 +231,107 @@ env = "AI_AGENT_RUNNER_MAX_ADMISSION_RESPONSE_BYTES"
 aliases = ["runner-max-admission-response-bytes"]
 type = "integer"
 help = "Maximum bytes accepted from one policy-admission response."
+
+# Slack adapter secrets remain env-only; these flags cover non-secret routing,
+# allowlists, timeouts, resource ceilings, and the disabled-by-default switch.
+[flags.slack-bridge-host]
+env = "SLACK_BRIDGE_HOST"
+aliases = ["slack-bridge-host"]
+type = "string"
+help = "Listen address for the authenticated Slack adapter."
+
+[flags.slack-bridge-port]
+env = "SLACK_BRIDGE_PORT"
+aliases = ["slack-bridge-port"]
+type = "integer"
+help = "HTTP port for Slack events and health probes."
+
+[flags.slack-bot-user-id]
+env = "SLACK_BOT_USER_ID"
+aliases = ["slack-bot-user-id"]
+type = "string"
+help = "Slack bot user ID used to reject self-generated events."
+
+[flags.slack-allowed-team-ids]
+env = "SLACK_ALLOWED_TEAM_IDS"
+aliases = ["slack-allowed-team-ids"]
+type = "string"
+help = "Comma-separated Slack workspace allowlist."
+
+[flags.slack-allowed-channel-ids]
+env = "SLACK_ALLOWED_CHANNEL_IDS"
+aliases = ["slack-allowed-channel-ids"]
+type = "string"
+help = "Comma-separated Slack channel allowlist."
+
+[flags.slack-allowed-thread-ts]
+env = "SLACK_ALLOWED_THREAD_TS"
+aliases = ["slack-allowed-thread-ts"]
+type = "string"
+help = "Optional comma-separated Slack thread timestamp allowlist."
+
+[flags.slack-command-prefix]
+env = "SLACK_COMMAND_PREFIX"
+aliases = ["slack-command-prefix"]
+type = "string"
+help = "Explicit one-token prefix that activates dual-model routing."
+
+[flags.slack-bridge-url]
+env = "SLACK_BRIDGE_URL"
+aliases = ["slack-bridge-url"]
+type = "string"
+help = "Base URL for the existing Fiducia bridge workflow API."
+
+[flags.slack-claude-agent-key]
+env = "SLACK_CLAUDE_AGENT_KEY"
+aliases = ["slack-claude-agent-key"]
+type = "string"
+help = "Registered bridge identity for the Claude Fable assignment."
+
+[flags.slack-openai-agent-key]
+env = "SLACK_OPENAI_AGENT_KEY"
+aliases = ["slack-openai-agent-key"]
+type = "string"
+help = "Registered bridge identity for the ChatGPT Sol assignment."
+
+[flags.slack-bridge-dry-run]
+env = "SLACK_BRIDGE_DRY_RUN"
+aliases = ["slack-bridge-dry-run"]
+type = "string"
+help = "Keep accepted Slack events from creating workflows or posting replies."
+
+[flags.slack-idempotency-path]
+env = "SLACK_IDEMPOTENCY_PATH"
+aliases = ["slack-idempotency-path"]
+type = "string"
+help = "Absolute path to the private append-only Slack event journal."
+
+[flags.slack-max-request-age-secs]
+env = "SLACK_MAX_REQUEST_AGE_SECS"
+aliases = ["slack-max-request-age-secs"]
+type = "integer"
+help = "Maximum accepted age or future skew for signed Slack requests."
+
+[flags.slack-workflow-timeout-secs]
+env = "SLACK_WORKFLOW_TIMEOUT_SECS"
+aliases = ["slack-workflow-timeout-secs"]
+type = "integer"
+help = "Bounded deadline for collecting both model submissions."
+
+[flags.slack-poll-interval-ms]
+env = "SLACK_POLL_INTERVAL_MS"
+aliases = ["slack-poll-interval-ms"]
+type = "integer"
+help = "Interval between bounded workflow status reads."
+
+[flags.slack-max-body-bytes]
+env = "SLACK_MAX_BODY_BYTES"
+aliases = ["slack-max-body-bytes"]
+type = "integer"
+help = "Maximum Slack Events API request body size."
+
+[flags.slack-max-concurrent-workflows]
+env = "SLACK_MAX_CONCURRENT_WORKFLOWS"
+aliases = ["slack-max-concurrent-workflows"]
+type = "integer"
+help = "Maximum concurrently active Slack-originated workflows."
