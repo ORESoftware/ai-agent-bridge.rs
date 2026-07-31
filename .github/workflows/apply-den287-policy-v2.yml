@@ -32,7 +32,7 @@ jobs:
           toolchain: '1.95.0'
           components: rustfmt, clippy
 
-      - name: Apply admission and runner integration
+      - name: Apply policy, admission, and runner integration
         shell: bash
         run: |
           set -euo pipefail
@@ -46,6 +46,39 @@ jobs:
               if count != 1:
                   raise SystemExit(f'{path}: expected one match, found {count}: {old!r}')
               file.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'src/policy/evaluate.rs',
+              '''    let effective_risk = effective_risk(request, &required_capabilities);
+          let profile = budget_profile(effective_risk);
+          let budget = clamp_budget(&request.requested_budget, profile);
+          let mut reasons = Vec::new();
+          ''',
+              '''    let effective_risk = effective_risk(request, &required_capabilities);
+          let mut reasons = Vec::new();
+          ''',
+          )
+          replace_once(
+              'src/policy/evaluate.rs',
+              '    let required_mode = safer_mode(safer_mode(base_required_mode, protocol_mode), reviewer_mode);\n',
+              '''    let required_mode = safer_mode(safer_mode(base_required_mode, protocol_mode), reviewer_mode);
+          let budget_risk = match required_mode {
+              WorkflowMode::Single => effective_risk,
+              WorkflowMode::Sequential => effective_risk.max(TaskRisk::Medium),
+              WorkflowMode::Competitive | WorkflowMode::Consensus => {
+                  effective_risk.max(TaskRisk::High)
+              }
+          };
+          let profile = budget_profile(budget_risk);
+          let budget = clamp_budget(&request.requested_budget, profile);
+          if budget_risk > effective_risk {
+              reasons.push(format!(
+                  "budget profile elevated from {:?} to {:?} because execution mode {:?} requires multiple bounded providers",
+                  effective_risk, budget_risk, required_mode
+              ));
+          }
+          ''',
+          )
 
           replace_once(
               'src/policy_admission.rs',
