@@ -1,6 +1,6 @@
 # Provider-runner Prometheus metrics
 
-The provider runner exposes `GET /metrics` on the independent health listener configured by `AI_AGENT_RUNNER_HEALTH_HOST` and `AI_AGENT_RUNNER_HEALTH_PORT`. It remains separate from bridge metrics because provider attempts, retries, pricing, admission, claims, and shutdown drain state exist in the runner process, not the bridge process. The listener has no provider-control or mutation API: `/healthz`, `/readyz`, and `/metrics` are the complete public surface.
+The provider runner exposes `GET /metrics` on the independent health listener configured by `AI_AGENT_RUNNER_HEALTH_HOST` and `AI_AGENT_RUNNER_HEALTH_PORT`. It remains separate from bridge metrics because provider attempts, retries, pricing, admission, claims, and shutdown drain state exist in the runner process, not the bridge process. The listener has no provider-control or mutation API: `/healthz`, `/readyz`, and `/metrics` are the complete public surface. Metrics instrumentation is applied at the existing admission, retry, heartbeat, assignment, submission, polling, registration, and drain boundaries rather than in a parallel accounting path.
 
 ## Privacy and cardinality
 
