@@ -239,10 +239,10 @@ impl App {
                 "mode": "single",
                 "agent_keys": [agent],
                 "worker_count": 1,
-                "repository": resolved.repository,
                 "meta": {
                     "source": "slack_slash_command",
                     "run_id": request.run_id,
+                    "repository": resolved.repository,
                     "slack_team_id": request.team_id,
                     "slack_channel_id": request.channel_id,
                     "slack_user_id": request.user_id,
@@ -261,6 +261,16 @@ impl App {
             .await
             .ok_or(Error::Bridge)?;
         if !status.is_success() {
+            let error_code = serde_json::from_slice::<Value>(&body)
+                .ok()
+                .and_then(|value| value.get("error").and_then(Value::as_str).map(str::to_string))
+                .unwrap_or_else(|| "unknown".to_string());
+            warn!(
+                run_id = %request.run_id,
+                status = %status,
+                error_code,
+                "bridge rejected Slack workflow creation"
+            );
             return Err(Error::Bridge);
         }
         let response =
