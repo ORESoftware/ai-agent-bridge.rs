@@ -62,8 +62,6 @@ jobs:
           --report artifacts/alex-main-agent-manifest-audit.offline.json
 
       - name: Verify exact project pull-request heads and manifests
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: >-
           python3 scripts/audit_alex_main_agent_manifests.py
           --registry config/alex-main-agent.channels.json
