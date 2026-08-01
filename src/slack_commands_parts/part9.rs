@@ -1,7 +1,9 @@
 const SLACK_ACK_DEADLINE: Duration = Duration::from_millis(2_500);
 const EXPECTED_APP_ID_ENV: &str = "SLACK_EXPECTED_APP_ID";
 const EXPECTED_TEAM_ID_ENV: &str = "SLACK_EXPECTED_TEAM_ID";
+#[cfg(test)]
 const INSTALLED_APP_ID: &str = "A0BMBAMM5NJ";
+#[cfg(test)]
 const INSTALLED_TEAM_ID: &str = "T01B3C83PMK";
 
 fn configured_slack_identity(config: &Config) -> Result<Option<(String, String)>> {
