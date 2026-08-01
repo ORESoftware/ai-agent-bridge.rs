@@ -408,6 +408,82 @@ fn context_truncates_an_oversized_single_message() {
     assert!(rendered.contains("truncated"));
 }
 
+/// Slack rejects a `views.open` payload that breaches any of these documented
+/// limits, and the member just sees "the dispatch dialog could not be opened".
+/// A long model key or an extra menu entry is an easy way to trip one, so the
+/// ceilings are asserted here rather than discovered in production.
+#[test]
+fn modal_payload_respects_slack_block_kit_limits() {
+    let mut config = config();
+    // Exercise the widest realistic menus, not just the two-entry default.
+    config.claude_model_choices = (0..40).map(|i| format!("claude-variant-{i}")).collect();
+    config.target_choices = (0..40).map(|i| format!("github.com/org/repo-{i}")).collect();
+
+    for provider in [Provider::Claude, Provider::OpenAi] {
+        let form = SlashCommandForm {
+            text: "x".repeat(4_000),
+            ..SlashCommandForm::default()
+        };
+        let view = build_modal(&config, provider, &form);
+
+        // Modal titles are capped at 24 characters; Slack hard-rejects longer.
+        let title = view["title"]["text"].as_str().expect("title");
+        assert!(
+            title.chars().count() <= 24,
+            "modal title {title:?} exceeds 24 characters",
+        );
+        for key in ["submit", "close"] {
+            let label = view[key]["text"].as_str().expect(key);
+            assert!(label.chars().count() <= 24, "{key} label too long");
+        }
+
+        // private_metadata is capped at 3000 characters.
+        let metadata = view["private_metadata"].as_str().expect("metadata");
+        assert!(metadata.len() <= 3_000, "private_metadata too large");
+
+        let blocks = view["blocks"].as_array().expect("blocks");
+        assert!(blocks.len() <= 100, "a view accepts at most 100 blocks");
+
+        for block in blocks {
+            let block_id = block["block_id"].as_str().expect("block_id");
+            assert!(block_id.len() <= 255, "block_id too long: {block_id}");
+
+            let element = &block["element"];
+            let action_id = element["action_id"].as_str().expect("action_id");
+            assert!(action_id.len() <= 255, "action_id too long");
+
+            if let Some(max_length) = element["max_length"].as_u64() {
+                assert!(max_length <= 3_000, "plain_text_input max_length too large");
+            }
+            if let Some(initial) = element["initial_value"].as_str() {
+                // The prompt is prefilled from arbitrary slash-command text.
+                assert!(
+                    initial.chars().count() <= 3_000,
+                    "initial_value must be truncated before Slack sees it",
+                );
+            }
+            if let Some(options) = element["options"].as_array() {
+                assert!(!options.is_empty(), "{block_id} has an empty menu");
+                assert!(options.len() <= 100, "{block_id} exceeds 100 options");
+                for option in options {
+                    let text = option["text"]["text"].as_str().expect("option text");
+                    let value = option["value"].as_str().expect("option value");
+                    assert!(!text.is_empty(), "{block_id} has a blank option label");
+                    assert!(text.chars().count() <= 75, "option label too long: {text}");
+                    assert!(value.len() <= 150, "option value too long: {value}");
+                }
+                // An initial_option Slack cannot find in `options` is rejected.
+                if let Some(initial) = element.get("initial_option") {
+                    assert!(
+                        options.contains(initial),
+                        "{block_id} preselects an option that is not in its menu",
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Writes the exact modal payload the adapter would hand to `views.open` so the
 /// Block Kit browser contract check renders the real thing rather than a
 /// hand-maintained copy that can drift away from the code.
