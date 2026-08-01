@@ -152,6 +152,33 @@ Follow the same activation sequence as the dual-model path before setting
 `SLACK_BRIDGE_DRY_RUN=false`, and add one extra step: confirm the Linear sink
 writes into a dedicated agent-task project rather than a delivery project.
 
+## Testing the dialog
+
+A malformed `views.open` payload surfaces to a member only as "the dispatch
+dialog could not be opened", so the modal is checked at two levels.
+
+**Gating, offline** — `modal_payload_respects_slack_block_kit_limits` builds both
+modals with deliberately wide menus (40 models, 40 targets, a 4000-character
+prefill) and asserts Slack's documented ceilings: modal title ≤ 24 characters,
+`private_metadata` ≤ 3000, ≤ 100 blocks, `block_id`/`action_id` ≤ 255,
+`plain_text_input.max_length` ≤ 3000, ≤ 100 options per menu, option labels ≤ 75
+characters, option values ≤ 150, and every `initial_option` actually present in
+its own `options` list. This runs in the normal CI workflow.
+
+**Advisory, browser** — `.github/workflows/block-kit-contract.yml` renders the
+real payload in Slack's Block Kit Builder with Playwright and uploads a
+screenshot. The fixtures come from `emits_block_kit_fixtures_for_the_browser
+_contract`, which serialises the output of the same `build_modal()` the adapter
+calls, so the browser check cannot drift from what ships.
+
+That job never gates a merge, and it is **inert without credentials**: an
+anonymous request to the builder redirects to `app.slack.com/workspace-signin`.
+Save a Playwright `storageState` JSON for a workspace that can open the builder
+and set it as the `SLACK_BUILDER_STORAGE_STATE` secret to enable it. Until then
+the specs skip with an explicit reason and the job summary says so rather than
+implying a pass. If the secret is present but the session has expired, the specs
+*fail* instead of skipping, so a stale credential cannot hide indefinitely.
+
 ## Failure behavior
 
 - Unknown command, non-allowlisted team/channel, or missing `trigger_id` — a
