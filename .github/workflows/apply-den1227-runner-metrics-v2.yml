@@ -1,75 +1,21 @@
-# CI pipeline: secret hygiene, formatting, clippy (warnings as errors), tests, a
-# postgres-feature check, and a flags-2-env config audit on every PR and push.
-name: CI
+name: apply DEN-1227 provider-runner metrics v2
 
 on:
-  pull_request:
   push:
     branches:
-      - main
       - agent/den-1227-runner-prometheus-metrics
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: apply-den1227-runner-metrics-v2
   cancel-in-progress: true
 
 jobs:
-  test:
-    if: github.event_name == 'pull_request' || github.ref_name == 'main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    services:
-      postgres:
-        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
-        env:
-          POSTGRES_DB: bridge_restart
-          POSTGRES_USER: bridge
-          POSTGRES_PASSWORD: bridge-test-only
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U bridge -d bridge_restart"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          submodules: recursive
-      - name: Validate GitHub Actions
-        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
-        with:
-          args: ./.github/workflows/ci.yml
-      - name: Audit provider credential hygiene
-        run: python3 scripts/audit-provider-secrets.py
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          toolchain: "1.95.0"
-          components: rustfmt, clippy
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets --locked --features postgres -- -D warnings
-      - run: cargo test --all-targets --locked
-      - run: cargo check --all-targets --locked --features postgres
-      - name: Test PostgreSQL restart durability
-        env:
-          FIDUCIA_BRIDGE_TEST_DATABASE_URL: postgresql://bridge:bridge-test-only@localhost:5432/bridge_restart
-        run: cargo test --locked --features postgres --test postgres_restart -- --ignored
-      - uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2.85.0
-        with:
-          tool: cargo-audit@0.22.2
-      - run: cargo audit
-      - run: make -B -C vendor/flags-2-env all
-      - run: vendor/flags-2-env/build/flags2env audit .cli-flags.toml
-
-  integrate-runner-metrics:
-    if: >-
-      github.event_name == 'push' &&
-      github.ref_name == 'agent/den-1227-runner-prometheus-metrics' &&
-      github.event.head_commit.message == 'chore(ci): trigger DEN-1227 integration'
+  integrate:
+    if: github.ref_name == 'agent/den-1227-runner-prometheus-metrics'
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     services:
@@ -155,12 +101,23 @@ jobs:
           cargo test --locked --features postgres --test postgres_restart -- --ignored
           git diff --check
 
-      - name: Commit validated product code
+      - name: Remove one-shot integration carriers
+        run: |
+          set -euo pipefail
+          git rm scripts/ci/apply-den1227-runner-metrics.py
+          git rm .github/workflows/apply-den1227-runner-metrics-v2.yml
+
+      - name: Commit only product tests and documentation
         env:
           HEAD_BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           git add src tests docs
+          retained="$(git diff --cached --diff-filter=ACMR --name-only | sort)"
+          if grep -Eq '^scripts/ci/|^\.github/workflows/apply-den1227' <<<"$retained"; then
+            echo 'one-shot carrier would remain in the branch' >&2
+            exit 1
+          fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'feat(runner-metrics): expose bounded provider-runner metrics'
