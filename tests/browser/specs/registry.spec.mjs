@@ -103,3 +103,24 @@ test('rejects a Linear issue from another team', async ({ page }) => {
     code: 'issue_team_mismatch',
   });
 });
+
+test('rejects non-loopback Host headers', async ({ request }) => {
+  const response = await request.get('/healthz', {
+    headers: {
+      host: 'attacker.example',
+    },
+  });
+
+  expect(response.status()).toBe(421);
+});
+
+test('rejects oversized JSON bodies before policy evaluation', async ({ request }) => {
+  const response = await request.post('/api/resolve', {
+    headers: {
+      'content-type': 'application/json',
+    },
+    data: 'x'.repeat(20_000),
+  });
+
+  expect(response.status()).toBe(413);
+});
