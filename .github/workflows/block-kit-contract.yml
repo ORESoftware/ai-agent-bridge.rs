@@ -62,11 +62,27 @@ jobs:
           npm install --no-audit --no-fund
           npx playwright install --with-deps chromium
 
-      # Advisory: a Slack-side outage or login wall must not fail the build.
+      # Slack's builder 302s anonymous visitors to /workspace-signin, so this
+      # step is inert until a saved workspace session is supplied. Configure the
+      # SLACK_BUILDER_STORAGE_STATE secret (a Playwright storageState JSON) to
+      # enable it; until then the specs skip with an explicit reason.
+      - name: Restore Block Kit Builder session
+        id: session
+        if: ${{ secrets.SLACK_BUILDER_STORAGE_STATE != '' }}
+        env:
+          STORAGE_STATE: ${{ secrets.SLACK_BUILDER_STORAGE_STATE }}
+        run: |
+          umask 077
+          printf '%s' "$STORAGE_STATE" > "$RUNNER_TEMP/slack-builder-state.json"
+          echo "path=$RUNNER_TEMP/slack-builder-state.json" >> "$GITHUB_OUTPUT"
+
+      # Advisory: a Slack-side outage or UI change must not fail the build.
       - name: Render the modal in Block Kit Builder
         id: render
         continue-on-error: true
         working-directory: tests/blockkit
+        env:
+          SLACK_BUILDER_STORAGE_STATE: ${{ steps.session.outputs.path }}
         run: npx playwright test
 
       - name: Upload previews and report
