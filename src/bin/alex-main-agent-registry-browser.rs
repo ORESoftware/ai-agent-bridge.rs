@@ -1,4 +1,10 @@
-use std::{collections::BTreeSet, env, fs, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    env, fs,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use ai_agent_bridge::slack_project_bindings::{
     AgentMode, RegistryError, RequestedCapability, ResolveRequest, SlackProjectRegistry,
@@ -72,15 +78,7 @@ async fn main() -> anyhow::Result<()> {
     let registry_path = env::var_os("ALEX_MAIN_AGENT_REGISTRY_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_REGISTRY_PATH));
-    let registry_metadata = fs::metadata(&registry_path)
-        .with_context(|| format!("failed to inspect registry at {}", registry_path.display()))?;
-    ensure!(registry_metadata.is_file(), "registry path must be a file");
-    ensure!(
-        registry_metadata.len() <= MAX_REGISTRY_BYTES,
-        "registry file exceeds the maximum size"
-    );
-    let registry_bytes = fs::read(&registry_path)
-        .with_context(|| format!("failed to read registry from {}", registry_path.display()))?;
+    let registry_bytes = read_registry(&registry_path)?;
     let registry = SlackProjectRegistry::from_json(&registry_bytes)
         .context("alex-main-agent registry failed validation")?;
 
@@ -116,6 +114,26 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("registry browser probe failed")?;
     Ok(())
+}
+
+fn read_registry(path: &Path) -> anyhow::Result<Vec<u8>> {
+    use std::io::Read as _;
+
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("failed to inspect registry at {}", path.display()))?;
+    ensure!(metadata.is_file(), "registry path must be a file");
+
+    let file = fs::File::open(path)
+        .with_context(|| format!("failed to open registry at {}", path.display()))?;
+    let mut bytes = Vec::with_capacity(metadata.len().min(MAX_REGISTRY_BYTES) as usize);
+    file.take(MAX_REGISTRY_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("failed to read registry from {}", path.display()))?;
+    ensure!(
+        bytes.len() as u64 <= MAX_REGISTRY_BYTES,
+        "registry file exceeds the maximum size"
+    );
+    Ok(bytes)
 }
 
 async fn shutdown_signal() {
