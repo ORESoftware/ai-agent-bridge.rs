@@ -1,5 +1,19 @@
+const MAX_REGISTRY_BYTES: u64 = 1_048_576;
+
 impl App {
     fn new(config: Config) -> Result<Self> {
+        let metadata = fs::metadata(&config.registry_path)
+            .map_err(|_| Error::Config("unable to inspect Slack project registry".into()))?;
+        if !metadata.is_file() {
+            return Err(Error::Config(
+                "Slack project registry path must resolve to a regular file".into(),
+            ));
+        }
+        if metadata.len() > MAX_REGISTRY_BYTES {
+            return Err(Error::Config(
+                "Slack project registry exceeds the maximum size".into(),
+            ));
+        }
         let bytes = fs::read(&config.registry_path)
             .map_err(|_| Error::Config("unable to read Slack project registry".into()))?;
         let registry = SlackProjectRegistry::from_json(&bytes)
