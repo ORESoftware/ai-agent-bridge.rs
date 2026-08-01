@@ -120,6 +120,12 @@ degrade gracefully when a sink is unconfigured.
 | `SLACK_LINEAR_STATE_TODO` | unset | Pending state ID |
 | `SLACK_LINEAR_STATE_STARTED` | unset | Running state ID |
 | `SLACK_LINEAR_STATE_DONE` | unset | Completed state ID |
+| `SLACK_LINEAR_INCLUDE_CHANNEL_CONTEXT` | `false` | Copy the channel transcript into the Linear issue |
+
+`SLACK_LINEAR_INCLUDE_CHANNEL_CONTEXT` is off by default: a Linear project
+generally has a wider audience than the channel the messages came from, so the
+issue carries the task prompt without the transcript unless an operator opts in.
+The model's reply is still posted as a comment either way.
 
 Ordered CSV lists reject duplicates rather than silently collapsing them, since
 menu order is operator-visible.
