@@ -10,3 +10,4 @@ include!("slack_commands_parts/part4.rs");
 include!("slack_commands_parts/part5.rs");
 include!("slack_commands_parts/part6.rs");
 include!("slack_commands_parts/part7.rs");
+include!("slack_commands_parts/part8.rs");
