@@ -44,20 +44,30 @@ test.beforeAll(() => {
   ).toBeGreaterThan(0);
 });
 
+// Verified 2026-08-01: an anonymous GET of the builder 302s to
+// app.slack.com/workspace-signin ("Find your workspace"). There is no public
+// unauthenticated render, so without a session this suite cannot check anything.
+const storageState = process.env.SLACK_BUILDER_STORAGE_STATE;
+const authenticated = Boolean(storageState && existsSync(storageState));
+
+test.skip(
+  !authenticated,
+  'SLACK_BUILDER_STORAGE_STATE is not set — Slack Block Kit Builder requires a workspace session',
+);
+
 for (const { name, view } of cases) {
   test(`${name} modal renders in Slack's Block Kit Builder`, async ({ page }) => {
     const url = `${BUILDER}#${encodeURIComponent(JSON.stringify(view))}`;
     await page.goto(url, { waitUntil: 'domcontentloaded' });
 
-    // The builder gates some surfaces behind a workspace login. That is an
-    // environment fact, not a defect in our payload, so report it as skipped
-    // instead of failing and training people to ignore this job.
-    const loginWall = page.locator(
-      'text=/sign in to|Sign in to your workspace|enter your workspace/i',
-    );
-    if (await loginWall.first().isVisible().catch(() => false)) {
+    // A stale or revoked session lands back on the sign-in page. Fail rather
+    // than skip here: the secret exists, so it is meant to work, and a silent
+    // skip would hide an expired credential indefinitely.
+    if (/workspace-signin|\/signin/.test(page.url())) {
       await page.screenshot({ path: join(artifactDir, `${name}-login-wall.png`) });
-      test.skip(true, 'Block Kit Builder required a workspace login in this environment');
+      throw new Error(
+        `SLACK_BUILDER_STORAGE_STATE did not authenticate; landed on ${page.url()}. Refresh the saved session.`,
+      );
     }
 
     await page.waitForTimeout(2_000);
