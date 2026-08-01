@@ -43,7 +43,7 @@ The audit rejects:
 - mapping the misspelled `#daadalus-fab` channel;
 - removal of the explicit temporary/legacy target markers and their canonical bootstrap issues.
 
-The remote audit reads only public pull-request metadata and one manifest file at each immutable commit. It never reads Slack messages, prompts, Linear bodies, repository source trees, or credentials. Its report contains only stable routing identifiers and digests.
+The remote audit reads only pull-request metadata and one manifest file at each immutable commit. It never reads Slack messages, prompts, Linear bodies, repository source trees, or credentials. Its report contains only stable routing identifiers and digests.
 
 ## Commands
 
@@ -58,10 +58,10 @@ python3 scripts/audit_alex_main_agent_manifests.py \
   --report artifacts/alex-main-agent-manifest-audit.json
 ```
 
-Read-only remote verification:
+Read-only remote verification with the deliberately provisioned cross-organization credential:
 
 ```sh
-ALEX_MAIN_AGENT_MANIFEST_AUDIT_TOKEN="${ALEX_MAIN_AGENT_MANIFEST_AUDIT_TOKEN:-}" \
+GITHUB_TOKEN="${ALEX_MAIN_AGENT_MANIFEST_AUDIT_TOKEN:-}" \
 python3 scripts/audit_alex_main_agent_manifests.py \
   --registry config/alex-main-agent.channels.json \
   --lock config/alex-main-agent.manifests.lock.json \
@@ -69,7 +69,7 @@ python3 scripts/audit_alex_main_agent_manifests.py \
   --remote
 ```
 
-The audit is unauthenticated by default because a repository-scoped `GITHUB_TOKEN` can return `404` for unrelated organizations. The optional `ALEX_MAIN_AGENT_MANIFEST_AUDIT_TOKEN` is reserved for a deliberately provisioned read-only cross-organization credential; it is never printed or included in the report. The current public-repository audit uses 26 requests, below GitHub’s unauthenticated hourly limit.
+The workflow does not reuse its repository-scoped `GITHUB_TOKEN`: several locked repositories are outside the current installation boundary and correctly return `404`. Configure the `ALEX_MAIN_AGENT_MANIFEST_AUDIT_TOKEN` Actions secret with read-only metadata, contents, and pull-request access across all thirteen repositories. Until that credential exists, CI records the remote audit as `blocked` while still enforcing the full offline schema, digest, mutation, and central-registry checks. The credential is never printed or included in the report.
 
 ## Promotion procedure
 
@@ -82,4 +82,4 @@ When a project routing pull request changes:
 5. Preserve the same entry after merge by changing `expected_state` to `merged`; do not delete provenance merely because the project manifest reached its default branch.
 6. Update temporary-target entries only after the canonical repository exists and has its own reviewed routing manifest.
 
-A green drift audit is configuration evidence only. It does not prove Slack deployment, provider execution, Linear lifecycle projection, GitHub write authorization, or successful end-to-end work delivery.
+A green offline drift audit is configuration evidence only. It does not prove exact remote head freshness, Slack deployment, provider execution, Linear lifecycle projection, GitHub write authorization, or successful end-to-end work delivery. Production activation remains blocked until the remote audit is verified with the cross-organization read credential.
