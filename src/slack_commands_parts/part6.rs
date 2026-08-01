@@ -93,7 +93,17 @@ async fn command(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -
             )
         }
     };
-    accept(app, request)
+    match app.resolve(&request).await {
+        Ok(_) => accept(app, request),
+        Err(Error::Policy) => ephemeral(
+            StatusCode::FORBIDDEN,
+            "This channel, user, repository, or write scope is not authorized.",
+        ),
+        Err(_) => ephemeral(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The task could not be authorized safely.",
+        ),
+    }
 }
 
 async fn interaction(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> Response {
@@ -108,7 +118,11 @@ async fn interaction(State(app): State<Arc<App>>, headers: HeaderMap, body: Byte
     let Some(request) = request else {
         return json_response(StatusCode::BAD_REQUEST, json!({}));
     };
-    let accepted = accept(app, request);
+    let authorized = app.resolve(&request).await;
+    let accepted = match authorized {
+        Ok(_) => accept(app, request),
+        Err(_) => ephemeral(StatusCode::FORBIDDEN, "The submitted scope is not authorized."),
+    };
     if accepted.status() == StatusCode::OK {
         json_response(StatusCode::OK, json!({}))
     } else {
@@ -163,7 +177,7 @@ async fn dispatch(app: &App, request: &RunRequest) -> Result<()> {
     if app.config.dry_run {
         let response = app
             .client
-            .post(SLACK_POST_MESSAGE_URL)
+            .post(app.config.slack_url("chat.postMessage")?)
             .bearer_auth(&app.config.bot_token)
             .json(&json!({
                 "channel": request.channel_id,
@@ -235,5 +249,19 @@ mod tests {
             Some("DEN-1041".into())
         );
         assert_eq!(find_issue("no issue"), None);
+    }
+
+    #[test]
+    fn slack_api_override_is_loopback_only() {
+        assert_eq!(
+            slack_api_base_url("https://slack.com/api").unwrap(),
+            "https://slack.com/api/"
+        );
+        assert_eq!(
+            slack_api_base_url("http://127.0.0.1:9999/api").unwrap(),
+            "http://127.0.0.1:9999/api/"
+        );
+        assert!(slack_api_base_url("https://attacker.example/api").is_err());
+        assert!(slack_api_base_url("http://slack.com/api").is_err());
     }
 }
