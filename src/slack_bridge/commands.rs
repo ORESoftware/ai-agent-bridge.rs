@@ -899,7 +899,14 @@ async fn process_dispatch(
 
     // Sink 3: a Linear issue in the dedicated agent-task project, so running and
     // pending agent work is visible next to everything else the team tracks.
-    let linear_issue = create_linear_task(&app, &request, &prompt).await;
+    // The transcript is withheld by default — a Linear project generally has a
+    // wider audience than the channel the messages came from.
+    let linear_body = if app.config.linear_include_channel_context {
+        prompt.clone()
+    } else {
+        compose_prompt(&request, None)
+    };
+    let linear_issue = create_linear_task(&app, &request, &linear_body).await;
 
     // Sink 4: the bridge workflow that actually performs the work.
     let workflow_id = match create_single_agent_workflow(&app, &request, &prompt).await {

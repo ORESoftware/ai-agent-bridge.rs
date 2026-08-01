@@ -338,6 +338,7 @@ impl SlackConfig {
             linear_state_todo,
             linear_state_started,
             linear_state_done,
+            linear_include_channel_context,
         })
     }
 
@@ -1676,6 +1677,7 @@ mod tests {
             linear_state_todo: None,
             linear_state_started: None,
             linear_state_done: None,
+            linear_include_channel_context: false,
         }
     }
 
