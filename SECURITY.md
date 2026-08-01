@@ -71,7 +71,9 @@ Every pull request and push to `main` runs, and must pass:
 - `flags2env audit .cli-flags.toml` — CLI/config surface audit;
 - `actionlint` on the workflow definitions.
 
-Dependabot raises weekly Cargo, GitHub Actions, and Docker updates.
+Dependabot raises weekly Cargo, GitHub Actions, and Docker **version** updates per [`.github/dependabot.yml`](.github/dependabot.yml). Dependabot **security** updates are a separate repository setting and are currently disabled, so an advisory against a pinned dependency is caught by the `cargo audit` gate above rather than by an automatic Dependabot pull request.
+
+Secret scanning and push protection are enabled on this repository.
 
 `cargo audit` carries one documented exception, recorded in `.cargo/audit.toml` and explained under "Security advisories" in the [README](README.md): `rsa` 0.9.x (RUSTSEC-2023-0071) remains only as unreachable `sqlx-mysql` metadata in `Cargo.lock`, since the optional store enables PostgreSQL only. Re-run `cargo audit` on dependency bumps so a newly reachable advisory still fails the gate.
 
