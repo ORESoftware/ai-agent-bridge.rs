@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod tests {
+mod ingress_security_tests {
     use super::*;
     use axum::http::HeaderValue;
 
