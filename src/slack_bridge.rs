@@ -434,6 +434,46 @@ fn optional_csv_set(key: &str) -> AdapterResult<BTreeSet<String>> {
     Ok(values)
 }
 
+/// Ordered variant of `optional_csv_set`. Slash-command menus render in the
+/// order an operator configured, so these lists keep their order and reject
+/// duplicates instead of silently collapsing them.
+fn optional_csv_list(key: &str) -> AdapterResult<Option<Vec<String>>> {
+    let Some(raw) = env_opt(key) else {
+        return Ok(None);
+    };
+    let mut values = Vec::new();
+    for item in raw.split(',') {
+        let item = normalize_identifier(key, item)?;
+        if values.contains(&item) {
+            return Err(AdapterError::Configuration(format!(
+                "{key} contains a duplicate entry"
+            )));
+        }
+        values.push(item);
+    }
+    if values.is_empty() {
+        return Err(AdapterError::Configuration(format!(
+            "{key} must contain at least one entry"
+        )));
+    }
+    Ok(Some(values))
+}
+
+fn validate_slash_command(name: &str, value: &str) -> AdapterResult<String> {
+    let value = value.trim();
+    if !value.starts_with('/')
+        || value.len() < 2
+        || value.len() > MAX_PREFIX_BYTES
+        || value.chars().any(char::is_whitespace)
+        || value.chars().any(char::is_control)
+    {
+        return Err(AdapterError::Configuration(format!(
+            "{name} must be a single token beginning with '/'"
+        )));
+    }
+    Ok(value.to_string())
+}
+
 fn normalize_identifier(name: &str, value: &str) -> AdapterResult<String> {
     let value = value.trim();
     if value.is_empty() || value.len() > MAX_IDENTIFIER_BYTES || value.chars().any(char::is_control)
