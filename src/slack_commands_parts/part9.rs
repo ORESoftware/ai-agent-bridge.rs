@@ -1,8 +1,6 @@
 const SLACK_ACK_DEADLINE: Duration = Duration::from_millis(2_500);
 const EXPECTED_APP_ID_ENV: &str = "SLACK_EXPECTED_APP_ID";
 const EXPECTED_TEAM_ID_ENV: &str = "SLACK_EXPECTED_TEAM_ID";
-const INSTALLED_APP_ID: &str = "A0BMBAMM5NJ";
-const INSTALLED_TEAM_ID: &str = "T01B3C83PMK";
 
 fn configured_slack_identity(config: &Config) -> Result<Option<(String, String)>> {
     let app_id = env_opt(EXPECTED_APP_ID_ENV);
@@ -66,6 +64,9 @@ fn parse_interaction_envelope(config: &Config, body: &[u8]) -> Result<Interactio
 #[cfg(test)]
 mod installed_app_contract_tests {
     use super::*;
+
+    const INSTALLED_APP_ID: &str = "A0BMBAMM5NJ";
+    const INSTALLED_TEAM_ID: &str = "T01B3C83PMK";
 
     fn loopback_config() -> Config {
         Config {
