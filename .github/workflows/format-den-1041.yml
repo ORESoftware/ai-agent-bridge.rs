@@ -1,9 +1,8 @@
 name: temporary DEN-1041 formatter
 
 on:
-  push:
-    branches:
-      - agent/den-1041-ores-slash-commands
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read
