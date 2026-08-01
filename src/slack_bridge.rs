@@ -316,6 +316,22 @@ impl SlackConfig {
             poll_interval: Duration::from_millis(poll_interval_ms),
             max_body_bytes,
             max_concurrent_workflows,
+            claude_command,
+            openai_command,
+            claude_model_choices,
+            openai_model_choices,
+            target_choices,
+            context_message_default,
+            context_message_max,
+            slack_views_open_url: SLACK_VIEWS_OPEN_URL.to_string(),
+            slack_conversations_history_url: SLACK_CONVERSATIONS_HISTORY_URL.to_string(),
+            broadcast_channel_id,
+            linear_api_key,
+            linear_team_id,
+            linear_project_id,
+            linear_state_todo,
+            linear_state_started,
+            linear_state_done,
         })
     }
 
