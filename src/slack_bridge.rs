@@ -294,6 +294,11 @@ impl SlackConfig {
         let linear_state_done = env_opt("SLACK_LINEAR_STATE_DONE")
             .map(|value| normalize_identifier("SLACK_LINEAR_STATE_DONE", &value))
             .transpose()?;
+        // Copying the channel transcript into a Linear issue moves Slack
+        // conversation into a second system with a different audience. Off
+        // unless an operator opts in.
+        let linear_include_channel_context =
+            env_bool("SLACK_LINEAR_INCLUDE_CHANNEL_CONTEXT", false)?;
 
         Ok(Self {
             host,
