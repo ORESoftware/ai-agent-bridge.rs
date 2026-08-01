@@ -1,21 +1,21 @@
 name: temporary DEN-1041 branch repair
 
 on:
-  push:
-    branches:
-      - agent/den-1041-ores-slash-commands
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: write
 
 jobs:
   repair:
-    if: ${{ !contains(github.event.head_commit.message, 'DEN-1041 apply formatting and env contract') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: true
           submodules: recursive
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
@@ -29,8 +29,7 @@ jobs:
           from pathlib import Path
 
           source = Path('src/slack_commands.rs')
-          text = source.read_text()
-          text = text.replace('path::{Path, PathBuf},', 'path::PathBuf,')
+          text = source.read_text().replace('    path::{Path, PathBuf},\n', '    path::PathBuf,\n')
           source.write_text(text)
 
           flags = Path('.cli-flags.toml')
@@ -118,7 +117,6 @@ help = "Keep Slack slash commands from creating bridge workflows or coordinator 
 '''
           text = text.replace(temporary, '      - run: cargo fmt --all -- --check\n')
           ci.write_text(text)
-
           Path('.github/workflows/format-den-1041.yml').unlink()
           PY
           cargo fmt --all
@@ -131,4 +129,4 @@ help = "Keep Slack slash commands from creating bridge workflows or coordinator 
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add src/slack_commands.rs .cli-flags.toml .github/workflows/ci.yml .github/workflows/format-den-1041.yml
           git commit -m 'DEN-1041 apply formatting and env contract'
-          git push origin HEAD:agent/den-1041-ores-slash-commands
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
