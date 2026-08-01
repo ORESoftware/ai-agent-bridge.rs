@@ -99,15 +99,31 @@ jobs:
 
       - name: Report advisory outcome
         if: always()
+        env:
+          HAVE_SESSION: ${{ steps.session.outputs.path != '' }}
+          RENDER_OUTCOME: ${{ steps.render.outcome }}
         run: |
-          if [ "${{ steps.render.outcome }}" = "success" ]; then
-            echo "Block Kit Builder rendered both modals with no payload errors." >> "$GITHUB_STEP_SUMMARY"
-          else
-            {
-              echo "### Block Kit contract did not pass"
+          {
+            echo "### Block Kit contract"
+            echo
+            if [ "$HAVE_SESSION" != "true" ]; then
+              echo "**Not run — no workspace session configured.**"
               echo
-              echo "This job is advisory and does not block merge. Download the"
-              echo "\`block-kit-preview\` artifact to see the rendered dialog and the"
-              echo "Playwright report before deciding whether the payload is at fault."
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+              echo "Slack's Block Kit Builder redirects anonymous visitors to"
+              echo "\`/workspace-signin\`, so the browser specs skipped without"
+              echo "rendering anything. This is *not* a pass. To enable it, save a"
+              echo "Playwright \`storageState\` JSON for a workspace that can open the"
+              echo "builder and set it as the \`SLACK_BUILDER_STORAGE_STATE\` secret."
+              echo
+              echo "The deterministic Block Kit ceilings are enforced regardless, by"
+              echo "\`modal_payload_respects_slack_block_kit_limits\` in the CI workflow."
+            elif [ "$RENDER_OUTCOME" = "success" ]; then
+              echo "Rendered both modals in the builder with no payload errors."
+            else
+              echo "**Did not pass.** This job is advisory and does not block merge."
+              echo
+              echo "Download the \`block-kit-preview\` artifact for the rendered dialog"
+              echo "and Playwright report. A landing on \`/workspace-signin\` means the"
+              echo "saved session expired rather than the payload being malformed."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
