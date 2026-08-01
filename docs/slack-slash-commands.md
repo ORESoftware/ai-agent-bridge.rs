@@ -88,7 +88,7 @@ what was requested and by whom.
 2. **Operations channel** — the same acknowledgement re-posted to
    `SLACK_BROADCAST_CHANNEL_ID`, annotated with the source channel. Skipped when
    unset or identical to the origin.
-3. **Linear** — an issue in `SLACK_LINEAR_PROJECT_ID` holding the full composed
+3. **Linear** — an issue in `SLACK_LINEAR_PROJECT_ID` holding the task
    prompt, moved `Todo → In Progress → Done` as the run progresses, with the
    model's output added as a comment. Skipped entirely when Linear is unset.
 4. **Bridge workflow** — a `single` workflow with `worker_count=1` carrying the
