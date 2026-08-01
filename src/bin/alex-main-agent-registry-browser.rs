@@ -242,9 +242,7 @@ async fn resolve(State(state): State<ProbeState>, Json(input): Json<ResolveInput
     }
 }
 
-fn registry_error_response(
-    error: &RegistryError,
-) -> (StatusCode, &'static str, &'static str) {
+fn registry_error_response(error: &RegistryError) -> (StatusCode, &'static str, &'static str) {
     match error {
         RegistryError::UnmappedChannel => (
             StatusCode::NOT_FOUND,
