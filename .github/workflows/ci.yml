@@ -1,5 +1,5 @@
-# CI pipeline: secret hygiene, formatting, clippy (warnings as errors), tests, a
-# postgres-feature check, and a flags-2-env config audit on every PR and push.
+# CI pipeline: secret hygiene, formatting, clippy (warnings as errors), tests,
+# postgres durability, browser automation, and flags-2-env audits on every PR.
 name: CI
 
 on:
@@ -61,3 +61,69 @@ jobs:
       - run: cargo audit
       - run: make -B -C vendor/flags-2-env all
       - run: vendor/flags-2-env/build/flags2env audit .cli-flags.toml
+
+  browser-registry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: "1.95.0"
+      - name: Verify Node runtime
+        run: |
+          node --version
+          npm --version
+      - name: Build loopback registry probe
+        run: cargo build --locked --bin alex-main-agent-registry-browser
+      - name: Install pinned browser test dependency
+        working-directory: tests/browser
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Install Chromium
+        working-directory: tests/browser
+        run: npx playwright install --with-deps chromium
+      - name: Exercise registry policy through Chromium
+        env:
+          ALEX_MAIN_AGENT_PROBE_ADDR: 127.0.0.1:8160
+          ALEX_MAIN_AGENT_PROBE_URL: http://127.0.0.1:8160
+          ALEX_MAIN_AGENT_REGISTRY_PATH: ${{ github.workspace }}/config/alex-main-agent.channels.json
+        run: |
+          set -euo pipefail
+          probe_log="${RUNNER_TEMP}/alex-main-agent-registry-probe.log"
+          health_json="${RUNNER_TEMP}/alex-main-agent-health.json"
+
+          target/debug/alex-main-agent-registry-browser >"${probe_log}" 2>&1 &
+          probe_pid=$!
+          cleanup() {
+            status=$?
+            kill "${probe_pid}" 2>/dev/null || true
+            wait "${probe_pid}" 2>/dev/null || true
+            if [ "${status}" -ne 0 ]; then
+              cat "${probe_log}"
+            fi
+            return "${status}"
+          }
+          trap cleanup EXIT
+
+          ready=0
+          for _attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error \
+              "${ALEX_MAIN_AGENT_PROBE_URL}/healthz" >"${health_json}"; then
+              ready=1
+              break
+            fi
+            if ! kill -0 "${probe_pid}" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "${ready}" -ne 1 ]; then
+            cat "${probe_log}"
+            exit 1
+          fi
+          grep --fixed-strings '"bindings":13' "${health_json}"
+          npm --prefix tests/browser test
