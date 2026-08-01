@@ -13,8 +13,9 @@ use std::{
 use serde_json::json;
 
 use super::{
-    build_modal, channel_is_allowed, compose_prompt, parse_form, validate_single_agent_workflow,
-    DispatchRequest, InteractionState, ModalContext, Provider, SlashCommandForm, TaskType,
+    build_modal, channel_is_allowed, compose_prompt, parse_form, render_context,
+    validate_single_agent_workflow, DispatchRequest, HistoryMessage, InteractionState,
+    ModalContext, Provider, SlashCommandForm, TaskType,
 };
 use crate::slack_bridge::{
     validate_slash_command, SlackConfig, WorkflowAssignmentDto, WorkflowPlanDto, WorkflowStatusDto,
@@ -60,6 +61,7 @@ fn config() -> SlackConfig {
         linear_state_todo: None,
         linear_state_started: None,
         linear_state_done: None,
+        linear_include_channel_context: false,
     }
 }
 
@@ -265,6 +267,256 @@ fn single_agent_guard_accepts_only_the_requested_agent() {
     .is_err());
     // No assignment at all.
     assert!(validate_single_agent_workflow(&workflow(&[]), "claude-fable-5").is_err());
+}
+
+// --- channel context selection -------------------------------------------
+
+fn human(ts: &str, user: &str, text: &str) -> HistoryMessage {
+    HistoryMessage {
+        text: text.to_string(),
+        user: user.to_string(),
+        bot_id: String::new(),
+        ts: ts.to_string(),
+        subtype: String::new(),
+    }
+}
+
+fn bot(ts: &str, text: &str) -> HistoryMessage {
+    HistoryMessage {
+        text: text.to_string(),
+        user: String::new(),
+        bot_id: "B1".to_string(),
+        ts: ts.to_string(),
+        subtype: String::new(),
+    }
+}
+
+#[test]
+fn context_excludes_bot_output_to_prevent_feedback() {
+    // Slack returns newest-first. The adapter posts its own acknowledgements and
+    // model replies into this same channel; re-ingesting them would feed the
+    // model its own prior output on the next dispatch.
+    let messages = vec![
+        bot("5.0", "*Agent task dispatched* — claude-fable-5"),
+        human("4.0", "U2", "the deploy is red"),
+        bot("3.0", "alertmanager: CPU high"),
+        human("2.0", "U1", "who is on call?"),
+    ];
+    let rendered = render_context(&messages, 5, None).expect("context");
+
+    assert!(!rendered.contains("Agent task dispatched"));
+    assert!(!rendered.contains("alertmanager"));
+    assert!(rendered.contains("the deploy is red"));
+    assert!(rendered.contains("who is on call?"));
+}
+
+#[test]
+fn context_excludes_the_configured_bot_user() {
+    // A bot posting as a user carries a `user` id rather than a `bot_id`.
+    let messages = vec![
+        human("2.0", "UBOT", "posted by this app"),
+        human("1.0", "U1", "posted by a human"),
+    ];
+    let rendered = render_context(&messages, 5, Some("UBOT")).expect("context");
+
+    assert!(!rendered.contains("posted by this app"));
+    assert!(rendered.contains("posted by a human"));
+}
+
+#[test]
+fn context_is_rendered_oldest_first_with_authors() {
+    let messages = vec![
+        human("3.0", "U3", "third"),
+        human("2.0", "U2", "second"),
+        human("1.0", "U1", "first"),
+    ];
+    let rendered = render_context(&messages, 5, None).expect("context");
+
+    let lines: Vec<&str> = rendered.lines().collect();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0], "[1.0] <@U1>: first");
+    assert_eq!(lines[2], "[3.0] <@U3>: third");
+}
+
+#[test]
+fn context_takes_the_newest_messages_up_to_depth() {
+    let messages = vec![
+        human("4.0", "U4", "newest"),
+        human("3.0", "U3", "newer"),
+        human("2.0", "U2", "older"),
+        human("1.0", "U1", "oldest"),
+    ];
+    let rendered = render_context(&messages, 2, None).expect("context");
+
+    assert!(rendered.contains("newest"));
+    assert!(rendered.contains("newer"));
+    assert!(!rendered.contains("older"));
+    assert!(!rendered.contains("oldest"));
+    // Still oldest-first within the selection.
+    assert!(rendered.find("newer").unwrap() < rendered.find("newest").unwrap());
+}
+
+#[test]
+fn context_depth_counts_humans_not_raw_messages() {
+    // Filtering happens before the depth cut, so interleaved bot noise cannot
+    // starve the transcript down to nothing.
+    let messages = vec![
+        bot("6.0", "noise"),
+        human("5.0", "U5", "keep me"),
+        bot("4.0", "noise"),
+        human("3.0", "U3", "keep me too"),
+        bot("2.0", "noise"),
+        human("1.0", "U1", "and me"),
+    ];
+    let rendered = render_context(&messages, 3, None).expect("context");
+
+    assert_eq!(rendered.lines().count(), 3);
+    assert!(!rendered.contains("noise"));
+}
+
+#[test]
+fn context_skips_tombstones_blank_text_and_authorless_messages() {
+    let mut joined = human("3.0", "U3", "has joined the channel");
+    joined.subtype = "channel_join".to_string();
+    let blank = human("2.0", "U2", "   ");
+    let authorless = HistoryMessage {
+        text: "no author".to_string(),
+        user: String::new(),
+        bot_id: String::new(),
+        ts: "1.5".to_string(),
+        subtype: String::new(),
+    };
+    let messages = vec![joined, blank, authorless, human("1.0", "U1", "real")];
+
+    let rendered = render_context(&messages, 5, None).expect("context");
+    assert_eq!(rendered, "[1.0] <@U1>: real");
+}
+
+#[test]
+fn context_is_none_when_nothing_survives_the_filter() {
+    assert_eq!(render_context(&[bot("1.0", "only bots")], 5, None), None);
+    assert_eq!(render_context(&[], 5, None), None);
+    // Depth zero means the member asked for no context at all.
+    assert_eq!(render_context(&[human("1.0", "U1", "hi")], 0, None), None);
+}
+
+#[test]
+fn context_truncates_an_oversized_single_message() {
+    let long = "x".repeat(5_000);
+    let rendered = render_context(&[human("1.0", "U1", &long)], 1, None).expect("context");
+    assert!(rendered.len() < 2_000);
+    assert!(rendered.contains("truncated"));
+}
+
+/// Slack rejects a `views.open` payload that breaches any of these documented
+/// limits, and the member just sees "the dispatch dialog could not be opened".
+/// A long model key or an extra menu entry is an easy way to trip one, so the
+/// ceilings are asserted here rather than discovered in production.
+#[test]
+fn modal_payload_respects_slack_block_kit_limits() {
+    let mut config = config();
+    // Exercise the widest realistic menus, not just the two-entry default.
+    config.claude_model_choices = (0..40).map(|i| format!("claude-variant-{i}")).collect();
+    config.target_choices = (0..40)
+        .map(|i| format!("github.com/org/repo-{i}"))
+        .collect();
+
+    for provider in [Provider::Claude, Provider::OpenAi] {
+        let form = SlashCommandForm {
+            text: "x".repeat(4_000),
+            ..SlashCommandForm::default()
+        };
+        let view = build_modal(&config, provider, &form);
+
+        // Modal titles are capped at 24 characters; Slack hard-rejects longer.
+        let title = view["title"]["text"].as_str().expect("title");
+        assert!(
+            title.chars().count() <= 24,
+            "modal title {title:?} exceeds 24 characters",
+        );
+        for key in ["submit", "close"] {
+            let label = view[key]["text"].as_str().expect(key);
+            assert!(label.chars().count() <= 24, "{key} label too long");
+        }
+
+        // private_metadata is capped at 3000 characters.
+        let metadata = view["private_metadata"].as_str().expect("metadata");
+        assert!(metadata.len() <= 3_000, "private_metadata too large");
+
+        let blocks = view["blocks"].as_array().expect("blocks");
+        assert!(blocks.len() <= 100, "a view accepts at most 100 blocks");
+
+        for block in blocks {
+            let block_id = block["block_id"].as_str().expect("block_id");
+            assert!(block_id.len() <= 255, "block_id too long: {block_id}");
+
+            let element = &block["element"];
+            let action_id = element["action_id"].as_str().expect("action_id");
+            assert!(action_id.len() <= 255, "action_id too long");
+
+            if let Some(max_length) = element["max_length"].as_u64() {
+                assert!(max_length <= 3_000, "plain_text_input max_length too large");
+            }
+            if let Some(initial) = element["initial_value"].as_str() {
+                // The prompt is prefilled from arbitrary slash-command text.
+                assert!(
+                    initial.chars().count() <= 3_000,
+                    "initial_value must be truncated before Slack sees it",
+                );
+            }
+            if let Some(options) = element["options"].as_array() {
+                assert!(!options.is_empty(), "{block_id} has an empty menu");
+                assert!(options.len() <= 100, "{block_id} exceeds 100 options");
+                for option in options {
+                    let text = option["text"]["text"].as_str().expect("option text");
+                    let value = option["value"].as_str().expect("option value");
+                    assert!(!text.is_empty(), "{block_id} has a blank option label");
+                    assert!(text.chars().count() <= 75, "option label too long: {text}");
+                    assert!(value.len() <= 150, "option value too long: {value}");
+                }
+                // An initial_option Slack cannot find in `options` is rejected.
+                if let Some(initial) = element.get("initial_option") {
+                    assert!(
+                        options.contains(initial),
+                        "{block_id} preselects an option that is not in its menu",
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Writes the exact modal payload the adapter would hand to `views.open` so the
+/// Block Kit browser contract check renders the real thing rather than a
+/// hand-maintained copy that can drift away from the code.
+#[test]
+fn emits_block_kit_fixtures_for_the_browser_contract() {
+    use std::{fs, path::Path};
+
+    let config = config();
+    let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/blockkit");
+    fs::create_dir_all(&out).expect("fixture directory");
+
+    for (provider, name) in [
+        (Provider::Claude, "my-claude"),
+        (Provider::OpenAi, "my-chatgpt"),
+    ] {
+        let form = SlashCommandForm {
+            command: format!("/{name}"),
+            text: "harden the cron canary rollout".to_string(),
+            team_id: "T1".to_string(),
+            channel_id: "C1".to_string(),
+            channel_name: "eng".to_string(),
+            user_id: "U1".to_string(),
+            trigger_id: "abc.def".to_string(),
+        };
+        let view = build_modal(&config, provider, &form);
+        let rendered = serde_json::to_string_pretty(&view).expect("serialize view");
+        fs::write(out.join(format!("{name}.json")), rendered).expect("write fixture");
+    }
+
+    assert!(out.join("my-claude.json").exists());
+    assert!(out.join("my-chatgpt.json").exists());
 }
 
 #[test]

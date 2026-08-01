@@ -58,6 +58,18 @@ leaves, and other subtyped tombstones are dropped. Each message is capped at
 1500 bytes and the whole block at 12000 bytes; the composed prompt is then
 capped at the adapter's existing `MAX_PROMPT_BYTES`.
 
+**Bot output is excluded entirely** — messages carrying a `bot_id`, messages from
+`SLACK_BOT_USER_ID`, and messages with no author. This adapter posts its own
+acknowledgements and model replies into the same channel, so including them would
+feed the model its own prior output on every later dispatch, and would let any
+other integration in the channel (alerting, webhooks, CI bots) plant text
+straight into an agent prompt. The Events path already refuses to *act* on bot
+messages for this reason; context must not reintroduce them by the back door.
+
+Filtering happens before the depth cut, so the adapter over-fetches (4× the
+requested depth, capped at 100) and a chatty channel still yields the full number
+of human messages the member asked for.
+
 Set `context_depth` to *No channel context* — or `SLACK_CONTEXT_MESSAGE_DEFAULT=0`
 — to disable it. `SLACK_CONTEXT_MESSAGE_MAX` hard-caps what any member can pick.
 
@@ -76,7 +88,7 @@ what was requested and by whom.
 2. **Operations channel** — the same acknowledgement re-posted to
    `SLACK_BROADCAST_CHANNEL_ID`, annotated with the source channel. Skipped when
    unset or identical to the origin.
-3. **Linear** — an issue in `SLACK_LINEAR_PROJECT_ID` holding the full composed
+3. **Linear** — an issue in `SLACK_LINEAR_PROJECT_ID` holding the task
    prompt, moved `Todo → In Progress → Done` as the run progresses, with the
    model's output added as a comment. Skipped entirely when Linear is unset.
 4. **Bridge workflow** — a `single` workflow with `worker_count=1` carrying the
@@ -108,6 +120,12 @@ degrade gracefully when a sink is unconfigured.
 | `SLACK_LINEAR_STATE_TODO` | unset | Pending state ID |
 | `SLACK_LINEAR_STATE_STARTED` | unset | Running state ID |
 | `SLACK_LINEAR_STATE_DONE` | unset | Completed state ID |
+| `SLACK_LINEAR_INCLUDE_CHANNEL_CONTEXT` | `false` | Copy the channel transcript into the Linear issue |
+
+`SLACK_LINEAR_INCLUDE_CHANNEL_CONTEXT` is off by default: a Linear project
+generally has a wider audience than the channel the messages came from, so the
+issue carries the task prompt without the transcript unless an operator opts in.
+The model's reply is still posted as a comment either way.
 
 Ordered CSV lists reject duplicates rather than silently collapsing them, since
 menu order is operator-visible.
@@ -133,6 +151,33 @@ Slack, or Linear.
 Follow the same activation sequence as the dual-model path before setting
 `SLACK_BRIDGE_DRY_RUN=false`, and add one extra step: confirm the Linear sink
 writes into a dedicated agent-task project rather than a delivery project.
+
+## Testing the dialog
+
+A malformed `views.open` payload surfaces to a member only as "the dispatch
+dialog could not be opened", so the modal is checked at two levels.
+
+**Gating, offline** — `modal_payload_respects_slack_block_kit_limits` builds both
+modals with deliberately wide menus (40 models, 40 targets, a 4000-character
+prefill) and asserts Slack's documented ceilings: modal title ≤ 24 characters,
+`private_metadata` ≤ 3000, ≤ 100 blocks, `block_id`/`action_id` ≤ 255,
+`plain_text_input.max_length` ≤ 3000, ≤ 100 options per menu, option labels ≤ 75
+characters, option values ≤ 150, and every `initial_option` actually present in
+its own `options` list. This runs in the normal CI workflow.
+
+**Advisory, browser** — `.github/workflows/block-kit-contract.yml` renders the
+real payload in Slack's Block Kit Builder with Playwright and uploads a
+screenshot. The fixtures come from `emits_block_kit_fixtures_for_the_browser
+_contract`, which serialises the output of the same `build_modal()` the adapter
+calls, so the browser check cannot drift from what ships.
+
+That job never gates a merge, and it is **inert without credentials**: an
+anonymous request to the builder redirects to `app.slack.com/workspace-signin`.
+Save a Playwright `storageState` JSON for a workspace that can open the builder
+and set it as the `SLACK_BUILDER_STORAGE_STATE` secret to enable it. Until then
+the specs skip with an explicit reason and the job summary says so rather than
+implying a pass. If the secret is present but the session has expired, the specs
+*fail* instead of skipping, so a stale credential cannot hide indefinitely.
 
 ## Failure behavior
 

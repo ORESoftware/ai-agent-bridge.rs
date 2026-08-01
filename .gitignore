@@ -28,3 +28,10 @@ tmp/
 *.pdb
 .cargo-target-*/
 **/.gradle/
+
+# Playwright browser contract (tests/blockkit) — generated only
+tests/blockkit/node_modules/
+tests/blockkit/artifacts/
+tests/blockkit/playwright-report/
+tests/blockkit/test-results/
+tests/blockkit/package-lock.json

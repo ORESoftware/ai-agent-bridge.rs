@@ -45,6 +45,9 @@ const CALLBACK_ID: &str = "agent_dispatch";
 const MAX_FORM_FIELD_BYTES: usize = 8_192;
 const MAX_CONTEXT_BLOCK_BYTES: usize = 12_000;
 const MAX_SINGLE_CONTEXT_MESSAGE_BYTES: usize = 1_500;
+const CONTEXT_OVERFETCH_FACTOR: usize = 4;
+const MAX_HISTORY_FETCH: usize = 100;
+const MAX_SLACK_POST_ATTEMPTS: u32 = 3;
 const LINEAR_GRAPHQL_URL: &str = "https://api.linear.app/graphql";
 
 /// Which provider family a slash command dispatches to. The bridge only ever
@@ -754,11 +757,18 @@ async fn gather_channel_context(app: &SlackApp, request: &DispatchRequest) -> Op
         return None;
     }
     let token = app.config.bot_token.as_ref()?;
+    // Bot messages are dropped below, so asking for exactly `context_depth`
+    // would return fewer human messages than requested in any channel this bot
+    // is chatty in. Over-fetch and let the filter decide.
+    let fetch = request
+        .context_depth
+        .saturating_mul(CONTEXT_OVERFETCH_FACTOR)
+        .clamp(request.context_depth, MAX_HISTORY_FETCH);
     let url = Url::parse_with_params(
         &app.config.slack_conversations_history_url,
         &[
             ("channel", request.channel_id.as_str()),
-            ("limit", &request.context_depth.to_string()),
+            ("limit", &fetch.to_string()),
         ],
     )
     .ok()?;
@@ -771,31 +781,61 @@ async fn gather_channel_context(app: &SlackApp, request: &DispatchRequest) -> Op
         return None;
     }
 
-    let mut lines = Vec::new();
-    for message in history.messages.iter().rev() {
+    render_context(
+        &history.messages,
+        request.context_depth,
+        app.config.bot_user_id.as_deref(),
+    )
+}
+
+/// Turns a raw `conversations.history` page into the transcript block.
+///
+/// Slack returns newest-first. Bot output is excluded entirely: this adapter
+/// posts its own acknowledgements and model replies into the same channel, so
+/// including them would feed the model its own prior output on the next
+/// dispatch, and would let any other integration in the channel plant text into
+/// an agent prompt. The parent module refuses to *act* on bot messages for the
+/// same reason; context must not reintroduce them by the back door.
+fn render_context(
+    messages: &[HistoryMessage],
+    depth: usize,
+    bot_user_id: Option<&str>,
+) -> Option<String> {
+    if depth == 0 {
+        return None;
+    }
+    let mut selected = Vec::new();
+    for message in messages {
+        if selected.len() == depth {
+            break;
+        }
         // Joins, leaves and other tombstones carry no discussion value.
         if !message.subtype.is_empty() || message.text.trim().is_empty() {
             continue;
         }
-        let author = if !message.user.is_empty() {
-            format!("<@{}>", message.user)
-        } else if !message.bot_id.is_empty() {
-            format!("bot:{}", message.bot_id)
-        } else {
-            "unknown".to_string()
-        };
-        lines.push(format!(
-            "[{}] {}: {}",
+        if !message.bot_id.is_empty() {
+            continue;
+        }
+        if bot_user_id.is_some_and(|bot| bot == message.user) {
+            continue;
+        }
+        if message.user.is_empty() {
+            continue;
+        }
+        selected.push(format!(
+            "[{}] <@{}>: {}",
             message.ts,
-            author,
+            message.user,
             truncate_utf8(message.text.trim(), MAX_SINGLE_CONTEXT_MESSAGE_BYTES)
         ));
     }
 
-    if lines.is_empty() {
+    if selected.is_empty() {
         return None;
     }
-    Some(truncate_utf8(&lines.join("\n"), MAX_CONTEXT_BLOCK_BYTES))
+    // Slack gave newest-first; the model reads oldest-first.
+    selected.reverse();
+    Some(truncate_utf8(&selected.join("\n"), MAX_CONTEXT_BLOCK_BYTES))
 }
 
 fn compose_prompt(request: &DispatchRequest, context: Option<&str>) -> String {
@@ -859,7 +899,14 @@ async fn process_dispatch(
 
     // Sink 3: a Linear issue in the dedicated agent-task project, so running and
     // pending agent work is visible next to everything else the team tracks.
-    let linear_issue = create_linear_task(&app, &request, &prompt).await;
+    // The transcript is withheld by default — a Linear project generally has a
+    // wider audience than the channel the messages came from.
+    let linear_body = if app.config.linear_include_channel_context {
+        prompt.clone()
+    } else {
+        compose_prompt(&request, None)
+    };
+    let linear_issue = create_linear_task(&app, &request, &linear_body).await;
 
     // Sink 4: the bridge workflow that actually performs the work.
     let workflow_id = match create_single_agent_workflow(&app, &request, &prompt).await {
@@ -944,21 +991,47 @@ async fn post_channel_message(
         payload["thread_ts"] = json!(thread_ts);
     }
 
-    let response = app
-        .client
-        .post(&app.config.slack_post_message_url)
-        .bearer_auth(token)
-        .json(&payload)
-        .send()
-        .await
-        .ok()?;
-    let body = read_bounded(response, MAX_REMOTE_RESPONSE_BYTES).await?;
-    let parsed = serde_json::from_slice::<Value>(&body).ok()?;
-    if parsed.get("ok").and_then(Value::as_bool) != Some(true) {
-        warn!("Slack rejected a dispatch message");
-        return None;
+    // A dropped post is not cosmetic here: the first one carries the audit trail
+    // of what was dispatched, and the last one carries the model's answer. Match
+    // the dual-model path and retry a bounded number of times, honouring a
+    // bounded Retry-After so a 429 does not silently lose the reply.
+    for attempt in 0..MAX_SLACK_POST_ATTEMPTS {
+        let response = app
+            .client
+            .post(&app.config.slack_post_message_url)
+            .bearer_auth(token)
+            .json(&payload)
+            .send()
+            .await;
+
+        if let Ok(response) = response {
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(|seconds| seconds.clamp(1, 10));
+            let parsed = read_bounded(response, MAX_REMOTE_RESPONSE_BYTES)
+                .await
+                .and_then(|body| serde_json::from_slice::<Value>(&body).ok());
+
+            if let Some(parsed) = &parsed {
+                if parsed.get("ok").and_then(Value::as_bool) == Some(true) {
+                    return parsed.get("ts").and_then(Value::as_str).map(str::to_string);
+                }
+            }
+            if attempt + 1 < MAX_SLACK_POST_ATTEMPTS {
+                sleep(Duration::from_secs(retry_after.unwrap_or(1))).await;
+                continue;
+            }
+        } else if attempt + 1 < MAX_SLACK_POST_ATTEMPTS {
+            sleep(Duration::from_secs(1)).await;
+            continue;
+        }
     }
-    parsed.get("ts").and_then(Value::as_str).map(str::to_string)
+
+    warn!("Slack rejected a dispatch message");
+    None
 }
 
 fn workflow_payload(request: &DispatchRequest, prompt: &str) -> Value {

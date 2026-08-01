@@ -124,6 +124,7 @@ struct SlackConfig {
     linear_state_todo: Option<String>,
     linear_state_started: Option<String>,
     linear_state_done: Option<String>,
+    linear_include_channel_context: bool,
 }
 
 impl SlackConfig {
@@ -293,6 +294,11 @@ impl SlackConfig {
         let linear_state_done = env_opt("SLACK_LINEAR_STATE_DONE")
             .map(|value| normalize_identifier("SLACK_LINEAR_STATE_DONE", &value))
             .transpose()?;
+        // Copying the channel transcript into a Linear issue moves Slack
+        // conversation into a second system with a different audience. Off
+        // unless an operator opts in.
+        let linear_include_channel_context =
+            env_bool("SLACK_LINEAR_INCLUDE_CHANNEL_CONTEXT", false)?;
 
         Ok(Self {
             host,
@@ -332,6 +338,7 @@ impl SlackConfig {
             linear_state_todo,
             linear_state_started,
             linear_state_done,
+            linear_include_channel_context,
         })
     }
 
@@ -1670,6 +1677,7 @@ mod tests {
             linear_state_todo: None,
             linear_state_started: None,
             linear_state_done: None,
+            linear_include_channel_context: false,
         }
     }
 
