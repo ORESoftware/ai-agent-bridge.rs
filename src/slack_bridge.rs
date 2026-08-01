@@ -41,6 +41,8 @@ use tokio::{
 use tower_http::{catch_panic::CatchPanicLayer, trace::TraceLayer};
 use tracing::{info, info_span, warn, Instrument};
 
+mod commands;
+
 type HmacSha256 = Hmac<Sha256>;
 
 const DEFAULT_HOST: &str = "127.0.0.1";
