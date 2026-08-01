@@ -754,11 +754,18 @@ async fn gather_channel_context(app: &SlackApp, request: &DispatchRequest) -> Op
         return None;
     }
     let token = app.config.bot_token.as_ref()?;
+    // Bot messages are dropped below, so asking for exactly `context_depth`
+    // would return fewer human messages than requested in any channel this bot
+    // is chatty in. Over-fetch and let the filter decide.
+    let fetch = request
+        .context_depth
+        .saturating_mul(CONTEXT_OVERFETCH_FACTOR)
+        .clamp(request.context_depth, MAX_HISTORY_FETCH);
     let url = Url::parse_with_params(
         &app.config.slack_conversations_history_url,
         &[
             ("channel", request.channel_id.as_str()),
-            ("limit", &request.context_depth.to_string()),
+            ("limit", &fetch.to_string()),
         ],
     )
     .ok()?;
@@ -771,31 +778,61 @@ async fn gather_channel_context(app: &SlackApp, request: &DispatchRequest) -> Op
         return None;
     }
 
-    let mut lines = Vec::new();
-    for message in history.messages.iter().rev() {
+    Some(render_context(
+        &history.messages,
+        request.context_depth,
+        app.config.bot_user_id.as_deref(),
+    )?)
+}
+
+/// Turns a raw `conversations.history` page into the transcript block.
+///
+/// Slack returns newest-first. Bot output is excluded entirely: this adapter
+/// posts its own acknowledgements and model replies into the same channel, so
+/// including them would feed the model its own prior output on the next
+/// dispatch, and would let any other integration in the channel plant text into
+/// an agent prompt. The parent module refuses to *act* on bot messages for the
+/// same reason; context must not reintroduce them by the back door.
+fn render_context(
+    messages: &[HistoryMessage],
+    depth: usize,
+    bot_user_id: Option<&str>,
+) -> Option<String> {
+    if depth == 0 {
+        return None;
+    }
+    let mut selected = Vec::new();
+    for message in messages {
+        if selected.len() == depth {
+            break;
+        }
         // Joins, leaves and other tombstones carry no discussion value.
         if !message.subtype.is_empty() || message.text.trim().is_empty() {
             continue;
         }
-        let author = if !message.user.is_empty() {
-            format!("<@{}>", message.user)
-        } else if !message.bot_id.is_empty() {
-            format!("bot:{}", message.bot_id)
-        } else {
-            "unknown".to_string()
-        };
-        lines.push(format!(
-            "[{}] {}: {}",
+        if !message.bot_id.is_empty() {
+            continue;
+        }
+        if bot_user_id.is_some_and(|bot| bot == message.user) {
+            continue;
+        }
+        if message.user.is_empty() {
+            continue;
+        }
+        selected.push(format!(
+            "[{}] <@{}>: {}",
             message.ts,
-            author,
+            message.user,
             truncate_utf8(message.text.trim(), MAX_SINGLE_CONTEXT_MESSAGE_BYTES)
         ));
     }
 
-    if lines.is_empty() {
+    if selected.is_empty() {
         return None;
     }
-    Some(truncate_utf8(&lines.join("\n"), MAX_CONTEXT_BLOCK_BYTES))
+    // Slack gave newest-first; the model reads oldest-first.
+    selected.reverse();
+    Some(truncate_utf8(&selected.join("\n"), MAX_CONTEXT_BLOCK_BYTES))
 }
 
 fn compose_prompt(request: &DispatchRequest, context: Option<&str>) -> String {
