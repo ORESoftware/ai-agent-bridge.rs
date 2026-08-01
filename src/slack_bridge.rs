@@ -224,6 +224,76 @@ impl SlackConfig {
             128,
         )?;
 
+        let claude_command = validate_slash_command(
+            "SLACK_CLAUDE_COMMAND",
+            &env_or("SLACK_CLAUDE_COMMAND", commands::DEFAULT_CLAUDE_COMMAND),
+        )?;
+        let openai_command = validate_slash_command(
+            "SLACK_OPENAI_COMMAND",
+            &env_or("SLACK_OPENAI_COMMAND", commands::DEFAULT_OPENAI_COMMAND),
+        )?;
+        if claude_command == openai_command {
+            return Err(AdapterError::Configuration(
+                "Slack slash commands must be distinct".to_string(),
+            ));
+        }
+
+        // Each command may only ever dispatch keys from its own provider list,
+        // so the two lists must not overlap.
+        let claude_model_choices = optional_csv_list("SLACK_CLAUDE_MODEL_CHOICES")?
+            .unwrap_or_else(|| vec![claude_agent_key.clone()]);
+        let openai_model_choices = optional_csv_list("SLACK_OPENAI_MODEL_CHOICES")?
+            .unwrap_or_else(|| vec![openai_agent_key.clone()]);
+        if claude_model_choices
+            .iter()
+            .any(|key| openai_model_choices.contains(key))
+        {
+            return Err(AdapterError::Configuration(
+                "SLACK_CLAUDE_MODEL_CHOICES and SLACK_OPENAI_MODEL_CHOICES must not overlap"
+                    .to_string(),
+            ));
+        }
+        let target_choices = optional_csv_list("SLACK_TARGET_CHOICES")?.unwrap_or_default();
+
+        let context_message_max = env_usize(
+            "SLACK_CONTEXT_MESSAGE_MAX",
+            commands::MAX_CONTEXT_MESSAGES,
+            0,
+            commands::MAX_CONTEXT_MESSAGES,
+        )?;
+        let context_message_default = env_usize(
+            "SLACK_CONTEXT_MESSAGE_DEFAULT",
+            commands::DEFAULT_CONTEXT_MESSAGES.min(context_message_max),
+            0,
+            context_message_max,
+        )?;
+
+        let broadcast_channel_id = env_opt("SLACK_BROADCAST_CHANNEL_ID")
+            .map(|value| normalize_identifier("SLACK_BROADCAST_CHANNEL_ID", &value))
+            .transpose()?;
+
+        let linear_api_key = env_opt("SLACK_LINEAR_API_KEY");
+        let linear_team_id = env_opt("SLACK_LINEAR_TEAM_ID")
+            .map(|value| normalize_identifier("SLACK_LINEAR_TEAM_ID", &value))
+            .transpose()?;
+        if linear_team_id.is_some() && linear_api_key.is_none() {
+            return Err(AdapterError::Configuration(
+                "SLACK_LINEAR_API_KEY is required when SLACK_LINEAR_TEAM_ID is set".to_string(),
+            ));
+        }
+        let linear_project_id = env_opt("SLACK_LINEAR_PROJECT_ID")
+            .map(|value| normalize_identifier("SLACK_LINEAR_PROJECT_ID", &value))
+            .transpose()?;
+        let linear_state_todo = env_opt("SLACK_LINEAR_STATE_TODO")
+            .map(|value| normalize_identifier("SLACK_LINEAR_STATE_TODO", &value))
+            .transpose()?;
+        let linear_state_started = env_opt("SLACK_LINEAR_STATE_STARTED")
+            .map(|value| normalize_identifier("SLACK_LINEAR_STATE_STARTED", &value))
+            .transpose()?;
+        let linear_state_done = env_opt("SLACK_LINEAR_STATE_DONE")
+            .map(|value| normalize_identifier("SLACK_LINEAR_STATE_DONE", &value))
+            .transpose()?;
+
         Ok(Self {
             host,
             port,
