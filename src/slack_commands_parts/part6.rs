@@ -22,6 +22,8 @@ pub async fn run() -> anyhow::Result<()> {
     let config = Config::from_env().map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let address = std::net::SocketAddr::new(config.host, config.port);
     let app = Arc::new(App::new(config).map_err(|error| anyhow::anyhow!(error.to_string()))?);
+    configured_slack_identity(&app.config)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let listener = TcpListener::bind(address).await?;
     info!(%address, dry_run = app.config.dry_run, "starting ORESoftware Slack commands");
     axum::serve(listener, router(app)).await?;
@@ -45,22 +47,71 @@ async fn health() -> Json<Value> {
     Json(json!({"ok": true}))
 }
 
-async fn ready(State(app): State<Arc<App>>) -> Json<Value> {
-    Json(json!({
-        "ok": true,
-        "dry_run": app.config.dry_run,
-        "default_context_messages": app.config.context_messages
-    }))
+async fn ready(State(app): State<Arc<App>>) -> Response {
+    match configured_slack_identity(&app.config) {
+        Ok(identity) => json_response(
+            StatusCode::OK,
+            json!({
+                "ok": true,
+                "dry_run": app.config.dry_run,
+                "default_context_messages": app.config.context_messages,
+                "installed_app_identity_enforced": identity.is_some()
+            }),
+        ),
+        Err(_) => json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({
+                "ok": false,
+                "error": "installed_slack_app_identity_not_configured"
+            }),
+        ),
+    }
 }
 
-async fn command(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> Response {
+async fn command(
+    State(app): State<Arc<App>>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     if !verify_signature(&app.config, &headers, &body, Utc::now().timestamp()) {
         return ephemeral(StatusCode::UNAUTHORIZED, "Request authentication failed.");
+    }
+    let expected_provider = match uri.path() {
+        "/slack/commands/ores-claude" => Provider::Claude,
+        "/slack/commands/ores-chatgpt" => Provider::Chatgpt,
+        _ => return ephemeral(StatusCode::NOT_FOUND, "Unknown Slack command endpoint."),
+    };
+    match validate_slash_envelope(&app.config, &body, expected_provider) {
+        Ok(()) => {}
+        Err(Error::Config(_)) => {
+            return ephemeral(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "The installed Slack app identity is not configured safely.",
+            )
+        }
+        Err(Error::Policy) => {
+            return ephemeral(
+                StatusCode::FORBIDDEN,
+                "This request did not originate from the installed Slack app and workspace.",
+            )
+        }
+        Err(_) => return ephemeral(StatusCode::BAD_REQUEST, "Invalid slash command payload."),
     }
     let command = match SlashCommand::parse(&body) {
         Ok(command) => command,
         Err(_) => return ephemeral(StatusCode::BAD_REQUEST, "Invalid slash command payload."),
     };
+    match tokio::time::timeout(SLACK_ACK_DEADLINE, handle_command(app, command)).await {
+        Ok(response) => response,
+        Err(_) => ephemeral(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The command could not be acknowledged safely before Slack's deadline.",
+        ),
+    }
+}
+
+async fn handle_command(app: Arc<App>, command: SlashCommand) -> Response {
     if command.text.trim().is_empty() {
         return match app.command_binding(&command).await {
             Ok(binding) => match app.open_modal(&command, &binding).await {
@@ -110,15 +161,30 @@ async fn interaction(State(app): State<Arc<App>>, headers: HeaderMap, body: Byte
     if !verify_signature(&app.config, &headers, &body, Utc::now().timestamp()) {
         return json_response(StatusCode::UNAUTHORIZED, json!({}));
     }
-    let request = parse_form(&body)
-        .ok()
-        .and_then(|form| form.get("payload").cloned())
-        .and_then(|payload| serde_json::from_str::<InteractionPayload>(&payload).ok())
-        .and_then(|payload| RunRequest::interaction(payload).ok());
-    let Some(request) = request else {
-        return json_response(StatusCode::BAD_REQUEST, json!({}));
+    let payload = match parse_interaction_envelope(&app.config, &body) {
+        Ok(payload) => payload,
+        Err(Error::Config(_)) => {
+            return json_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error": "installed_slack_app_identity_not_configured"}),
+            )
+        }
+        Err(Error::Policy) => return json_response(StatusCode::FORBIDDEN, json!({})),
+        Err(_) => return json_response(StatusCode::BAD_REQUEST, json!({})),
     };
-    let authorized = app.resolve(&request).await;
+    let request = match RunRequest::interaction(payload) {
+        Ok(request) => request,
+        Err(_) => return json_response(StatusCode::BAD_REQUEST, json!({})),
+    };
+    let authorized = match tokio::time::timeout(SLACK_ACK_DEADLINE, app.resolve(&request)).await {
+        Ok(result) => result,
+        Err(_) => {
+            return json_response(
+                StatusCode::OK,
+                json!({"response_action": "errors", "errors": {"task": "Authorization did not finish before Slack's acknowledgement deadline."}}),
+            )
+        }
+    };
     let accepted = match authorized {
         Ok(_) => accept(app, request),
         Err(_) => ephemeral(StatusCode::FORBIDDEN, "The submitted scope is not authorized."),
