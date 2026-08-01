@@ -1,0 +1,30 @@
+name: temporary DEN-1041 formatter
+
+on:
+  push:
+    branches:
+      - agent/den-1041-ores-slash-commands
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: "1.95.0"
+          components: rustfmt
+      - run: cargo fmt --all
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: den-1041-formatted-source
+          path: src/slack_commands.rs
+          if-no-files-found: error
+          retention-days: 1
