@@ -1037,6 +1037,38 @@ fn validate_single_agent_workflow(workflow: &WorkflowViewDto, agent_key: &str) -
     Ok(())
 }
 
+/// Reads one workflow back. The parent module's `get_workflow` insists on the
+/// dual-model shape, so slash-command polling needs its own fetch that applies
+/// the single-agent guard instead.
+async fn fetch_single_agent_workflow(
+    app: &SlackApp,
+    workflow_id: &str,
+    agent_key: &str,
+) -> AdapterResult<WorkflowViewDto> {
+    if !valid_event_id(workflow_id) {
+        return Err(AdapterError::Bridge);
+    }
+    let url = Url::parse(&app.config.bridge_url)
+        .and_then(|base| base.join(&format!("workflows/{workflow_id}")))
+        .map_err(|_| AdapterError::Bridge)?;
+    let mut http = app.client.get(url);
+    if let Some(token) = &app.config.bridge_bearer {
+        http = http.bearer_auth(token);
+    }
+    let response = http.send().await.map_err(|_| AdapterError::Bridge)?;
+    let status = response.status();
+    let body = read_bounded(response, MAX_REMOTE_RESPONSE_BYTES)
+        .await
+        .ok_or(AdapterError::Bridge)?;
+    if !status.is_success() {
+        return Err(AdapterError::Bridge);
+    }
+    let parsed =
+        serde_json::from_slice::<WorkflowApiResponse>(&body).map_err(|_| AdapterError::Bridge)?;
+    validate_single_agent_workflow(&parsed.workflow, agent_key)?;
+    Ok(parsed.workflow)
+}
+
 async fn await_submission(
     app: &SlackApp,
     request: &DispatchRequest,
@@ -1044,7 +1076,8 @@ async fn await_submission(
 ) -> Option<String> {
     let deadline = Instant::now() + app.config.workflow_timeout;
     while Instant::now() < deadline {
-        if let Ok(workflow) = app.get_workflow(workflow_id).await {
+        if let Ok(workflow) = fetch_single_agent_workflow(app, workflow_id, &request.agent_key).await
+        {
             if let Some(submission) = workflow
                 .submissions
                 .iter()
