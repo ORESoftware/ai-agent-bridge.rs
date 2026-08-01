@@ -252,11 +252,11 @@ fn prompt_omits_context_section_when_depth_is_zero() {
 
 #[test]
 fn single_agent_guard_accepts_only_the_requested_agent() {
-    assert!(validate_single_agent_workflow(&workflow(&["claude-fable-5"]), "claude-fable-5").is_ok());
-    // Routed to the wrong agent.
     assert!(
-        validate_single_agent_workflow(&workflow(&["gpt-5.6-sol"]), "claude-fable-5").is_err()
+        validate_single_agent_workflow(&workflow(&["claude-fable-5"]), "claude-fable-5").is_ok()
     );
+    // Routed to the wrong agent.
+    assert!(validate_single_agent_workflow(&workflow(&["gpt-5.6-sol"]), "claude-fable-5").is_err());
     // Fanned out beyond the single requested agent.
     assert!(validate_single_agent_workflow(
         &workflow(&["claude-fable-5", "gpt-5.6-sol"]),

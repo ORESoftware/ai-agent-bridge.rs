@@ -763,13 +763,7 @@ async fn gather_channel_context(app: &SlackApp, request: &DispatchRequest) -> Op
     )
     .ok()?;
 
-    let response = app
-        .client
-        .get(url)
-        .bearer_auth(token)
-        .send()
-        .await
-        .ok()?;
+    let response = app.client.get(url).bearer_auth(token).send().await.ok()?;
     let body = read_bounded(response, MAX_REMOTE_RESPONSE_BYTES).await?;
     let history = serde_json::from_slice::<HistoryResponse>(&body).ok()?;
     if !history.ok {
@@ -964,10 +958,7 @@ async fn post_channel_message(
         warn!("Slack rejected a dispatch message");
         return None;
     }
-    parsed
-        .get("ts")
-        .and_then(Value::as_str)
-        .map(str::to_string)
+    parsed.get("ts").and_then(Value::as_str).map(str::to_string)
 }
 
 fn workflow_payload(request: &DispatchRequest, prompt: &str) -> Value {
@@ -1004,7 +995,10 @@ async fn create_single_agent_workflow(
     let url = Url::parse(&app.config.bridge_url)
         .and_then(|base| base.join("workflows"))
         .map_err(|_| AdapterError::Bridge)?;
-    let mut http = app.client.post(url).json(&workflow_payload(request, prompt));
+    let mut http = app
+        .client
+        .post(url)
+        .json(&workflow_payload(request, prompt));
     if let Some(token) = &app.config.bridge_bearer {
         http = http.bearer_auth(token);
     }
@@ -1025,13 +1019,14 @@ async fn create_single_agent_workflow(
 /// The dual-model path insists on exactly two assignments; a slash command must
 /// instead see exactly the one agent the member picked. Anything else means the
 /// bridge routed the work somewhere unintended, which is treated as an error.
-fn validate_single_agent_workflow(workflow: &WorkflowViewDto, agent_key: &str) -> AdapterResult<()> {
+fn validate_single_agent_workflow(
+    workflow: &WorkflowViewDto,
+    agent_key: &str,
+) -> AdapterResult<()> {
     if !valid_event_id(&workflow.plan.id) {
         return Err(AdapterError::Bridge);
     }
-    if workflow.plan.assignments.len() != 1
-        || workflow.plan.assignments[0].agent_key != agent_key
-    {
+    if workflow.plan.assignments.len() != 1 || workflow.plan.assignments[0].agent_key != agent_key {
         return Err(AdapterError::Bridge);
     }
     Ok(())
@@ -1076,7 +1071,8 @@ async fn await_submission(
 ) -> Option<String> {
     let deadline = Instant::now() + app.config.workflow_timeout;
     while Instant::now() < deadline {
-        if let Ok(workflow) = fetch_single_agent_workflow(app, workflow_id, &request.agent_key).await
+        if let Ok(workflow) =
+            fetch_single_agent_workflow(app, workflow_id, &request.agent_key).await
         {
             if let Some(submission) = workflow
                 .submissions
@@ -1167,10 +1163,7 @@ async fn create_linear_task(
     )
     .await?;
 
-    let issue = response
-        .get("data")?
-        .get("issueCreate")?
-        .get("issue")?;
+    let issue = response.get("data")?.get("issueCreate")?.get("issue")?;
     let id = issue.get("id")?.as_str()?.to_string();
     emit_metric("dispatch_linear_created");
     Some(id)
