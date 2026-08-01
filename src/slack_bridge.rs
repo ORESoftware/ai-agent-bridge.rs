@@ -107,6 +107,23 @@ struct SlackConfig {
     poll_interval: Duration,
     max_body_bytes: usize,
     max_concurrent_workflows: usize,
+    // Slash-command surface (`/my-claude`, `/my-chatgpt`). See `commands`.
+    claude_command: String,
+    openai_command: String,
+    claude_model_choices: Vec<String>,
+    openai_model_choices: Vec<String>,
+    target_choices: Vec<String>,
+    context_message_default: usize,
+    context_message_max: usize,
+    slack_views_open_url: String,
+    slack_conversations_history_url: String,
+    broadcast_channel_id: Option<String>,
+    linear_api_key: Option<String>,
+    linear_team_id: Option<String>,
+    linear_project_id: Option<String>,
+    linear_state_todo: Option<String>,
+    linear_state_started: Option<String>,
+    linear_state_done: Option<String>,
 }
 
 impl SlackConfig {
