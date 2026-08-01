@@ -27,5 +27,6 @@ export default defineConfig({
     video: 'off',
     // Slack's builder is heavy; give navigation room without hanging CI.
     navigationTimeout: 45_000,
+    ...(authenticated ? { storageState } : {}),
   },
 });
