@@ -33,11 +33,10 @@ fn observable_task_created_event(
         Provider::Claude => "anthropic",
         Provider::Chatgpt => "openai",
     };
-    let idempotency_key = format!("slack-task-created:{}", request.run_id);
     let event = json!({
         "schema_version": OBSERVABLE_EVENT_SCHEMA_VERSION,
         "event_id": deterministic_uuid("slack-task-created-event", &request.run_id),
-        "idempotency_key": idempotency_key,
+        "idempotency_key": format!("slack-task-created:{}", request.run_id),
         "occurred_at": request.occurred_at,
         "source": {
             "agent_id": agent,
@@ -135,29 +134,28 @@ mod observable_event_contract_tests {
     }
 
     fn resolved() -> crate::slack_project_bindings::ResolvedProjectContext {
-        serde_json::from_value(json!({
-            "workspace_id": "T-private",
-            "channel_id": "C-private",
-            "linear_team_id": "team-1",
-            "linear_project_id": "project-1",
-            "repository": "ORESoftware/ai-agent-bridge.rs",
-            "agent_mode": "chatgpt",
-            "capability": "repository_write",
-            "write_policy": "draft_pull_request",
-            "budget_policy": {
-                "max_concurrent_runs": 1,
-                "max_runtime_seconds": 900,
-                "max_input_tokens": 10000,
-                "max_output_tokens": 10000,
-                "max_spend_cents": 500,
-                "max_retries": 1
+        crate::slack_project_bindings::ResolvedProjectContext {
+            workspace_id: "T-private".into(),
+            channel_id: "C-private".into(),
+            linear_team_id: "team-1".into(),
+            linear_team_key: "DEN".into(),
+            linear_project_id: "project-1".into(),
+            repository: "ORESoftware/ai-agent-bridge.rs".into(),
+            agent_mode: AgentMode::Chatgpt,
+            write_policy: WritePolicy::DraftPullRequest,
+            budget_policy: crate::slack_project_bindings::BudgetPolicy {
+                max_concurrent_runs: 1,
+                max_runtime_secs: 900,
+                max_tokens: 20_000,
+                max_spend_cents: 500,
+                max_retries: 1,
             },
-            "issue": {
-                "identifier": "DEN-1061",
-                "team_key": "DEN"
-            }
-        }))
-        .expect("valid resolved project fixture")
+            issue: Some(crate::slack_project_bindings::LinearIssueRef {
+                identifier: "DEN-1061".into(),
+                team_key: "DEN".into(),
+                number: 1061,
+            }),
+        }
     }
 
     #[test]
