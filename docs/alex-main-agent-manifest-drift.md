@@ -61,7 +61,7 @@ python3 scripts/audit_alex_main_agent_manifests.py \
 Read-only remote verification:
 
 ```sh
-GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
+ALEX_MAIN_AGENT_MANIFEST_AUDIT_TOKEN="${ALEX_MAIN_AGENT_MANIFEST_AUDIT_TOKEN:-}" \
 python3 scripts/audit_alex_main_agent_manifests.py \
   --registry config/alex-main-agent.channels.json \
   --lock config/alex-main-agent.manifests.lock.json \
@@ -69,7 +69,7 @@ python3 scripts/audit_alex_main_agent_manifests.py \
   --remote
 ```
 
-The token is optional for public repositories but avoids the unauthenticated API limit. It is read from the environment and is never printed or included in the report.
+The audit is unauthenticated by default because a repository-scoped `GITHUB_TOKEN` can return `404` for unrelated organizations. The optional `ALEX_MAIN_AGENT_MANIFEST_AUDIT_TOKEN` is reserved for a deliberately provisioned read-only cross-organization credential; it is never printed or included in the report. The current public-repository audit uses 26 requests, below GitHub’s unauthenticated hourly limit.
 
 ## Promotion procedure
 
