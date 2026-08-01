@@ -27,6 +27,10 @@ path = "src/bin/fiducia-ai-agent-runner.rs"
 name = "fiducia-slack-bridge"
 path = "src/bin/fiducia-slack-bridge.rs"
 
+[[bin]]
+name = "fiducia-slack-command"
+path = "src/bin/fiducia-slack-command.rs"
+
 [lib]
 name = "ai_agent_bridge"
 path = "src/lib.rs"
