@@ -20,7 +20,10 @@ impl Client {
     async fn connect(addr: std::net::SocketAddr) -> Self {
         let stream = TcpStream::connect(addr).await.unwrap();
         let (r, w) = stream.into_split();
-        let mut client = Self { reader: BufReader::new(r), writer: w };
+        let mut client = Self {
+            reader: BufReader::new(r),
+            writer: w,
+        };
         // Consume the server hello.
         let hello = client.recv().await;
         assert_eq!(hello["hello"], "ai-agent-bridge");
@@ -64,13 +67,15 @@ async fn request_response_round_trip() {
     let addr = common::spawn_tcp(common::state()).await;
     let mut a = Client::connect(addr).await;
 
-    a.send(json!({ "op": "register", "agent_key": "claude", "kind": "claude" })).await;
+    a.send(json!({ "op": "register", "agent_key": "claude", "kind": "claude" }))
+        .await;
     assert_eq!(a.recv().await["agent"]["agent_key"], "claude");
 
     a.send(json!({ "op": "create_channel", "slug": "ops", "topic": "cluster operations", "created_by": "claude" })).await;
     assert_eq!(a.recv().await["channel"]["slug"], "ops");
 
-    a.send(json!({ "op": "post", "channel": "ops", "from": "claude", "content": "first" })).await;
+    a.send(json!({ "op": "post", "channel": "ops", "from": "claude", "content": "first" }))
+        .await;
     let posted = a.recv().await;
     assert_eq!(posted["ok"], true);
     assert_eq!(posted["message"]["seq"], 1);
@@ -88,13 +93,20 @@ async fn multi_agent_streaming_group_chat() {
     let mut claude = Client::connect(addr).await;
     claude.send(json!({ "op": "create_channel", "slug": "war-room", "topic": "incident response", "created_by": "claude" })).await;
     claude.recv().await;
-    claude.send(json!({ "op": "subscribe", "channel": "war-room", "agent_key": "claude" })).await;
+    claude
+        .send(json!({ "op": "subscribe", "channel": "war-room", "agent_key": "claude" }))
+        .await;
     claude.recv_until(|v| v["subscribed"] == "war-room").await;
 
     // Three other agents each post to the room on their own connections.
-    for (agent, text) in [("codex", "codex online"), ("scout", "scout online"), ("worker-7", "worker online")] {
+    for (agent, text) in [
+        ("codex", "codex online"),
+        ("scout", "scout online"),
+        ("worker-7", "worker online"),
+    ] {
         let mut c = Client::connect(addr).await;
-        c.send(json!({ "op": "post", "channel": "war-room", "from": agent, "content": text })).await;
+        c.send(json!({ "op": "post", "channel": "war-room", "from": agent, "content": text }))
+            .await;
         assert_eq!(c.recv().await["ok"], true);
     }
 
@@ -108,7 +120,9 @@ async fn multi_agent_streaming_group_chat() {
     }
 
     // ... and the room now has four members (claude + 3 posters).
-    claude.send(json!({ "op": "members", "channel": "war-room" })).await;
+    claude
+        .send(json!({ "op": "members", "channel": "war-room" }))
+        .await;
     let members = claude.recv_until(|v| v["members"].is_array()).await;
     assert_eq!(members["members"].as_array().unwrap().len(), 4);
 }
@@ -121,10 +135,12 @@ async fn thirty_third_join_is_bounced_with_warning() {
     a.recv().await;
 
     for i in 0..32 {
-        a.send(json!({ "op": "join", "channel": "capped", "agent_key": format!("agent-{i}") })).await;
+        a.send(json!({ "op": "join", "channel": "capped", "agent_key": format!("agent-{i}") }))
+            .await;
         assert_eq!(a.recv().await["ok"], true, "join {i} should succeed");
     }
-    a.send(json!({ "op": "join", "channel": "capped", "agent_key": "agent-33" })).await;
+    a.send(json!({ "op": "join", "channel": "capped", "agent_key": "agent-33" }))
+        .await;
     let bounced = a.recv().await;
     assert_eq!(bounced["ok"], false);
     assert_eq!(bounced["error"], "channel_full");

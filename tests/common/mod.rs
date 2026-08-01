@@ -7,6 +7,7 @@ use std::sync::Arc;
 use ai_agent_bridge::config::Config;
 use ai_agent_bridge::embed::Embedder;
 use ai_agent_bridge::state::AppState;
+use ai_agent_bridge::workflow_security::WorkflowSecurity;
 use ai_agent_bridge::{http, tcp};
 use tokio::net::TcpListener;
 
@@ -22,8 +23,14 @@ pub fn state() -> Arc<AppState> {
 }
 
 pub fn state_with(cfg: Config) -> Arc<AppState> {
-    let embedder = Embedder::new(cfg.embed_dim, None, "local".into(), None);
-    AppState::new(cfg, embedder)
+    let embedder = Embedder::new(
+        cfg.embed_dim,
+        None,
+        "local".into(),
+        None,
+        cfg.max_embedding_response_bytes,
+    );
+    AppState::new(cfg, embedder).unwrap()
 }
 
 pub fn unique_tmp_dir() -> std::path::PathBuf {
@@ -52,8 +59,14 @@ pub async fn spawn_http(state: Arc<AppState>) -> String {
 pub async fn spawn_tcp(state: Arc<AppState>) -> std::net::SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let security = WorkflowSecurity::from_json(
+        state.config.api_auth_bearer.clone(),
+        r#"{"credentials":[]}"#,
+        state.config.max_http_body_bytes,
+    )
+    .unwrap();
     tokio::spawn(async move {
-        let _ = tcp::serve(state, listener).await;
+        let _ = tcp::serve(state, listener, security).await;
     });
     addr
 }

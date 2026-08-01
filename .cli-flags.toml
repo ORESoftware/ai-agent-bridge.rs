@@ -1,0 +1,337 @@
+# flags-2-env config: maps CLI flags to the environment variables the service
+# reads, so operators can pass `--http-port` etc. without exporting env by hand.
+# Secrets (tokens, DB URLs) are listed under [env].ignore so they stay env-only.
+
+[help]
+url = "https://github.com/fiducia-cloud/fiducia-ai-agent-bridge.rs"
+columns = ["options", "env", "type", "description"]
+
+[parse]
+allow_unknown = false
+
+[env]
+ignore = ["DATABASE_URL", "RDS_DATABASE_URL", "API_AUTH_BEARER", "AI_AGENT_BRIDGE_TOKEN", "CLAUDE_INBOX_TOKEN", "EMBEDDINGS_API_AUTH_BEARER", "EMBEDDINGS_BEARER", "FIDUCIA_CONTROL_PLANE_SECRET", "FIDUCIA_INTERNAL_SECRET", "WORKFLOW_ADAPTER_AUTH_JSON", "AI_PROVIDER_CONFIG_JSON", "AI_PROVIDER_PRICING_JSON", "AI_PROVIDER_RETRY_POLICY_JSON", "AI_AGENT_RUNNER_BRIDGE_BEARER", "SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN", "SLACK_BRIDGE_BEARER"]
+
+[flags.host]
+env = "HOST"
+aliases = ["host"]
+type = "string"
+help = "Listen address for HTTP and TCP."
+
+[flags.http-port]
+env = "HTTP_PORT"
+aliases = ["http-port"]
+type = "integer"
+help = "HTTP REST and SSE listen port."
+
+[flags.tcp-port]
+env = "TCP_PORT"
+aliases = ["tcp-port"]
+type = "integer"
+help = "TCP JSONL listen port."
+
+[flags.embed-dim]
+env = "EMBED_DIM"
+aliases = ["embed-dim"]
+type = "integer"
+help = "Embedding vector dimension."
+
+[flags.max-embedding-response-bytes]
+env = "MAX_EMBEDDING_RESPONSE_BYTES"
+aliases = ["max-embedding-response-bytes"]
+type = "integer"
+help = "Maximum bytes accepted from one remote embedding HTTP response."
+
+[flags.embeddings-url]
+env = "EMBEDDINGS_URL"
+aliases = ["embeddings-url"]
+type = "string"
+help = "Optional remote embeddings endpoint."
+
+[flags.embeddings-model]
+env = "EMBEDDINGS_MODEL"
+aliases = ["embeddings-model"]
+type = "string"
+help = "Embedding model identifier."
+
+# Float knob (0.0-1.0); flags2env has no float type, so it is passed as a string
+# and parsed by the service. Cosine below this mints a new topic in `resolve`.
+[flags.resolve-threshold]
+env = "RESOLVE_THRESHOLD"
+aliases = ["resolve-threshold"]
+type = "string"
+help = "Cosine similarity below which resolve mints a new topic (0.0-1.0, default 0.72)."
+
+# Inbox directory for the legacy claude-inbox contract (not a secret). The
+# CLAUDE_INBOX_DIR env var is an accepted code-level alias for the same setting.
+[flags.inbox-dir]
+env = "AI_AGENT_BRIDGE_DIR"
+aliases = ["inbox-dir"]
+type = "string"
+help = "Absolute private directory holding inbox.jsonl for the legacy claude-inbox contract."
+
+[flags.history-limit]
+env = "HISTORY_LIMIT"
+aliases = ["history-limit"]
+type = "integer"
+help = "Maximum retained messages per channel."
+
+[flags.max-channels]
+env = "MAX_CHANNELS"
+aliases = ["max-channels"]
+type = "integer"
+help = "Maximum number of channels."
+
+[flags.max-agents]
+env = "MAX_AGENTS"
+aliases = ["max-agents"]
+type = "integer"
+help = "Maximum registered agents."
+
+[flags.max-file-leases]
+env = "MAX_FILE_LEASES"
+aliases = ["max-file-leases"]
+type = "integer"
+help = "Maximum simultaneously active repository-path leases."
+
+[flags.max-content-bytes]
+env = "MAX_CONTENT_BYTES"
+aliases = ["max-content-bytes"]
+type = "integer"
+help = "Maximum message / context-value bytes."
+
+[flags.max-tcp-line-bytes]
+env = "MAX_TCP_LINE_BYTES"
+aliases = ["max-tcp-line-bytes"]
+type = "integer"
+help = "Maximum bytes in one TCP JSONL frame."
+
+[flags.max-tcp-connections]
+env = "MAX_TCP_CONNECTIONS"
+aliases = ["max-tcp-connections"]
+type = "integer"
+help = "Maximum concurrent TCP connections."
+
+[flags.max-sse-connections]
+env = "MAX_SSE_CONNECTIONS"
+aliases = ["max-sse-connections"]
+type = "integer"
+help = "Maximum concurrent HTTP SSE streams."
+
+[flags.max-http-body-bytes]
+env = "MAX_HTTP_BODY_BYTES"
+aliases = ["max-http-body-bytes"]
+type = "integer"
+help = "Maximum HTTP request body bytes."
+
+[flags.max-channel-history-bytes]
+env = "MAX_CHANNEL_HISTORY_BYTES"
+aliases = ["max-channel-history-bytes"]
+type = "integer"
+help = "Maximum retained message bytes per channel history ring."
+
+[flags.tcp-auth-deadline-secs]
+env = "TCP_AUTH_DEADLINE_SECS"
+aliases = ["tcp-auth-deadline-secs"]
+type = "integer"
+help = "Seconds an unauthenticated TCP connection has to present valid auth."
+
+[flags.tcp-idle-deadline-secs]
+env = "TCP_IDLE_DEADLINE_SECS"
+aliases = ["tcp-idle-deadline-secs"]
+type = "integer"
+help = "Seconds an authed-but-unsubscribed TCP connection may idle before it is dropped."
+
+[flags.log-format]
+env = "LOG_FORMAT"
+aliases = ["log-format"]
+type = "string"
+help = "Log output format, such as json."
+
+[flags.fiducia-control-plane-url]
+env = "FIDUCIA_CONTROL_PLANE_URL"
+aliases = ["fiducia-control-plane-url"]
+type = "string"
+help = "Agent control-plane base URL for file leases and holder lookup."
+
+[flags.control-plane-timeout-secs]
+env = "CONTROL_PLANE_TIMEOUT_SECS"
+aliases = ["control-plane-timeout-secs"]
+type = "integer"
+help = "Bridge-to-control-plane HTTP timeout in seconds."
+
+[flags.require-assignment-claims]
+env = "AI_AGENT_BRIDGE_REQUIRE_ASSIGNMENT_CLAIMS"
+aliases = ["require-assignment-claims"]
+type = "string"
+help = "Require a current Fiducia assignment claim on every workflow submission."
+
+[flags.assignment-claim-repository]
+env = "AI_AGENT_BRIDGE_ASSIGNMENT_CLAIM_REPOSITORY"
+aliases = ["assignment-claim-repository"]
+type = "string"
+help = "Canonical owner/repo coordination namespace used for assignment claims."
+
+[flags.assignment-claim-max-ttl-ms]
+env = "AI_AGENT_BRIDGE_ASSIGNMENT_CLAIM_MAX_TTL_MS"
+aliases = ["assignment-claim-max-ttl-ms"]
+type = "integer"
+help = "Maximum TTL accepted while validating an assignment claim."
+
+[flags.runner-distributed-claims]
+env = "AI_AGENT_RUNNER_DISTRIBUTED_CLAIMS"
+aliases = ["runner-distributed-claims"]
+type = "string"
+help = "Enable Fiducia-backed assignment claims in the provider runner."
+
+[flags.runner-replica-count]
+env = "AI_AGENT_RUNNER_REPLICA_COUNT"
+aliases = ["runner-replica-count"]
+type = "integer"
+help = "Declared provider-runner replica count; values above one require distributed claims."
+
+[flags.runner-instance-id]
+env = "AI_AGENT_RUNNER_INSTANCE_ID"
+aliases = ["runner-instance-id"]
+type = "string"
+help = "Unique path-safe provider-runner instance identity."
+
+[flags.runner-assignment-claim-repository]
+env = "AI_AGENT_RUNNER_ASSIGNMENT_CLAIM_REPOSITORY"
+aliases = ["runner-assignment-claim-repository"]
+type = "string"
+help = "Canonical coordination namespace used by provider-runner assignment claims."
+
+[flags.runner-assignment-claim-ttl-ms]
+env = "AI_AGENT_RUNNER_ASSIGNMENT_CLAIM_TTL_MS"
+aliases = ["runner-assignment-claim-ttl-ms"]
+type = "integer"
+help = "TTL for one provider-runner assignment claim."
+
+[flags.runner-admission-actor]
+env = "AI_AGENT_RUNNER_ADMISSION_ACTOR"
+aliases = ["runner-admission-actor"]
+type = "string"
+help = "Scoped runner identity used for policy admission and usage reporting."
+
+[flags.runner-policy-approved-by]
+env = "AI_AGENT_RUNNER_POLICY_APPROVED_BY"
+aliases = ["runner-policy-approved-by"]
+type = "string"
+help = "Explicit approver identity supplied when policy requires human approval."
+
+[flags.runner-admission-timeout-secs]
+env = "AI_AGENT_RUNNER_ADMISSION_TIMEOUT_SECS"
+aliases = ["runner-admission-timeout-secs"]
+type = "integer"
+help = "Total timeout for one policy-admission HTTP request."
+
+[flags.runner-max-admission-response-bytes]
+env = "AI_AGENT_RUNNER_MAX_ADMISSION_RESPONSE_BYTES"
+aliases = ["runner-max-admission-response-bytes"]
+type = "integer"
+help = "Maximum bytes accepted from one policy-admission response."
+
+# Slack adapter secrets remain env-only; these flags cover non-secret routing,
+# allowlists, timeouts, resource ceilings, and the disabled-by-default switch.
+[flags.slack-bridge-host]
+env = "SLACK_BRIDGE_HOST"
+aliases = ["slack-bridge-host"]
+type = "string"
+help = "Listen address for the authenticated Slack adapter."
+
+[flags.slack-bridge-port]
+env = "SLACK_BRIDGE_PORT"
+aliases = ["slack-bridge-port"]
+type = "integer"
+help = "HTTP port for Slack events and health probes."
+
+[flags.slack-bot-user-id]
+env = "SLACK_BOT_USER_ID"
+aliases = ["slack-bot-user-id"]
+type = "string"
+help = "Slack bot user ID used to reject self-generated events."
+
+[flags.slack-allowed-team-ids]
+env = "SLACK_ALLOWED_TEAM_IDS"
+aliases = ["slack-allowed-team-ids"]
+type = "string"
+help = "Comma-separated Slack workspace allowlist."
+
+[flags.slack-allowed-channel-ids]
+env = "SLACK_ALLOWED_CHANNEL_IDS"
+aliases = ["slack-allowed-channel-ids"]
+type = "string"
+help = "Comma-separated Slack channel allowlist."
+
+[flags.slack-allowed-thread-ts]
+env = "SLACK_ALLOWED_THREAD_TS"
+aliases = ["slack-allowed-thread-ts"]
+type = "string"
+help = "Optional comma-separated Slack thread timestamp allowlist."
+
+[flags.slack-command-prefix]
+env = "SLACK_COMMAND_PREFIX"
+aliases = ["slack-command-prefix"]
+type = "string"
+help = "Explicit one-token prefix that activates dual-model routing."
+
+[flags.slack-bridge-url]
+env = "SLACK_BRIDGE_URL"
+aliases = ["slack-bridge-url"]
+type = "string"
+help = "Base URL for the existing Fiducia bridge workflow API."
+
+[flags.slack-claude-agent-key]
+env = "SLACK_CLAUDE_AGENT_KEY"
+aliases = ["slack-claude-agent-key"]
+type = "string"
+help = "Registered bridge identity for the Claude Fable assignment."
+
+[flags.slack-openai-agent-key]
+env = "SLACK_OPENAI_AGENT_KEY"
+aliases = ["slack-openai-agent-key"]
+type = "string"
+help = "Registered bridge identity for the ChatGPT Sol assignment."
+
+[flags.slack-bridge-dry-run]
+env = "SLACK_BRIDGE_DRY_RUN"
+aliases = ["slack-bridge-dry-run"]
+type = "string"
+help = "Keep accepted Slack events from creating workflows or posting replies."
+
+[flags.slack-idempotency-path]
+env = "SLACK_IDEMPOTENCY_PATH"
+aliases = ["slack-idempotency-path"]
+type = "string"
+help = "Absolute path to the private append-only Slack event journal."
+
+[flags.slack-max-request-age-secs]
+env = "SLACK_MAX_REQUEST_AGE_SECS"
+aliases = ["slack-max-request-age-secs"]
+type = "integer"
+help = "Maximum accepted age or future skew for signed Slack requests."
+
+[flags.slack-workflow-timeout-secs]
+env = "SLACK_WORKFLOW_TIMEOUT_SECS"
+aliases = ["slack-workflow-timeout-secs"]
+type = "integer"
+help = "Bounded deadline for collecting both model submissions."
+
+[flags.slack-poll-interval-ms]
+env = "SLACK_POLL_INTERVAL_MS"
+aliases = ["slack-poll-interval-ms"]
+type = "integer"
+help = "Interval between bounded workflow status reads."
+
+[flags.slack-max-body-bytes]
+env = "SLACK_MAX_BODY_BYTES"
+aliases = ["slack-max-body-bytes"]
+type = "integer"
+help = "Maximum Slack Events API request body size."
+
+[flags.slack-max-concurrent-workflows]
+env = "SLACK_MAX_CONCURRENT_WORKFLOWS"
+aliases = ["slack-max-concurrent-workflows"]
+type = "integer"
+help = "Maximum concurrently active Slack-originated workflows."

@@ -1,0 +1,10 @@
+.git
+.github
+target
+tmp
+node_modules
+.env
+.env.*
+*.log
+.DS_Store
+

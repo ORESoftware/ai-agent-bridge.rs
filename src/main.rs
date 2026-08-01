@@ -1,23 +1,47 @@
+// Binary entrypoint: loads config from the environment, wires up the shared
+// embedder + in-memory state, and runs the HTTP and TCP listeners concurrently
+// until shutdown.
+
 use std::sync::Arc;
 
 use ai_agent_bridge::config::Config;
 use ai_agent_bridge::embed::Embedder;
 use ai_agent_bridge::state::AppState;
-use ai_agent_bridge::{http, tcp};
+use ai_agent_bridge::{
+    assignment_claims, blind_competition, http, lease_descriptors, lease_renewal, metrics,
+    orchestration, policy, policy_admission, tcp, workflow_security,
+};
+use axum::extract::State;
+use axum::http::{header, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use tracing::{info, warn};
-use tracing_subscriber::EnvFilter;
+
+/// Global cap for ordinary in-flight HTTP handlers. Transport-specific resource
+/// caps still apply separately to long-lived SSE and TCP connections.
+const MAX_HTTP_IN_FLIGHT: usize = 1_024;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    init_tracing();
+    // Keep the guard alive until shutdown so trace and metric providers flush.
+    let _telemetry = fiducia_telemetry::init("fiducia-ai-agent-bridge");
 
     let config = Config::from_env()?;
+    let workflow_auth = workflow_security::WorkflowSecurity::from_env(
+        config.api_auth_bearer.clone(),
+        config.max_http_body_bytes,
+    )?;
+    let tcp_auth = workflow_auth.clone();
     info!(
         http_port = config.http_port,
         tcp_port = config.tcp_port,
         embeddings = config.embeddings_url.as_deref().unwrap_or("local"),
         max_members = ai_agent_bridge::config::MAX_MEMBERS,
+        max_http_in_flight = MAX_HTTP_IN_FLIGHT,
         "starting ai-agent-bridge"
     );
 
@@ -26,9 +50,12 @@ async fn main() -> anyhow::Result<()> {
         config.embeddings_url.clone(),
         config.embeddings_model.clone(),
         config.embeddings_bearer.clone(),
+        config.max_embedding_response_bytes,
     );
 
     let state = build_state(config.clone(), embedder).await?;
+    let assignment_claim_policy =
+        assignment_claims::AssignmentClaimPolicy::from_env(state.clone())?;
 
     let http_addr = std::net::SocketAddr::new(config.host, config.http_port);
     let tcp_addr = std::net::SocketAddr::new(config.host, config.tcp_port);
@@ -37,25 +64,96 @@ async fn main() -> anyhow::Result<()> {
     let tcp_listener = TcpListener::bind(tcp_addr).await?;
     info!(%http_addr, %tcp_addr, "listening");
 
-    let app = http::router(state.clone());
+    let http_admission = Arc::new(Semaphore::new(MAX_HTTP_IN_FLIGHT));
+    let app = http::router(state.clone())
+        .merge(orchestration::router(state.clone()))
+        .merge(policy::router())
+        .merge(policy_admission::router(state.clone()))
+        .merge(blind_competition::router(state.clone()))
+        .layer(axum::middleware::from_fn_with_state(
+            assignment_claim_policy,
+            assignment_claims::enforce,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            lease_renewal::intercept,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            lease_descriptors::intercept,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            workflow_auth,
+            workflow_security::enforce,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            http_admission,
+            enforce_http_admission,
+        ))
+        .layer(axum::middleware::from_fn(observe_http_metrics));
 
-    let http_task = tokio::spawn(async move {
+    let mut server_tasks = JoinSet::new();
+    server_tasks.spawn(async move {
         if let Err(e) = axum::serve(http_listener, app).await {
             warn!(error = %e, "http server exited");
         }
     });
-    let tcp_task = tokio::spawn(async move {
-        if let Err(e) = tcp::serve(state, tcp_listener).await {
+    let tcp_state = state.clone();
+    server_tasks.spawn(async move {
+        if let Err(e) = tcp::serve(tcp_state, tcp_listener, tcp_auth).await {
             warn!(error = %e, "tcp server exited");
         }
     });
 
     tokio::select! {
         _ = shutdown_signal() => info!("shutdown signal received"),
-        _ = http_task => warn!("http task ended"),
-        _ = tcp_task => warn!("tcp task ended"),
+        result = server_tasks.join_next() => warn!(?result, "server task ended"),
     }
+    server_tasks.abort_all();
+    while server_tasks.join_next().await.is_some() {}
+    state.flush_persistence().await;
     Ok(())
+}
+
+async fn observe_http_metrics(req: axum::extract::Request, next: Next) -> Response {
+    let started = metrics::global().http_started();
+    let response = next.run(req).await;
+    metrics::global().http_finished(started, response.status().as_u16());
+    response
+}
+
+/// Shed excess ordinary HTTP work instead of allowing an authenticated client to
+/// queue an unbounded number of request futures. Probe and index routes bypass the
+/// limiter so overload remains observable. SSE lifetime is bounded separately by
+/// `MAX_SSE_CONNECTIONS`; this permit covers only creation of the stream response.
+async fn enforce_http_admission(
+    State(admission): State<Arc<Semaphore>>,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    if matches!(
+        req.uri().path(),
+        "/" | "/health" | "/healthz" | "/readyz" | "/metrics"
+    ) {
+        return next.run(req).await;
+    }
+
+    let Ok(permit) = admission.try_acquire_owned() else {
+        metrics::global().http_capacity_rejected();
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, "1")],
+            Json(serde_json::json!({
+                "ok": false,
+                "error": "http_capacity_exceeded"
+            })),
+        )
+            .into_response();
+    };
+
+    let response = next.run(req).await;
+    drop(permit);
+    response
 }
 
 #[cfg(feature = "postgres")]
@@ -76,11 +174,17 @@ async fn build_state(config: Config, embedder: Embedder) -> anyhow::Result<Arc<A
             None
         }
     };
-    let state = AppState::new(config, embedder).with_db(db.clone());
+    let state = AppState::new(config, embedder)?.with_db(db.clone());
     if let Some(db) = &db {
-        match db.load_channels(&state).await {
-            Ok(n) => info!(channels = n, "restored channels from postgres"),
-            Err(e) => warn!(error = %e, "channel restore failed (schema not migrated yet?)"),
+        match db.load_state(&state).await {
+            Ok(counts) => info!(
+                agents = counts.agents,
+                channels = counts.channels,
+                messages = counts.messages,
+                context = counts.context,
+                "restored durable state from postgres"
+            ),
+            Err(e) => warn!(error = %e, "state restore failed (schema not migrated yet?)"),
         }
     }
     Ok(state)
@@ -88,19 +192,7 @@ async fn build_state(config: Config, embedder: Embedder) -> anyhow::Result<Arc<A
 
 #[cfg(not(feature = "postgres"))]
 async fn build_state(config: Config, embedder: Embedder) -> anyhow::Result<Arc<AppState>> {
-    Ok(AppState::new(config, embedder))
-}
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,ai_agent_bridge=info"));
-    let builder = tracing_subscriber::fmt().with_env_filter(filter);
-    // JSON logs in-cluster (matches the other services), pretty logs locally.
-    if std::env::var("LOG_FORMAT").map(|v| v == "json").unwrap_or(false) {
-        builder.json().init();
-    } else {
-        builder.init();
-    }
+    Ok(AppState::new(config, embedder)?)
 }
 
 async fn shutdown_signal() {
@@ -109,7 +201,9 @@ async fn shutdown_signal() {
     };
     #[cfg(unix)]
     let terminate = async {
-        if let Ok(mut sig) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        if let Ok(mut sig) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
             sig.recv().await;
         }
     };

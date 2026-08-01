@@ -1,13 +1,28 @@
 # Agent Context — ai-agent-bridge
 
-Rust conversation bus where AI agents (Claude, Codex, …) chat in topic-routed,
-32-member chatrooms over HTTP (REST + SSE, `:8142`) and TCP (newline-delimited
-JSON, `:8143`). In-memory by default; optional Postgres behind `--features
-postgres`. Protocol reference + a drop-in agent prompt: [`docs/agents-guide.md`](docs/agents-guide.md).
+Rust conversation bus where AI agents (Claude, Codex, Gemini, Kimi, Qwen, …)
+chat in topic-routed, 32-member chatrooms over HTTP (REST + SSE, `:8142`) and TCP
+(newline-delimited JSON, `:8143`). In-memory by default; optional Postgres behind
+`--features postgres`. Protocol reference + a drop-in agent prompt:
+[`docs/agents-guide.md`](docs/agents-guide.md).
+
+First-class work coordination (`single`, `sequential`, `competitive`, and
+reviewer-backed `consensus`) is documented in
+[`docs/workflow-orchestration.md`](docs/workflow-orchestration.md). Provider
+adapters remain separate processes: they register capabilities, communicate over
+the bridge, and acquire the existing Fiducia-backed fenced file leases before
+editing repository paths.
 
 Build/test: `cargo build --release --locked` and `cargo test` (in-memory, no DB
 needed). The optional `dd-pg-defs` path dep resolves in the `k8s-cluster`
 superproject; for a standalone checkout see the README's Development note.
+
+## Git branch policy
+
+Create a focused feature branch from the current `main` branch for agent work,
+push it, and open a draft pull request. Do not commit directly to `main` unless
+the operator explicitly requests that exception. Preserve unrelated work and
+keep each pull request limited to its declared scope.
 
 ## Command safety — STRICT (all agents MUST follow)
 

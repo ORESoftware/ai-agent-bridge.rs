@@ -4,13 +4,16 @@
 use std::net::{IpAddr, Ipv4Addr};
 
 /// Default embedding width. Chosen small so the deterministic local embedder is
-/// cheap; when a remote embedder returns a different width we adopt whatever it
-/// gives us (see [`crate::embed`]). Cosine similarity is dimension-agnostic as
-/// long as both vectors in a comparison share a width.
+/// cheap. Remote embeddings must return this exact width so one channel cannot
+/// introduce a mixed-dimensional embedding space.
 pub const DEFAULT_EMBED_DIM: usize = 256;
 /// Upper bound on the local embedding width, so a bogus `EMBED_DIM` env can't
 /// force a giant per-channel allocation.
 pub const MAX_EMBED_DIM: usize = 8192;
+/// Default and absolute ceilings for a remote embedding HTTP response. The
+/// response is streamed into a bounded buffer before JSON deserialization.
+pub const DEFAULT_MAX_EMBEDDING_RESPONSE_BYTES: usize = 1_048_576;
+pub const MAX_EMBEDDING_RESPONSE_BYTES: usize = 16_777_216;
 
 /// Hard ceiling on chatroom participants. The 33rd join is bounced.
 pub const MAX_MEMBERS: usize = 32;
@@ -24,6 +27,8 @@ pub const DEFAULT_HISTORY_LIMIT: usize = 1000;
 /// and TCP frames are read from the network.
 pub const DEFAULT_MAX_CHANNELS: usize = 10_000;
 pub const DEFAULT_MAX_AGENTS: usize = 50_000;
+/// Max simultaneously active repository-path leases held in memory.
+pub const DEFAULT_MAX_FILE_LEASES: usize = 100_000;
 /// Max message/context byte length — matches the DB `content` CHECK (1 MiB).
 pub const DEFAULT_MAX_CONTENT_BYTES: usize = 1_048_576;
 /// Max bytes in one TCP JSONL frame before the connection is dropped (a frame
@@ -31,6 +36,10 @@ pub const DEFAULT_MAX_CONTENT_BYTES: usize = 1_048_576;
 pub const DEFAULT_MAX_TCP_LINE_BYTES: usize = 2_097_152;
 /// Max concurrent TCP connections (each is a task); excess are dropped.
 pub const DEFAULT_MAX_TCP_CONNECTIONS: usize = 4_096;
+/// Max concurrent SSE streams over HTTP (each holds a broadcast receiver + task);
+/// excess are shed with `429 capacity_exceeded`, mirroring the TCP connection cap
+/// so an authenticated client cannot open unbounded live streams.
+pub const DEFAULT_MAX_SSE_CONNECTIONS: usize = 4_096;
 /// Seconds an unauthenticated TCP connection has to present valid auth.
 pub const DEFAULT_TCP_AUTH_DEADLINE_SECS: u64 = 15;
 /// Seconds an authed-but-not-subscribed TCP connection may idle before it's
@@ -56,8 +65,14 @@ pub struct Config {
     pub embeddings_model: String,
     pub embeddings_bearer: Option<String>,
     pub embed_dim: usize,
+    pub max_embedding_response_bytes: usize,
     /// Optional Postgres URL. Only consulted when built with `--features postgres`.
     pub database_url: Option<String>,
+    /// Control-plane base URL used for file leases and active-agent lookup.
+    pub control_plane_url: Option<String>,
+    /// Shared secret sent only in `x-internal-auth` to the control plane.
+    pub control_plane_secret: Option<String>,
+    pub control_plane_timeout_secs: u64,
     pub history_limit: usize,
     /// Similarity below which `resolve` mints a brand-new topic instead of
     /// joining an existing one (the "fluid topic formation" knob).
@@ -69,9 +84,11 @@ pub struct Config {
     pub inbox_dir: std::path::PathBuf,
     pub max_channels: usize,
     pub max_agents: usize,
+    pub max_file_leases: usize,
     pub max_content_bytes: usize,
     pub max_tcp_line_bytes: usize,
     pub max_tcp_connections: usize,
+    pub max_sse_connections: usize,
     pub max_http_body_bytes: usize,
     pub max_channel_history_bytes: usize,
     pub tcp_auth_deadline_secs: u64,
@@ -103,7 +120,10 @@ fn env_or(key: &str, default: &str) -> String {
 }
 
 fn env_usize(key: &str, default: usize) -> usize {
-    env_opt(key).and_then(|v| v.parse().ok()).filter(|d| *d > 0).unwrap_or(default)
+    env_opt(key)
+        .and_then(|v| v.parse().ok())
+        .filter(|d| *d > 0)
+        .unwrap_or(default)
 }
 
 impl Config {
@@ -112,16 +132,20 @@ impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let host = env_or("HOST", "0.0.0.0")
             .parse::<IpAddr>()
-            .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+            .map_err(|error| anyhow::anyhow!("HOST is not a valid IP address: {error}"))?;
 
+        let compat_http_port =
+            env_opt("AI_AGENT_BRIDGE_PORT").or_else(|| env_opt("CLAUDE_INBOX_PORT"));
         let http_port = env_opt("HTTP_PORT")
             .or_else(|| env_opt("PORT"))
+            .or_else(|| compat_http_port.clone())
             .and_then(|v| v.parse().ok())
             .unwrap_or(8142);
 
         let tcp_port = env_opt("TCP_PORT")
+            .or_else(|| env_opt("AI_AGENT_BRIDGE_TCP_PORT"))
             .and_then(|v| v.parse().ok())
-            .unwrap_or(8143);
+            .unwrap_or(if compat_http_port.is_some() { 0 } else { 8143 });
 
         let embed_dim = env_opt("EMBED_DIM")
             .and_then(|v| v.parse().ok())
@@ -140,33 +164,71 @@ impl Config {
             .map(|t| t.clamp(0.0, 1.0))
             .unwrap_or(0.72);
 
+        let api_auth_bearer = env_opt("API_AUTH_BEARER");
+        if !host.is_loopback() && api_auth_bearer.is_none() {
+            anyhow::bail!("API_AUTH_BEARER must be configured when HOST is not loopback");
+        }
+        let control_plane_url = env_opt("FIDUCIA_CONTROL_PLANE_URL");
+        let control_plane_secret =
+            env_opt("FIDUCIA_CONTROL_PLANE_SECRET").or_else(|| env_opt("FIDUCIA_INTERNAL_SECRET"));
+        if control_plane_url.is_some() != control_plane_secret.is_some() {
+            anyhow::bail!(
+                "FIDUCIA_CONTROL_PLANE_URL and FIDUCIA_CONTROL_PLANE_SECRET must be configured together"
+            );
+        }
+
+        let inbox_dir = env_opt("AI_AGENT_BRIDGE_DIR")
+            .or_else(|| env_opt("CLAUDE_INBOX_DIR"))
+            .map(std::path::PathBuf::from)
+            .map(Ok)
+            .unwrap_or_else(default_inbox_dir)?;
+        if !inbox_dir.is_absolute() {
+            anyhow::bail!("AI_AGENT_BRIDGE_DIR/CLAUDE_INBOX_DIR must be an absolute path");
+        }
+
         Ok(Self {
             host,
             http_port,
             tcp_port,
-            api_auth_bearer: env_opt("API_AUTH_BEARER"),
+            api_auth_bearer,
             embeddings_url: env_opt("EMBEDDINGS_URL"),
             embeddings_model: env_or("EMBEDDINGS_MODEL", "local-hash-v1"),
-            embeddings_bearer: env_opt("EMBEDDINGS_API_AUTH_BEARER").or_else(|| env_opt("EMBEDDINGS_BEARER")),
+            embeddings_bearer: env_opt("EMBEDDINGS_API_AUTH_BEARER")
+                .or_else(|| env_opt("EMBEDDINGS_BEARER")),
             embed_dim,
+            max_embedding_response_bytes: env_usize(
+                "MAX_EMBEDDING_RESPONSE_BYTES",
+                DEFAULT_MAX_EMBEDDING_RESPONSE_BYTES,
+            )
+            .min(MAX_EMBEDDING_RESPONSE_BYTES),
             database_url: env_opt("DATABASE_URL").or_else(|| env_opt("RDS_DATABASE_URL")),
+            control_plane_url,
+            control_plane_secret,
+            control_plane_timeout_secs: env_usize("CONTROL_PLANE_TIMEOUT_SECS", 10) as u64,
             history_limit,
             resolve_threshold,
             inbox_token: env_opt("AI_AGENT_BRIDGE_TOKEN").or_else(|| env_opt("CLAUDE_INBOX_TOKEN")),
-            inbox_dir: std::path::PathBuf::from(
-                env_opt("AI_AGENT_BRIDGE_DIR")
-                    .or_else(|| env_opt("CLAUDE_INBOX_DIR"))
-                    .unwrap_or_else(|| "/tmp/claude_bridge".to_string()),
-            ),
+            inbox_dir,
             max_channels: env_usize("MAX_CHANNELS", DEFAULT_MAX_CHANNELS),
             max_agents: env_usize("MAX_AGENTS", DEFAULT_MAX_AGENTS),
+            max_file_leases: env_usize("MAX_FILE_LEASES", DEFAULT_MAX_FILE_LEASES),
             max_content_bytes: env_usize("MAX_CONTENT_BYTES", DEFAULT_MAX_CONTENT_BYTES),
             max_tcp_line_bytes: env_usize("MAX_TCP_LINE_BYTES", DEFAULT_MAX_TCP_LINE_BYTES),
             max_tcp_connections: env_usize("MAX_TCP_CONNECTIONS", DEFAULT_MAX_TCP_CONNECTIONS),
+            max_sse_connections: env_usize("MAX_SSE_CONNECTIONS", DEFAULT_MAX_SSE_CONNECTIONS),
             max_http_body_bytes: env_usize("MAX_HTTP_BODY_BYTES", DEFAULT_MAX_HTTP_BODY_BYTES),
-            max_channel_history_bytes: env_usize("MAX_CHANNEL_HISTORY_BYTES", DEFAULT_MAX_CHANNEL_HISTORY_BYTES),
-            tcp_auth_deadline_secs: env_usize("TCP_AUTH_DEADLINE_SECS", DEFAULT_TCP_AUTH_DEADLINE_SECS as usize) as u64,
-            tcp_idle_deadline_secs: env_usize("TCP_IDLE_DEADLINE_SECS", DEFAULT_TCP_IDLE_DEADLINE_SECS as usize) as u64,
+            max_channel_history_bytes: env_usize(
+                "MAX_CHANNEL_HISTORY_BYTES",
+                DEFAULT_MAX_CHANNEL_HISTORY_BYTES,
+            ),
+            tcp_auth_deadline_secs: env_usize(
+                "TCP_AUTH_DEADLINE_SECS",
+                DEFAULT_TCP_AUTH_DEADLINE_SECS as usize,
+            ) as u64,
+            tcp_idle_deadline_secs: env_usize(
+                "TCP_IDLE_DEADLINE_SECS",
+                DEFAULT_TCP_IDLE_DEADLINE_SECS as usize,
+            ) as u64,
         })
     }
 
@@ -182,20 +244,59 @@ impl Config {
             embeddings_model: "local-hash-v1".to_string(),
             embeddings_bearer: None,
             embed_dim: DEFAULT_EMBED_DIM,
+            max_embedding_response_bytes: DEFAULT_MAX_EMBEDDING_RESPONSE_BYTES,
             database_url: None,
+            control_plane_url: None,
+            control_plane_secret: None,
+            control_plane_timeout_secs: 10,
             history_limit: DEFAULT_HISTORY_LIMIT,
             resolve_threshold: 0.72,
             inbox_token: None,
-            inbox_dir: std::env::temp_dir().join("claude_bridge_test"),
+            inbox_dir: transient_inbox_dir(),
             max_channels: DEFAULT_MAX_CHANNELS,
             max_agents: DEFAULT_MAX_AGENTS,
+            max_file_leases: DEFAULT_MAX_FILE_LEASES,
             max_content_bytes: DEFAULT_MAX_CONTENT_BYTES,
             max_tcp_line_bytes: DEFAULT_MAX_TCP_LINE_BYTES,
             max_tcp_connections: DEFAULT_MAX_TCP_CONNECTIONS,
+            max_sse_connections: DEFAULT_MAX_SSE_CONNECTIONS,
             max_http_body_bytes: DEFAULT_MAX_HTTP_BODY_BYTES,
             max_channel_history_bytes: DEFAULT_MAX_CHANNEL_HISTORY_BYTES,
             tcp_auth_deadline_secs: DEFAULT_TCP_AUTH_DEADLINE_SECS,
             tcp_idle_deadline_secs: DEFAULT_TCP_IDLE_DEADLINE_SECS,
         }
     }
+}
+
+fn default_inbox_dir() -> anyhow::Result<std::path::PathBuf> {
+    let state_home = std::env::var_os("XDG_STATE_HOME")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(std::path::PathBuf::from)
+                .map(|home| home.join(".local/state"))
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "set AI_AGENT_BRIDGE_DIR (or XDG_STATE_HOME/HOME) for the private inbox state directory"
+            )
+        })?;
+    if !state_home.is_absolute() {
+        anyhow::bail!("XDG_STATE_HOME/HOME must resolve to an absolute path");
+    }
+    Ok(state_home
+        .join("fiducia-ai-agent-bridge")
+        .join("claude-inbox"))
+}
+
+fn transient_inbox_dir() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "fiducia-ai-agent-bridge-test-{}-{count}",
+        std::process::id()
+    ))
 }

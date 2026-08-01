@@ -1,0 +1,35 @@
+# Local stack: PostgreSQL (with the ai_agent_bridge schema applied to a fresh
+# volume) plus the bridge built with the postgres feature, for end-to-end runs.
+services:
+  postgres:
+    image: postgres:16@sha256:be01cf82fc7dbba824acf0a82e150b4b360f3ff93c6631d7844af431e841a95c
+    environment:
+      POSTGRES_DB: fiducia_bridge
+      POSTGRES_USER: fiducia
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-only}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../fiducia-interfaces/sql/ai_agent_bridge.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fiducia -d fiducia_bridge"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  bridge:
+    build:
+      context: .
+      target: bridge
+    environment:
+      DATABASE_URL: postgres://fiducia:${POSTGRES_PASSWORD:-local-only}@postgres/fiducia_bridge
+      API_AUTH_BEARER: ${API_AUTH_BEARER:-local-only-change-me}
+      HTTP_PORT: 8142
+      TCP_PORT: 8143
+    ports:
+      - "8142:8142"
+      - "8143:8143"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:

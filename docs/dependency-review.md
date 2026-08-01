@@ -1,0 +1,18 @@
+# Dependency review ledger
+
+This ledger records narrowly scoped dependency updates that are regenerated from
+current `main` rather than merged from stale lockfile branches. It complements,
+but does not replace, the repository's exact-head CI, PostgreSQL restart tests,
+`cargo audit`, immutable container-image tests, and flags2env contract audit.
+
+| Date | Package | From | To | Scope and evidence |
+| --- | --- | --- | --- | --- |
+| 2026-07-28 | `tokio-stream` | 0.1.18 | 0.1.19 | Indirect `Cargo.lock` update generated with `cargo update -p tokio-stream --precise 0.1.19`; expected registry checksum `a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b`; generator gate proved `Cargo.lock` was the only product file changed before this ledger entry and ran formatting, Clippy with warnings denied, all-target tests, PostgreSQL-feature checks, restart durability, `cargo audit`, and the flags2env contract audit. |
+| 2026-07-28 | `thiserror` | 2.0.18 | 2.0.19 | Current-main graph generated with `cargo update -p thiserror@2.0.18 --precise 2.0.19`; verified registry checksums for `thiserror` (`09a43598840e33d5b0331f38c5e30d13bb11c11210a4b58f0d9b18a5a5eefcd9`), `thiserror-impl` (`43cbfe0cf76104d42a574802844187e84a305e531ed54455f11fbde0f10541cd`), and its new `syn` 3.0.3 graph node (`53e9bae58849f64dfa4f5d5ae372c8341f7305f82a3868709269343628b659a3`); generator gate proved `Cargo.lock` was the only product file changed before this ledger entry and ran the full Rust, PostgreSQL restart, audit, and flags2env gates. |
+| 2026-07-28 | `serde_json` | 1.0.150 | 1.0.151 | Current-main lock entry generated with `cargo update -p serde_json@1.0.150 --precise 1.0.151`; verified registry checksum `c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14`; generator gate proved `Cargo.lock` was the only product file changed before this ledger entry and ran formatting, strict Clippy, all-target tests, PostgreSQL-feature checks, restart durability, `cargo audit`, and the flags2env contract audit. |
+| 2026-07-28 | `anyhow` | 1.0.103 | 1.0.104 | Current-main lock entry generated with `cargo update -p anyhow@1.0.103 --precise 1.0.104`; verified registry checksum `330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470`; generator gate proved `Cargo.lock` was the only product file changed before this ledger entry and ran release and debug builds, formatting, strict Clippy, all-target tests, PostgreSQL-feature checks, restart durability, `cargo audit`, and the flags2env contract audit. |
+| 2026-07-28 | `fiducia-telemetry` | 0.1.1 | 0.2.1 | Current-main graph regenerated with `cargo update -p fiducia-telemetry`; immutable tag `v0.2.1` resolves to `716853f4c8c230db32e6862232e7162e0f683e1d` and pins `fiducia-interfaces` at `e3dba39566e036ad61de91e2e6c1d625ec2b5411`. Both process entry points now retain the returned telemetry guard through shutdown so final traces and metrics flush. The temporary branch-writing workflow was removed after lock generation; the clean local gate ran release build, formatting, strict Clippy, all-target tests, PostgreSQL-feature checks, restart durability, `cargo audit`, and the flags2env contract audit. |
+
+Every entry must describe the exact current-main regeneration command and must
+be followed by successful canonical PR and container-image workflows on the
+final human-authored head before merge.

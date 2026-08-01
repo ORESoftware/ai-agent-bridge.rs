@@ -19,6 +19,25 @@ pub enum BridgeError {
     #[error("agent '{agent}' is not a member of channel '{slug}'")]
     NotAMember { agent: String, slug: String },
 
+    #[error("agent '{0}' is not registered")]
+    AgentNotFound(String),
+
+    #[error("path '{path}' in repository '{repository}' is leased by agent '{holder}'")]
+    FileLeaseConflict {
+        repository: String,
+        path: String,
+        holder: String,
+    },
+
+    #[error("file lease '{0}' not found or expired")]
+    FileLeaseNotFound(String),
+
+    #[error("agent '{agent}' does not own file lease '{lease_id}'")]
+    FileLeaseOwnerMismatch { lease_id: String, agent: String },
+
+    #[error("stale fencing token for file lease '{0}'")]
+    StaleFencingToken(String),
+
     #[error("bad request: {0}")]
     BadRequest(String),
 
@@ -30,6 +49,12 @@ pub enum BridgeError {
 
     #[error("unauthorized")]
     Unauthorized,
+
+    #[error("control plane is not configured")]
+    ControlPlaneNotConfigured,
+
+    #[error("control plane request failed: {0}")]
+    ControlPlane(String),
 }
 
 impl BridgeError {
@@ -39,10 +64,17 @@ impl BridgeError {
             BridgeError::ChannelNotFound(_) => "channel_not_found",
             BridgeError::ChannelFull { .. } => "channel_full",
             BridgeError::NotAMember { .. } => "not_a_member",
+            BridgeError::AgentNotFound(_) => "agent_not_found",
+            BridgeError::FileLeaseConflict { .. } => "file_lease_conflict",
+            BridgeError::FileLeaseNotFound(_) => "file_lease_not_found",
+            BridgeError::FileLeaseOwnerMismatch { .. } => "file_lease_owner_mismatch",
+            BridgeError::StaleFencingToken(_) => "stale_fencing_token",
             BridgeError::BadRequest(_) => "bad_request",
             BridgeError::PayloadTooLarge { .. } => "payload_too_large",
             BridgeError::CapacityExceeded { .. } => "capacity_exceeded",
             BridgeError::Unauthorized => "unauthorized",
+            BridgeError::ControlPlaneNotConfigured => "control_plane_not_configured",
+            BridgeError::ControlPlane(_) => "control_plane_error",
         }
     }
 
@@ -51,10 +83,17 @@ impl BridgeError {
             BridgeError::ChannelNotFound(_) => 404,
             BridgeError::ChannelFull { .. } => 409,
             BridgeError::NotAMember { .. } => 403,
+            BridgeError::AgentNotFound(_) => 404,
+            BridgeError::FileLeaseConflict { .. } => 409,
+            BridgeError::FileLeaseNotFound(_) => 404,
+            BridgeError::FileLeaseOwnerMismatch { .. } => 403,
+            BridgeError::StaleFencingToken(_) => 409,
             BridgeError::BadRequest(_) => 400,
             BridgeError::PayloadTooLarge { .. } => 413,
             BridgeError::CapacityExceeded { .. } => 429,
             BridgeError::Unauthorized => 401,
+            BridgeError::ControlPlaneNotConfigured => 503,
+            BridgeError::ControlPlane(_) => 502,
         }
     }
 

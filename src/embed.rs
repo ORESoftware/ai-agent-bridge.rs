@@ -8,6 +8,8 @@
 
 use tracing::{debug, warn};
 
+use crate::config::{MAX_EMBEDDING_RESPONSE_BYTES, MAX_EMBED_DIM};
+
 /// Label recorded on channels embedded by the built-in hasher. Kept honest: even
 /// when a remote embedder is configured, a fallback vector is labeled local (not
 /// the remote model) so an operator can detect a mixed embedding space.
@@ -25,14 +27,25 @@ struct RemoteEmbedder {
     model: String,
     bearer: Option<String>,
     client: reqwest::Client,
+    expected_dim: usize,
+    max_response_bytes: usize,
 }
 
 impl Embedder {
-    pub fn new(dim: usize, url: Option<String>, remote_model: String, bearer: Option<String>) -> Self {
+    pub fn new(
+        dim: usize,
+        url: Option<String>,
+        remote_model: String,
+        bearer: Option<String>,
+        max_response_bytes: usize,
+    ) -> Self {
+        let dim = dim.clamp(1, MAX_EMBED_DIM);
         let remote = url.map(|url| RemoteEmbedder {
             url,
             model: remote_model,
             bearer,
+            expected_dim: dim,
+            max_response_bytes: max_response_bytes.clamp(1, MAX_EMBEDDING_RESPONSE_BYTES),
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(15))
                 .build()
@@ -64,11 +77,10 @@ impl Embedder {
         };
         if let Some(remote) = &self.remote {
             match remote.embed(text).await {
-                Ok(v) if !v.is_empty() => {
+                Ok(v) => {
                     debug!(dim = v.len(), "remote embedding");
                     return (normalize(v), remote.model.clone());
                 }
-                Ok(_) => warn!("remote embedder returned an empty vector; using local fallback"),
                 Err(e) => warn!(error = %e, "remote embedder failed; using local fallback"),
             }
         }
@@ -83,22 +95,53 @@ impl RemoteEmbedder {
         if let Some(b) = &self.bearer {
             req = req.bearer_auth(b);
         }
-        let resp = req.send().await?.error_for_status()?;
-        let json: serde_json::Value = resp.json().await?;
-        extract_embedding(&json)
-            .ok_or_else(|| anyhow::anyhow!("no embedding field in response"))
+        let mut response = req.send().await?.error_for_status()?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > self.max_response_bytes as u64)
+        {
+            anyhow::bail!(
+                "embedding response exceeds {} bytes",
+                self.max_response_bytes
+            );
+        }
+        let capacity = response
+            .content_length()
+            .unwrap_or(0)
+            .min(self.max_response_bytes as u64) as usize;
+        let mut bytes = Vec::with_capacity(capacity);
+        while let Some(chunk) = response.chunk().await? {
+            let next_len = bytes
+                .len()
+                .checked_add(chunk.len())
+                .ok_or_else(|| anyhow::anyhow!("embedding response size overflow"))?;
+            if next_len > self.max_response_bytes {
+                anyhow::bail!(
+                    "embedding response exceeds {} bytes",
+                    self.max_response_bytes
+                );
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let json: serde_json::Value = serde_json::from_slice(&bytes)?;
+        extract_embedding(&json, self.expected_dim).ok_or_else(|| {
+            anyhow::anyhow!(
+                "embedding response must contain exactly {} finite values",
+                self.expected_dim
+            )
+        })
     }
 }
 
 /// Pull a vector out of the common embedding-response shapes:
 /// OpenAI (`data[0].embedding`), `{embedding:[…]}`, or `{embeddings:[[…]]}`.
-fn extract_embedding(json: &serde_json::Value) -> Option<Vec<f32>> {
+fn extract_embedding(json: &serde_json::Value, expected_dim: usize) -> Option<Vec<f32>> {
     // Reject the whole vector (-> local fallback) if any element is non-numeric
     // or non-finite, rather than silently dropping/poisoning it: a malformed
     // element must not shrink the vector or feed NaN/inf into cosine.
     let as_vec = |v: &serde_json::Value| -> Option<Vec<f32>> {
         let arr = v.as_array()?;
-        if arr.is_empty() {
+        if arr.len() != expected_dim || arr.len() > MAX_EMBED_DIM {
             return None;
         }
         let mut out = Vec::with_capacity(arr.len());
@@ -157,7 +200,10 @@ pub fn local_embed(text: &str, dim: usize) -> Vec<f32> {
 
     // Character 3-grams add robustness to word-boundary and morphology noise
     // (e.g. "deploy" vs "deployment" share most trigrams).
-    let chars: Vec<char> = lower.chars().filter(|c| c.is_alphanumeric() || *c == ' ').collect();
+    let chars: Vec<char> = lower
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == ' ')
+        .collect();
     for window in chars.windows(3) {
         let gram: String = window.iter().collect();
         let h = fnv1a(gram.as_bytes());
@@ -212,6 +258,31 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 mod tests {
     use super::*;
 
+    async fn serve_json(body: serde_json::Value) -> String {
+        use axum::{routing::post, Router};
+        use std::sync::Arc;
+
+        let body = Arc::new(body.to_string());
+        let app = Router::new().route(
+            "/",
+            post(move || {
+                let body = body.clone();
+                async move {
+                    (
+                        [("content-type", "application/json")],
+                        body.as_str().to_owned(),
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{address}/")
+    }
+
     #[test]
     fn local_embed_is_deterministic() {
         let a = local_embed("deploy the soccer policy to kubernetes", 256);
@@ -234,7 +305,10 @@ mod tests {
         let unrelated = local_embed("baking sourdough bread at home", 256);
         let s_rel = cosine(&query, &related);
         let s_unrel = cosine(&query, &unrelated);
-        assert!(s_rel > s_unrel, "related {s_rel} should beat unrelated {s_unrel}");
+        assert!(
+            s_rel > s_unrel,
+            "related {s_rel} should beat unrelated {s_unrel}"
+        );
     }
 
     #[test]
@@ -246,16 +320,48 @@ mod tests {
     #[test]
     fn extract_handles_openai_and_flat_shapes() {
         let openai = serde_json::json!({ "data": [ { "embedding": [0.1, 0.2, 0.3] } ] });
-        assert_eq!(extract_embedding(&openai), Some(vec![0.1, 0.2, 0.3]));
+        assert_eq!(extract_embedding(&openai, 3), Some(vec![0.1, 0.2, 0.3]));
         let flat = serde_json::json!({ "embedding": [1.0, 2.0] });
-        assert_eq!(extract_embedding(&flat), Some(vec![1.0, 2.0]));
+        assert_eq!(extract_embedding(&flat, 2), Some(vec![1.0, 2.0]));
         let nested = serde_json::json!({ "embeddings": [[4.0, 5.0]] });
-        assert_eq!(extract_embedding(&nested), Some(vec![4.0, 5.0]));
+        assert_eq!(extract_embedding(&nested, 2), Some(vec![4.0, 5.0]));
         let none = serde_json::json!({ "nope": true });
-        assert_eq!(extract_embedding(&none), None);
+        assert_eq!(extract_embedding(&none, 2), None);
         // A non-numeric element rejects the whole vector (-> local fallback),
         // rather than silently dropping it and shrinking the dimension.
         let bad = serde_json::json!({ "embedding": [0.1, "x", 0.2] });
-        assert_eq!(extract_embedding(&bad), None);
+        assert_eq!(extract_embedding(&bad, 3), None);
+        assert_eq!(extract_embedding(&flat, 3), None);
+    }
+
+    #[tokio::test]
+    async fn remote_response_size_and_dimension_are_bounded() {
+        let valid_url = serve_json(serde_json::json!({"embedding":[1.0, 2.0, 3.0]})).await;
+        let valid = Embedder::new(3, Some(valid_url), "remote-v1".into(), None, 1024);
+        let (vector, model) = valid.embed("topic").await;
+        assert_eq!(vector.len(), 3);
+        assert_eq!(model, "remote-v1");
+
+        let wrong_dim_url = serve_json(serde_json::json!({"embedding":[1.0, 2.0, 3.0, 4.0]})).await;
+        let wrong_dim = Embedder::new(3, Some(wrong_dim_url), "remote-v1".into(), None, 1024);
+        let (vector, model) = wrong_dim.embed("topic").await;
+        assert_eq!(vector.len(), 3);
+        assert_eq!(model, LOCAL_MODEL);
+
+        let oversized_url = serve_json(serde_json::json!({
+            "embedding":[1.0, 2.0, 3.0],
+            "padding":"x".repeat(2048)
+        }))
+        .await;
+        let oversized = Embedder::new(3, Some(oversized_url), "remote-v1".into(), None, 64);
+        let (vector, model) = oversized.embed("topic").await;
+        assert_eq!(vector.len(), 3);
+        assert_eq!(model, LOCAL_MODEL);
+    }
+
+    #[test]
+    fn configured_dimension_is_clamped_to_the_absolute_maximum() {
+        let embedder = Embedder::new(usize::MAX, None, "local".into(), None, 1024);
+        assert_eq!(embedder.dim(), MAX_EMBED_DIM);
     }
 }

@@ -13,19 +13,28 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use crate::error::BridgeError;
+use crate::metrics;
 use crate::state::AppState;
+use crate::tcp_security::TcpPrincipal;
 use crate::types::{Agent, AgentKind, Event, MemberRole, Role};
+use crate::workflow_security::WorkflowSecurity;
 
 type Writer = Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>;
 
 /// Max concurrent `subscribe` forwarders on a single TCP connection.
 const MAX_SUBS_PER_CONN: usize = 64;
 
-pub async fn serve(state: Arc<AppState>, listener: TcpListener) -> anyhow::Result<()> {
+pub async fn serve(
+    state: Arc<AppState>,
+    listener: TcpListener,
+    security: Arc<WorkflowSecurity>,
+) -> anyhow::Result<()> {
     info!(addr = %listener.local_addr()?, "tcp listener up");
     // Bound concurrent connections; excess are dropped (load shed) rather than
     // spawning unbounded tasks.
-    let conns = Arc::new(tokio::sync::Semaphore::new(state.config.max_tcp_connections));
+    let conns = Arc::new(tokio::sync::Semaphore::new(
+        state.config.max_tcp_connections,
+    ));
     loop {
         let (socket, peer) = match listener.accept().await {
             Ok(v) => v,
@@ -37,14 +46,18 @@ pub async fn serve(state: Arc<AppState>, listener: TcpListener) -> anyhow::Resul
         let permit = match conns.clone().try_acquire_owned() {
             Ok(p) => p,
             Err(_) => {
+                metrics::global().tcp_rejected();
                 warn!(peer = %peer, "tcp connection cap reached; dropping connection");
                 continue;
             }
         };
+        let connection_metrics = metrics::global().tcp_connection();
         let state = state.clone();
+        let security = security.clone();
         tokio::spawn(async move {
             let _permit = permit; // released when the connection ends
-            if let Err(e) = handle_conn(state, socket).await {
+            let _connection_metrics = connection_metrics;
+            if let Err(e) = handle_conn(state, socket, security).await {
                 debug!(peer = %peer, error = %e, "tcp connection closed");
             }
         });
@@ -108,14 +121,19 @@ async fn read_capped_line<R: tokio::io::AsyncBufRead + Unpin>(
 }
 
 async fn write_line(writer: &Writer, value: &Value) -> std::io::Result<()> {
-    let mut line = serde_json::to_vec(value).unwrap_or_else(|_| b"{\"ok\":false,\"error\":\"serialize\"}".to_vec());
+    let mut line = serde_json::to_vec(value)
+        .unwrap_or_else(|_| b"{\"ok\":false,\"error\":\"serialize\"}".to_vec());
     line.push(b'\n');
     let mut w = writer.lock().await;
     w.write_all(&line).await?;
     w.flush().await
 }
 
-async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<()> {
+async fn handle_conn(
+    state: Arc<AppState>,
+    socket: TcpStream,
+    security: Arc<WorkflowSecurity>,
+) -> anyhow::Result<()> {
     let _ = socket.set_nodelay(true);
     let (read_half, write_half) = socket.into_split();
     let writer: Writer = Arc::new(Mutex::new(write_half));
@@ -124,13 +142,19 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
 
     // Auth handshake: when a bearer is configured, nothing but `auth`/`ping`
     // works until the client presents it.
-    let mut authed = state.config.api_auth_bearer.is_none();
+    let mut principal = TcpPrincipal::initial(&security);
     let mut sub_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     let mut subscribed: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     write_line(
         &writer,
-        &json!({ "ok": true, "hello": "ai-agent-bridge", "needs_auth": !authed, "max_members": crate::config::MAX_MEMBERS }),
+        &json!({
+            "ok": true,
+            "hello": "ai-agent-bridge",
+            "needs_auth": !principal.authenticated(),
+            "max_members": crate::config::MAX_MEMBERS,
+            "auth": principal.hello_json(),
+        }),
     )
     .await?;
 
@@ -138,7 +162,7 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
         // Read deadline: an unauthenticated connection must authenticate fast; an
         // authed-but-idle connection that never subscribes can't squat a slot
         // forever; a subscribed connection may idle (it receives events, not sends).
-        let deadline_secs = if !authed {
+        let deadline_secs = if !principal.authenticated() {
             Some(state.config.tcp_auth_deadline_secs)
         } else if subscribed.is_empty() {
             Some(state.config.tcp_idle_deadline_secs)
@@ -147,17 +171,23 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
         };
         let read = read_capped_line(&mut reader, max_line);
         let line = match deadline_secs {
-            Some(secs) => match tokio::time::timeout(std::time::Duration::from_secs(secs), read).await {
-                Ok(r) => match r? {
-                    Some(l) => l,
-                    None => break,
-                },
-                Err(_) => {
-                    let err = if authed { "idle_timeout" } else { "auth_timeout" };
-                    let _ = write_line(&writer, &json!({ "ok": false, "error": err })).await;
-                    break;
+            Some(secs) => {
+                match tokio::time::timeout(std::time::Duration::from_secs(secs), read).await {
+                    Ok(r) => match r? {
+                        Some(l) => l,
+                        None => break,
+                    },
+                    Err(_) => {
+                        let err = if principal.authenticated() {
+                            "idle_timeout"
+                        } else {
+                            "auth_timeout"
+                        };
+                        let _ = write_line(&writer, &json!({ "ok": false, "error": err })).await;
+                        break;
+                    }
                 }
-            },
+            }
             None => match read.await? {
                 Some(l) => l,
                 None => break,
@@ -170,36 +200,54 @@ async fn handle_conn(state: Arc<AppState>, socket: TcpStream) -> anyhow::Result<
         let req: Req = match serde_json::from_str(line) {
             Ok(r) => r,
             Err(e) => {
-                write_line(&writer, &json!({ "ok": false, "error": "bad_request", "message": e.to_string() })).await?;
+                metrics::global().tcp_frame(false);
+                write_line(
+                    &writer,
+                    &json!({ "ok": false, "error": "bad_request", "message": e.to_string() }),
+                )
+                .await?;
                 continue;
             }
         };
 
         if let Req::Auth { token } = &req {
-            authed = match state.config.api_auth_bearer.as_deref() {
-                Some(expected) => crate::config::constant_time_eq(expected.as_bytes(), token.as_bytes()),
-                None => true,
-            };
-            // Exactly one response frame per request: ok=false here already means
-            // the token was rejected.
-            let mut resp = json!({ "ok": authed, "op": "auth" });
-            if !authed {
-                resp["error"] = json!("unauthorized");
+            match principal.authenticate(&security, token) {
+                Ok(next) => {
+                    metrics::global().tcp_frame(true);
+                    principal = next;
+                    write_line(
+                        &writer,
+                        &json!({ "ok": true, "op": "auth", "auth": principal.hello_json() }),
+                    )
+                    .await?;
+                }
+                Err(error) => {
+                    metrics::global().tcp_frame(false);
+                    write_line(&writer, &error.payload()).await?;
+                }
             }
-            write_line(&writer, &resp).await?;
             continue;
         }
         if matches!(req, Req::Ping) {
+            metrics::global().tcp_frame(true);
             write_line(&writer, &json!({ "ok": true, "op": "ping", "pong": true })).await?;
             continue;
         }
-        if !authed {
+        if !principal.authenticated() {
+            metrics::global().tcp_frame(false);
             write_line(&writer, &BridgeError::Unauthorized.payload_json()).await?;
+            continue;
+        }
+
+        if let Err(error) = principal.authorize(&req) {
+            metrics::global().tcp_frame(false);
+            write_line(&writer, &error.payload()).await?;
             continue;
         }
 
         let response = dispatch(&state, &writer, req, &mut sub_tasks, &mut subscribed).await;
         if let Some(resp) = response {
+            metrics::global().tcp_frame(resp.get("ok").and_then(Value::as_bool).unwrap_or(false));
             write_line(&writer, &resp).await?;
         }
     }
@@ -221,21 +269,40 @@ async fn dispatch(
 ) -> Option<Value> {
     match req {
         Req::Auth { .. } | Req::Ping => None, // handled upstream
-        Req::Register { agent_key, display_name, kind, host, meta } => {
-            Some(reply(state.register_agent(Agent {
-                agent_key,
-                display_name,
-                kind,
-                host,
-                meta,
-                registered_at: crate::types::now_ts(),
-            }).map(|a| json!({ "agent": a }))))
-        }
-        Req::ListChannels => Some(json!({ "ok": true, "channels": state.list_channels() })),
-        Req::CreateChannel { slug, topic, created_by } => Some(reply(
-            state.create_or_get_channel(&slug, &topic, &created_by).await.map(|c| json!({ "channel": c })),
+        Req::Register {
+            agent_key,
+            display_name,
+            kind,
+            host,
+            meta,
+        } => Some(reply(
+            state
+                .register_agent(Agent {
+                    agent_key,
+                    display_name,
+                    kind,
+                    host,
+                    meta,
+                    registered_at: crate::types::now_ts(),
+                })
+                .map(|a| json!({ "agent": a })),
         )),
-        Req::Resolve { query, created_by, threshold } => Some(reply(
+        Req::ListChannels => Some(json!({ "ok": true, "channels": state.list_channels() })),
+        Req::CreateChannel {
+            slug,
+            topic,
+            created_by,
+        } => Some(reply(
+            state
+                .create_or_get_channel(&slug, &topic, &created_by)
+                .await
+                .map(|c| json!({ "channel": c })),
+        )),
+        Req::Resolve {
+            query,
+            created_by,
+            threshold,
+        } => Some(reply(
             state
                 .resolve_channel(&query, &created_by, threshold)
                 .await
@@ -245,39 +312,70 @@ async fn dispatch(
             let results = state.search_channels(&query, limit).await;
             Some(json!({ "ok": true, "results": results }))
         }
-        Req::Join { channel, agent_key, role } => Some(reply(
+        Req::Join {
+            channel,
+            agent_key,
+            role,
+        } => Some(reply(state.join(&channel, &agent_key, role).map(
+            |o| json!({ "member": o.member, "channel": o.channel, "newly_joined": o.newly_joined }),
+        ))),
+        Req::Leave { channel, agent_key } => Some(reply(
             state
-                .join(&channel, &agent_key, role)
-                .map(|o| json!({ "member": o.member, "channel": o.channel, "newly_joined": o.newly_joined })),
+                .leave(&channel, &agent_key)
+                .map(|removed| json!({ "removed": removed })),
         )),
-        Req::Leave { channel, agent_key } => {
-            Some(reply(state.leave(&channel, &agent_key).map(|removed| json!({ "removed": removed }))))
-        }
-        Req::Members { channel } => Some(reply(state.members(&channel).map(|m| json!({ "members": m })))),
-        Req::Post { channel, from, content, role, meta } => Some(reply(
-            state.post_message(&channel, &from, role, &content, meta).map(|m| json!({ "message": m })),
+        Req::Members { channel } => Some(reply(
+            state.members(&channel).map(|m| json!({ "members": m })),
         )),
-        Req::History { channel, since } => {
-            Some(reply(state.history(&channel, since).map(|m| json!({ "messages": m }))))
-        }
+        Req::Post {
+            channel,
+            from,
+            content,
+            role,
+            meta,
+        } => Some(reply(
+            state
+                .post_message(&channel, &from, role, &content, meta)
+                .map(|m| json!({ "message": m })),
+        )),
+        Req::History { channel, since } => Some(reply(
+            state
+                .history(&channel, since)
+                .map(|m| json!({ "messages": m })),
+        )),
         Req::GetContext { channel, key } => {
             let result = match key {
-                Some(k) => state.get_context_key(&channel, &k).map(|e| json!({ "entry": e })),
+                Some(k) => state
+                    .get_context_key(&channel, &k)
+                    .map(|e| json!({ "entry": e })),
                 None => state.get_context(&channel).map(|c| json!({ "context": c })),
             };
             Some(reply(result))
         }
-        Req::SetContext { channel, key, value, updated_by } => {
-            Some(reply(state.set_context(&channel, &key, value, &updated_by).map(|e| json!({ "entry": e }))))
-        }
-        Req::Subscribe { channel, agent_key, since } => {
+        Req::SetContext {
+            channel,
+            key,
+            value,
+            updated_by,
+        } => Some(reply(
+            state
+                .set_context(&channel, &key, value, &updated_by)
+                .map(|e| json!({ "entry": e })),
+        )),
+        Req::Subscribe {
+            channel,
+            agent_key,
+            since,
+        } => {
             // Drop finished forwarders, then cap live subscriptions per connection
             // so a client cannot spawn unbounded tasks with repeated `subscribe`s.
             sub_tasks.retain(|t| !t.is_finished());
             // One live stream per channel per connection: a second subscribe to the
             // same channel would deliver every event twice (or 64x at the cap).
             if subscribed.contains(&channel) {
-                return Some(json!({ "ok": false, "error": "already_subscribed", "channel": channel }));
+                return Some(
+                    json!({ "ok": false, "error": "already_subscribed", "channel": channel }),
+                );
             }
             if sub_tasks.len() >= MAX_SUBS_PER_CONN {
                 return Some(json!({
@@ -369,8 +467,10 @@ fn default_limit() -> usize {
 
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
-enum Req {
-    Auth { token: String },
+pub(crate) enum Req {
+    Auth {
+        token: String,
+    },
     Ping,
     Register {
         agent_key: String,
