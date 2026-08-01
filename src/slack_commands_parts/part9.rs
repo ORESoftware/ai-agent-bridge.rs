@@ -98,7 +98,7 @@ mod installed_app_contract_tests {
     }
 
     #[test]
-    fn reviewed_manifest_keeps_exact_app_and_routes() {
+    fn reviewed_manifest_keeps_exact_app_routes_and_required_scopes() {
         let manifest = include_str!("../../slack-app/manifest.yaml");
         assert!(manifest.contains("name: alex-main-agent"));
         assert!(manifest.contains("command: /ores-claude"));
@@ -106,6 +106,11 @@ mod installed_app_contract_tests {
         assert!(manifest.contains("https://api.fiducia.cloud/slack/commands/ores-claude"));
         assert!(manifest.contains("https://api.fiducia.cloud/slack/commands/ores-chatgpt"));
         assert!(manifest.contains("https://api.fiducia.cloud/slack/interactions"));
+        assert!(manifest.contains("- commands"));
+        assert!(manifest.contains("- chat:write"));
+        assert!(manifest.contains("- channels:history"));
+        assert!(manifest.contains("- groups:history"));
+        assert!(manifest.contains("- usergroups:read"));
         assert!(manifest.contains("token_rotation_enabled: true"));
         assert!(!manifest.contains("xoxb-"));
         assert!(!manifest.contains("signing_secret"));
