@@ -13,8 +13,9 @@ use std::{
 use serde_json::json;
 
 use super::{
-    build_modal, channel_is_allowed, compose_prompt, parse_form, validate_single_agent_workflow,
-    DispatchRequest, InteractionState, ModalContext, Provider, SlashCommandForm, TaskType,
+    build_modal, channel_is_allowed, compose_prompt, parse_form, render_context,
+    validate_single_agent_workflow, DispatchRequest, HistoryMessage, InteractionState,
+    ModalContext, Provider, SlashCommandForm, TaskType,
 };
 use crate::slack_bridge::{
     validate_slash_command, SlackConfig, WorkflowAssignmentDto, WorkflowPlanDto, WorkflowStatusDto,
@@ -405,6 +406,39 @@ fn context_truncates_an_oversized_single_message() {
     let rendered = render_context(&[human("1.0", "U1", &long)], 1, None).expect("context");
     assert!(rendered.len() < 2_000);
     assert!(rendered.contains("truncated"));
+}
+
+/// Writes the exact modal payload the adapter would hand to `views.open` so the
+/// Block Kit browser contract check renders the real thing rather than a
+/// hand-maintained copy that can drift away from the code.
+#[test]
+fn emits_block_kit_fixtures_for_the_browser_contract() {
+    use std::{fs, path::Path};
+
+    let config = config();
+    let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/blockkit");
+    fs::create_dir_all(&out).expect("fixture directory");
+
+    for (provider, name) in [
+        (Provider::Claude, "my-claude"),
+        (Provider::OpenAi, "my-chatgpt"),
+    ] {
+        let form = SlashCommandForm {
+            command: format!("/{name}"),
+            text: "harden the cron canary rollout".to_string(),
+            team_id: "T1".to_string(),
+            channel_id: "C1".to_string(),
+            channel_name: "eng".to_string(),
+            user_id: "U1".to_string(),
+            trigger_id: "abc.def".to_string(),
+        };
+        let view = build_modal(&config, provider, &form);
+        let rendered = serde_json::to_string_pretty(&view).expect("serialize view");
+        fs::write(out.join(format!("{name}.json")), rendered).expect("write fixture");
+    }
+
+    assert!(out.join("my-claude.json").exists());
+    assert!(out.join("my-chatgpt.json").exists());
 }
 
 #[test]
