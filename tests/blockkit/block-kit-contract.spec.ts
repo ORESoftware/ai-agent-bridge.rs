@@ -1,15 +1,15 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
 
 import { expect, test } from '@playwright/test';
 
 // The fixtures are written by the Rust test
 // `emits_block_kit_fixtures_for_the_browser_contract`, so this check renders the
 // exact payload the adapter hands to views.open rather than a copy that drifts.
-const here = dirname(fileURLToPath(import.meta.url));
-const fixtureDir = resolve(here, '../../target/blockkit');
-const artifactDir = resolve(here, 'artifacts');
+// Playwright transpiles specs to CommonJS, so __dirname is the portable anchor
+// here — import.meta.url is not available.
+const fixtureDir = resolve(__dirname, '../../target/blockkit');
+const artifactDir = resolve(__dirname, 'artifacts');
 
 const BUILDER = 'https://app.slack.com/block-kit-builder';
 
