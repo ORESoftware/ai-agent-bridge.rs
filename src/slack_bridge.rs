@@ -41,8 +41,6 @@ use tokio::{
 use tower_http::{catch_panic::CatchPanicLayer, trace::TraceLayer};
 use tracing::{info, info_span, warn, Instrument};
 
-mod commands;
-
 type HmacSha256 = Hmac<Sha256>;
 
 const DEFAULT_HOST: &str = "127.0.0.1";
@@ -67,8 +65,6 @@ const MAX_EVENT_ID_BYTES: usize = 255;
 const MAX_IDENTIFIER_BYTES: usize = 255;
 const MAX_PREFIX_BYTES: usize = 128;
 const SLACK_POST_MESSAGE_URL: &str = "https://slack.com/api/chat.postMessage";
-const SLACK_VIEWS_OPEN_URL: &str = "https://slack.com/api/views.open";
-const SLACK_CONVERSATIONS_HISTORY_URL: &str = "https://slack.com/api/conversations.history";
 
 #[derive(Debug, thiserror::Error)]
 enum AdapterError {
@@ -107,24 +103,6 @@ struct SlackConfig {
     poll_interval: Duration,
     max_body_bytes: usize,
     max_concurrent_workflows: usize,
-    // Slash-command surface (`/my-claude`, `/my-chatgpt`). See `commands`.
-    claude_command: String,
-    openai_command: String,
-    claude_model_choices: Vec<String>,
-    openai_model_choices: Vec<String>,
-    target_choices: Vec<String>,
-    context_message_default: usize,
-    context_message_max: usize,
-    slack_views_open_url: String,
-    slack_conversations_history_url: String,
-    broadcast_channel_id: Option<String>,
-    linear_api_key: Option<String>,
-    linear_team_id: Option<String>,
-    linear_project_id: Option<String>,
-    linear_state_todo: Option<String>,
-    linear_state_started: Option<String>,
-    linear_state_done: Option<String>,
-    linear_include_channel_context: bool,
 }
 
 impl SlackConfig {
@@ -225,81 +203,6 @@ impl SlackConfig {
             128,
         )?;
 
-        let claude_command = validate_slash_command(
-            "SLACK_CLAUDE_COMMAND",
-            &env_or("SLACK_CLAUDE_COMMAND", commands::DEFAULT_CLAUDE_COMMAND),
-        )?;
-        let openai_command = validate_slash_command(
-            "SLACK_OPENAI_COMMAND",
-            &env_or("SLACK_OPENAI_COMMAND", commands::DEFAULT_OPENAI_COMMAND),
-        )?;
-        if claude_command == openai_command {
-            return Err(AdapterError::Configuration(
-                "Slack slash commands must be distinct".to_string(),
-            ));
-        }
-
-        // Each command may only ever dispatch keys from its own provider list,
-        // so the two lists must not overlap.
-        let claude_model_choices = optional_csv_list("SLACK_CLAUDE_MODEL_CHOICES")?
-            .unwrap_or_else(|| vec![claude_agent_key.clone()]);
-        let openai_model_choices = optional_csv_list("SLACK_OPENAI_MODEL_CHOICES")?
-            .unwrap_or_else(|| vec![openai_agent_key.clone()]);
-        if claude_model_choices
-            .iter()
-            .any(|key| openai_model_choices.contains(key))
-        {
-            return Err(AdapterError::Configuration(
-                "SLACK_CLAUDE_MODEL_CHOICES and SLACK_OPENAI_MODEL_CHOICES must not overlap"
-                    .to_string(),
-            ));
-        }
-        let target_choices = optional_csv_list("SLACK_TARGET_CHOICES")?.unwrap_or_default();
-
-        let context_message_max = env_usize(
-            "SLACK_CONTEXT_MESSAGE_MAX",
-            commands::MAX_CONTEXT_MESSAGES,
-            0,
-            commands::MAX_CONTEXT_MESSAGES,
-        )?;
-        let context_message_default = env_usize(
-            "SLACK_CONTEXT_MESSAGE_DEFAULT",
-            commands::DEFAULT_CONTEXT_MESSAGES.min(context_message_max),
-            0,
-            context_message_max,
-        )?;
-
-        let broadcast_channel_id = env_opt("SLACK_BROADCAST_CHANNEL_ID")
-            .map(|value| normalize_identifier("SLACK_BROADCAST_CHANNEL_ID", &value))
-            .transpose()?;
-
-        let linear_api_key = env_opt("SLACK_LINEAR_API_KEY");
-        let linear_team_id = env_opt("SLACK_LINEAR_TEAM_ID")
-            .map(|value| normalize_identifier("SLACK_LINEAR_TEAM_ID", &value))
-            .transpose()?;
-        if linear_team_id.is_some() && linear_api_key.is_none() {
-            return Err(AdapterError::Configuration(
-                "SLACK_LINEAR_API_KEY is required when SLACK_LINEAR_TEAM_ID is set".to_string(),
-            ));
-        }
-        let linear_project_id = env_opt("SLACK_LINEAR_PROJECT_ID")
-            .map(|value| normalize_identifier("SLACK_LINEAR_PROJECT_ID", &value))
-            .transpose()?;
-        let linear_state_todo = env_opt("SLACK_LINEAR_STATE_TODO")
-            .map(|value| normalize_identifier("SLACK_LINEAR_STATE_TODO", &value))
-            .transpose()?;
-        let linear_state_started = env_opt("SLACK_LINEAR_STATE_STARTED")
-            .map(|value| normalize_identifier("SLACK_LINEAR_STATE_STARTED", &value))
-            .transpose()?;
-        let linear_state_done = env_opt("SLACK_LINEAR_STATE_DONE")
-            .map(|value| normalize_identifier("SLACK_LINEAR_STATE_DONE", &value))
-            .transpose()?;
-        // Copying the channel transcript into a Linear issue moves Slack
-        // conversation into a second system with a different audience. Off
-        // unless an operator opts in.
-        let linear_include_channel_context =
-            env_bool("SLACK_LINEAR_INCLUDE_CHANNEL_CONTEXT", false)?;
-
         Ok(Self {
             host,
             port,
@@ -322,23 +225,6 @@ impl SlackConfig {
             poll_interval: Duration::from_millis(poll_interval_ms),
             max_body_bytes,
             max_concurrent_workflows,
-            claude_command,
-            openai_command,
-            claude_model_choices,
-            openai_model_choices,
-            target_choices,
-            context_message_default,
-            context_message_max,
-            slack_views_open_url: SLACK_VIEWS_OPEN_URL.to_string(),
-            slack_conversations_history_url: SLACK_CONVERSATIONS_HISTORY_URL.to_string(),
-            broadcast_channel_id,
-            linear_api_key,
-            linear_team_id,
-            linear_project_id,
-            linear_state_todo,
-            linear_state_started,
-            linear_state_done,
-            linear_include_channel_context,
         })
     }
 
@@ -439,46 +325,6 @@ fn optional_csv_set(key: &str) -> AdapterResult<BTreeSet<String>> {
         }
     }
     Ok(values)
-}
-
-/// Ordered variant of `optional_csv_set`. Slash-command menus render in the
-/// order an operator configured, so these lists keep their order and reject
-/// duplicates instead of silently collapsing them.
-fn optional_csv_list(key: &str) -> AdapterResult<Option<Vec<String>>> {
-    let Some(raw) = env_opt(key) else {
-        return Ok(None);
-    };
-    let mut values = Vec::new();
-    for item in raw.split(',') {
-        let item = normalize_identifier(key, item)?;
-        if values.contains(&item) {
-            return Err(AdapterError::Configuration(format!(
-                "{key} contains a duplicate entry"
-            )));
-        }
-        values.push(item);
-    }
-    if values.is_empty() {
-        return Err(AdapterError::Configuration(format!(
-            "{key} must contain at least one entry"
-        )));
-    }
-    Ok(Some(values))
-}
-
-fn validate_slash_command(name: &str, value: &str) -> AdapterResult<String> {
-    let value = value.trim();
-    if !value.starts_with('/')
-        || value.len() < 2
-        || value.len() > MAX_PREFIX_BYTES
-        || value.chars().any(char::is_whitespace)
-        || value.chars().any(char::is_control)
-    {
-        return Err(AdapterError::Configuration(format!(
-            "{name} must be a single token beginning with '/'"
-        )));
-    }
-    Ok(value.to_string())
 }
 
 fn normalize_identifier(name: &str, value: &str) -> AdapterResult<String> {
@@ -1326,8 +1172,6 @@ fn router(app: Arc<SlackApp>) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/slack/events", post(slack_events))
-        .route("/slack/commands", post(commands::slack_commands))
-        .route("/slack/interactions", post(commands::slack_interactions))
         .layer(DefaultBodyLimit::max(app.config.max_body_bytes))
         .layer(TraceLayer::new_for_http())
         .layer(CatchPanicLayer::new())
@@ -1661,23 +1505,6 @@ mod tests {
             poll_interval: Duration::from_millis(DEFAULT_POLL_INTERVAL_MS),
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
             max_concurrent_workflows: DEFAULT_MAX_CONCURRENT_WORKFLOWS,
-            claude_command: commands::DEFAULT_CLAUDE_COMMAND.to_string(),
-            openai_command: commands::DEFAULT_OPENAI_COMMAND.to_string(),
-            claude_model_choices: vec![DEFAULT_CLAUDE_AGENT_KEY.to_string()],
-            openai_model_choices: vec![DEFAULT_OPENAI_AGENT_KEY.to_string()],
-            target_choices: Vec::new(),
-            context_message_default: commands::DEFAULT_CONTEXT_MESSAGES,
-            context_message_max: commands::MAX_CONTEXT_MESSAGES,
-            slack_views_open_url: SLACK_VIEWS_OPEN_URL.to_string(),
-            slack_conversations_history_url: SLACK_CONVERSATIONS_HISTORY_URL.to_string(),
-            broadcast_channel_id: None,
-            linear_api_key: None,
-            linear_team_id: None,
-            linear_project_id: None,
-            linear_state_todo: None,
-            linear_state_started: None,
-            linear_state_done: None,
-            linear_include_channel_context: false,
         }
     }
 

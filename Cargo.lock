@@ -451,7 +451,6 @@ dependencies = [
  "axum 0.8.9",
  "chrono",
  "fiducia-telemetry",
- "form_urlencoded",
  "futures",
  "hmac",
  "httpdate",

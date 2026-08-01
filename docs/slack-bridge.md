@@ -13,11 +13,6 @@ The adapter creates one `competitive` workflow with `worker_count=2`, polls the
 authoritative workflow record, and posts one deterministic, labeled reply for
 each configured identity to the originating `channel` and `thread_ts`.
 
-For the one-model-at-a-time surface driven by `/my-claude` and `/my-chatgpt`
-submenus — including channel context capture and Linear broadcast — see
-[`slack-slash-commands.md`](./slack-slash-commands.md). It shares this binary,
-this security boundary, and this journal.
-
 ## Security boundary
 
 The Events endpoint is `POST /slack/events`.
