@@ -984,21 +984,47 @@ async fn post_channel_message(
         payload["thread_ts"] = json!(thread_ts);
     }
 
-    let response = app
-        .client
-        .post(&app.config.slack_post_message_url)
-        .bearer_auth(token)
-        .json(&payload)
-        .send()
-        .await
-        .ok()?;
-    let body = read_bounded(response, MAX_REMOTE_RESPONSE_BYTES).await?;
-    let parsed = serde_json::from_slice::<Value>(&body).ok()?;
-    if parsed.get("ok").and_then(Value::as_bool) != Some(true) {
-        warn!("Slack rejected a dispatch message");
-        return None;
+    // A dropped post is not cosmetic here: the first one carries the audit trail
+    // of what was dispatched, and the last one carries the model's answer. Match
+    // the dual-model path and retry a bounded number of times, honouring a
+    // bounded Retry-After so a 429 does not silently lose the reply.
+    for attempt in 0..MAX_SLACK_POST_ATTEMPTS {
+        let response = app
+            .client
+            .post(&app.config.slack_post_message_url)
+            .bearer_auth(token)
+            .json(&payload)
+            .send()
+            .await;
+
+        if let Ok(response) = response {
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(|seconds| seconds.clamp(1, 10));
+            let parsed = read_bounded(response, MAX_REMOTE_RESPONSE_BYTES)
+                .await
+                .and_then(|body| serde_json::from_slice::<Value>(&body).ok());
+
+            if let Some(parsed) = &parsed {
+                if parsed.get("ok").and_then(Value::as_bool) == Some(true) {
+                    return parsed.get("ts").and_then(Value::as_str).map(str::to_string);
+                }
+            }
+            if attempt + 1 < MAX_SLACK_POST_ATTEMPTS {
+                sleep(Duration::from_secs(retry_after.unwrap_or(1))).await;
+                continue;
+            }
+        } else if attempt + 1 < MAX_SLACK_POST_ATTEMPTS {
+            sleep(Duration::from_secs(1)).await;
+            continue;
+        }
     }
-    parsed.get("ts").and_then(Value::as_str).map(str::to_string)
+
+    warn!("Slack rejected a dispatch message");
+    None
 }
 
 fn workflow_payload(request: &DispatchRequest, prompt: &str) -> Value {
