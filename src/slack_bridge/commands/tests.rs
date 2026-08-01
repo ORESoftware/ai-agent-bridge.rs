@@ -60,6 +60,7 @@ fn config() -> SlackConfig {
         linear_state_todo: None,
         linear_state_started: None,
         linear_state_done: None,
+        linear_include_channel_context: false,
     }
 }
 
@@ -265,6 +266,145 @@ fn single_agent_guard_accepts_only_the_requested_agent() {
     .is_err());
     // No assignment at all.
     assert!(validate_single_agent_workflow(&workflow(&[]), "claude-fable-5").is_err());
+}
+
+// --- channel context selection -------------------------------------------
+
+fn human(ts: &str, user: &str, text: &str) -> HistoryMessage {
+    HistoryMessage {
+        text: text.to_string(),
+        user: user.to_string(),
+        bot_id: String::new(),
+        ts: ts.to_string(),
+        subtype: String::new(),
+    }
+}
+
+fn bot(ts: &str, text: &str) -> HistoryMessage {
+    HistoryMessage {
+        text: text.to_string(),
+        user: String::new(),
+        bot_id: "B1".to_string(),
+        ts: ts.to_string(),
+        subtype: String::new(),
+    }
+}
+
+#[test]
+fn context_excludes_bot_output_to_prevent_feedback() {
+    // Slack returns newest-first. The adapter posts its own acknowledgements and
+    // model replies into this same channel; re-ingesting them would feed the
+    // model its own prior output on the next dispatch.
+    let messages = vec![
+        bot("5.0", "*Agent task dispatched* — claude-fable-5"),
+        human("4.0", "U2", "the deploy is red"),
+        bot("3.0", "alertmanager: CPU high"),
+        human("2.0", "U1", "who is on call?"),
+    ];
+    let rendered = render_context(&messages, 5, None).expect("context");
+
+    assert!(!rendered.contains("Agent task dispatched"));
+    assert!(!rendered.contains("alertmanager"));
+    assert!(rendered.contains("the deploy is red"));
+    assert!(rendered.contains("who is on call?"));
+}
+
+#[test]
+fn context_excludes_the_configured_bot_user() {
+    // A bot posting as a user carries a `user` id rather than a `bot_id`.
+    let messages = vec![
+        human("2.0", "UBOT", "posted by this app"),
+        human("1.0", "U1", "posted by a human"),
+    ];
+    let rendered = render_context(&messages, 5, Some("UBOT")).expect("context");
+
+    assert!(!rendered.contains("posted by this app"));
+    assert!(rendered.contains("posted by a human"));
+}
+
+#[test]
+fn context_is_rendered_oldest_first_with_authors() {
+    let messages = vec![
+        human("3.0", "U3", "third"),
+        human("2.0", "U2", "second"),
+        human("1.0", "U1", "first"),
+    ];
+    let rendered = render_context(&messages, 5, None).expect("context");
+
+    let lines: Vec<&str> = rendered.lines().collect();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0], "[1.0] <@U1>: first");
+    assert_eq!(lines[2], "[3.0] <@U3>: third");
+}
+
+#[test]
+fn context_takes_the_newest_messages_up_to_depth() {
+    let messages = vec![
+        human("4.0", "U4", "newest"),
+        human("3.0", "U3", "newer"),
+        human("2.0", "U2", "older"),
+        human("1.0", "U1", "oldest"),
+    ];
+    let rendered = render_context(&messages, 2, None).expect("context");
+
+    assert!(rendered.contains("newest"));
+    assert!(rendered.contains("newer"));
+    assert!(!rendered.contains("older"));
+    assert!(!rendered.contains("oldest"));
+    // Still oldest-first within the selection.
+    assert!(rendered.find("newer").unwrap() < rendered.find("newest").unwrap());
+}
+
+#[test]
+fn context_depth_counts_humans_not_raw_messages() {
+    // Filtering happens before the depth cut, so interleaved bot noise cannot
+    // starve the transcript down to nothing.
+    let messages = vec![
+        bot("6.0", "noise"),
+        human("5.0", "U5", "keep me"),
+        bot("4.0", "noise"),
+        human("3.0", "U3", "keep me too"),
+        bot("2.0", "noise"),
+        human("1.0", "U1", "and me"),
+    ];
+    let rendered = render_context(&messages, 3, None).expect("context");
+
+    assert_eq!(rendered.lines().count(), 3);
+    assert!(!rendered.contains("noise"));
+}
+
+#[test]
+fn context_skips_tombstones_blank_text_and_authorless_messages() {
+    let mut joined = human("3.0", "U3", "has joined the channel");
+    joined.subtype = "channel_join".to_string();
+    let blank = human("2.0", "U2", "   ");
+    let authorless = HistoryMessage {
+        text: "no author".to_string(),
+        user: String::new(),
+        bot_id: String::new(),
+        ts: "1.5".to_string(),
+        subtype: String::new(),
+    };
+    let messages = vec![joined, blank, authorless, human("1.0", "U1", "real")];
+
+    let rendered = render_context(&messages, 5, None).expect("context");
+    assert_eq!(rendered, "[1.0] <@U1>: real");
+}
+
+#[test]
+fn context_is_none_when_nothing_survives_the_filter() {
+    assert_eq!(render_context(&[bot("1.0", "only bots")], 5, None), None);
+    assert_eq!(render_context(&[], 5, None), None);
+    // Depth zero means the member asked for no context at all.
+    assert_eq!(render_context(&[human("1.0", "U1", "hi")], 0, None), None);
+}
+
+#[test]
+fn context_truncates_an_oversized_single_message() {
+    let long = "x".repeat(5_000);
+    let rendered = render_context(&[human("1.0", "U1", &long)], 1, None).expect("context");
+    assert!(rendered.len() < 2_000);
+    assert!(rendered.contains("truncated"));
 }
 
 #[test]
