@@ -2,6 +2,7 @@
 
 # One reviewed source tree builds all runtime binaries. Final targets copy only
 # the selected executable into a non-root distroless image.
+# DEN-1041 validates the Slack command image independently in CI.
 FROM rust:1.97.1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa AS builder
 
 WORKDIR /workspace
