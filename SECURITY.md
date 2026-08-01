@@ -49,7 +49,6 @@ The controls a report is measured against are documented, not implied:
 | Area | Reference |
 |---|---|
 | Slack ingress, signatures, replay, journal | [`docs/slack-bridge.md`](docs/slack-bridge.md) |
-| Slash-command dispatch, channel context, fan-out | [`docs/slack-slash-commands.md`](docs/slack-slash-commands.md) |
 | Channel → project → repository routing | [`docs/slack-project-bindings.md`](docs/slack-project-bindings.md) |
 | Workflow adapter authentication | [`docs/workflow-adapter-auth.md`](docs/workflow-adapter-auth.md) |
 | TCP scoped authentication | [`docs/tcp-scoped-auth.md`](docs/tcp-scoped-auth.md) |
