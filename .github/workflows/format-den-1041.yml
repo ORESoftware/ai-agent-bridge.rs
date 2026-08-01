@@ -1,29 +1,134 @@
-name: temporary DEN-1041 formatter
+name: temporary DEN-1041 branch repair
 
 on:
-  pull_request:
-    branches: [main]
+  push:
+    branches:
+      - agent/den-1041-ores-slash-commands
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  format:
+  repair:
+    if: ${{ !contains(github.event.head_commit.message, 'DEN-1041 apply formatting and env contract') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
           submodules: recursive
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: "1.95.0"
           components: rustfmt
-      - run: cargo fmt --all
+      - name: Apply bounded source and environment repairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          source = Path('src/slack_commands.rs')
+          text = source.read_text()
+          text = text.replace('path::{Path, PathBuf},', 'path::PathBuf,')
+          source.write_text(text)
+
+          flags = Path('.cli-flags.toml')
+          text = flags.read_text()
+          text = text.replace(
+              '"SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN", "SLACK_BRIDGE_BEARER"]',
+              '"SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN", "SLACK_BRIDGE_BEARER", "SLACK_COORDINATOR_BEARER"]',
+          )
+          addition = '''
+
+# ORESoftware Slack slash-command process. Credentials remain in [env].ignore.
+[flags.slack-command-host]
+env = "SLACK_COMMAND_HOST"
+aliases = ["slack-command-host"]
+type = "string"
+help = "Listen address for the ORESoftware Slack slash-command process."
+
+[flags.slack-command-port]
+env = "SLACK_COMMAND_PORT"
+aliases = ["slack-command-port"]
+type = "integer"
+help = "HTTP port for ORESoftware Slack commands and interactions."
+
+[flags.slack-project-registry-path]
+env = "SLACK_PROJECT_REGISTRY_PATH"
+aliases = ["slack-project-registry-path"]
+type = "string"
+help = "Absolute path to the reviewed Slack channel to Linear project registry."
+
+[flags.slack-command-state-dir]
+env = "SLACK_COMMAND_STATE_DIR"
+aliases = ["slack-command-state-dir"]
+type = "string"
+help = "Absolute private directory for create-once Slack command run claims."
+
+[flags.slack-coordinator-url]
+env = "SLACK_COORDINATOR_URL"
+aliases = ["slack-coordinator-url"]
+type = "string"
+help = "Base URL for the durable AI agent coordinator job API."
+
+[flags.slack-chatgpt-agent-key]
+env = "SLACK_CHATGPT_AGENT_KEY"
+aliases = ["slack-chatgpt-agent-key"]
+type = "string"
+help = "Registered bridge identity used by /ores-chatgpt."
+
+[flags.slack-linear-run-project-id]
+env = "SLACK_LINEAR_RUN_PROJECT_ID"
+aliases = ["slack-linear-run-project-id"]
+type = "string"
+help = "Linear project ID for the durable AI Agent Run Queue projection."
+
+[flags.slack-context-message-count]
+env = "SLACK_CONTEXT_MESSAGE_COUNT"
+aliases = ["slack-context-message-count"]
+type = "integer"
+help = "Default recent non-bot Slack messages attached as untrusted task context."
+
+[flags.slack-command-max-concurrent-runs]
+env = "SLACK_COMMAND_MAX_CONCURRENT_RUNS"
+aliases = ["slack-command-max-concurrent-runs"]
+type = "integer"
+help = "Maximum concurrently dispatching Slack slash-command runs."
+
+[flags.slack-command-dry-run]
+env = "SLACK_COMMAND_DRY_RUN"
+aliases = ["slack-command-dry-run"]
+type = "string"
+help = "Keep Slack slash commands from creating bridge workflows or coordinator jobs."
+'''
+          if '[flags.slack-command-host]' not in text:
+              text = text.rstrip() + addition
+          flags.write_text(text)
+
+          ci = Path('.github/workflows/ci.yml')
+          text = ci.read_text()
+          temporary = '''      - run: cargo fmt --all
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: den-1041-formatted-source
           path: src/slack_commands.rs
           if-no-files-found: error
           retention-days: 1
+'''
+          text = text.replace(temporary, '      - run: cargo fmt --all -- --check\n')
+          ci.write_text(text)
+
+          Path('.github/workflows/format-den-1041.yml').unlink()
+          PY
+          cargo fmt --all
+          git diff --check
+      - name: Commit repaired branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/slack_commands.rs .cli-flags.toml .github/workflows/ci.yml .github/workflows/format-den-1041.yml
+          git commit -m 'DEN-1041 apply formatting and env contract'
+          git push origin HEAD:agent/den-1041-ores-slash-commands
