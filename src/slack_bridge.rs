@@ -1319,6 +1319,8 @@ fn router(app: Arc<SlackApp>) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/slack/events", post(slack_events))
+        .route("/slack/commands", post(commands::slack_commands))
+        .route("/slack/interactions", post(commands::slack_interactions))
         .layer(DefaultBodyLimit::max(app.config.max_body_bytes))
         .layer(TraceLayer::new_for_http())
         .layer(CatchPanicLayer::new())
