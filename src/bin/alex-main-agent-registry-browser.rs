@@ -1,30 +1,25 @@
-use std::{
-    collections::BTreeSet,
-    env, fs,
-    net::SocketAddr,
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{collections::BTreeSet, env, fs, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use ai_agent_bridge::slack_project_bindings::{
     AgentMode, RegistryError, RequestedCapability, ResolveRequest, SlackProjectRegistry,
     WritePolicy,
 };
-use anyhow::{Context, ensure};
+use anyhow::{ensure, Context};
 use axum::{
-    Json, Router,
     body::Body,
     extract::{DefaultBodyLimit, Request, State},
-    http::{HeaderName, HeaderValue, StatusCode, header},
+    http::{header, HeaderName, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 
 const DEFAULT_ADDRESS: &str = "127.0.0.1:8160";
 const DEFAULT_REGISTRY_PATH: &str = "config/alex-main-agent.channels.json";
+const MAX_REGISTRY_BYTES: u64 = 1_048_576;
 const MAX_REQUEST_BODY_BYTES: usize = 16 * 1024;
 
 #[derive(Clone)]
@@ -63,7 +58,7 @@ struct ResolveSuccess {
 struct ResolveFailure {
     status: &'static str,
     code: &'static str,
-    message: String,
+    message: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -77,6 +72,13 @@ async fn main() -> anyhow::Result<()> {
     let registry_path = env::var_os("ALEX_MAIN_AGENT_REGISTRY_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_REGISTRY_PATH));
+    let registry_metadata = fs::metadata(&registry_path)
+        .with_context(|| format!("failed to inspect registry at {}", registry_path.display()))?;
+    ensure!(registry_metadata.is_file(), "registry path must be a file");
+    ensure!(
+        registry_metadata.len() <= MAX_REGISTRY_BYTES,
+        "registry file exceeds the maximum size"
+    );
     let registry_bytes = fs::read(&registry_path)
         .with_context(|| format!("failed to read registry from {}", registry_path.display()))?;
     let registry = SlackProjectRegistry::from_json(&registry_bytes)
@@ -121,6 +123,19 @@ async fn shutdown_signal() {
 }
 
 async fn security_headers(request: Request<Body>, next: Next) -> Response {
+    let host_is_allowed = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(loopback_host);
+    if !host_is_allowed {
+        return (
+            StatusCode::MISDIRECTED_REQUEST,
+            "the registry probe accepts only loopback Host headers",
+        )
+            .into_response();
+    }
+
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
     headers.insert(
@@ -149,6 +164,20 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response {
     response
 }
 
+fn loopback_host(value: &str) -> bool {
+    let value = value.trim();
+    if let Some(ipv6) = value.strip_prefix('[') {
+        return ipv6.split_once(']').is_some_and(|(address, suffix)| {
+            address == "::1" && (suffix.is_empty() || suffix.starts_with(':'))
+        });
+    }
+
+    let hostname = value
+        .split_once(':')
+        .map_or(value, |(hostname, _port)| hostname);
+    hostname == "127.0.0.1" || hostname.eq_ignore_ascii_case("localhost")
+}
+
 async fn index() -> Html<&'static str> {
     Html(INDEX_HTML)
 }
@@ -171,10 +200,7 @@ async fn healthz(State(state): State<ProbeState>) -> Json<HealthResponse> {
     })
 }
 
-async fn resolve(
-    State(state): State<ProbeState>,
-    Json(input): Json<ResolveInput>,
-) -> Response {
+async fn resolve(State(state): State<ProbeState>, Json(input): Json<ResolveInput>) -> Response {
     let request = ResolveRequest {
         workspace_id: input.workspace_id,
         channel_id: input.channel_id,
@@ -202,13 +228,13 @@ async fn resolve(
         })
         .into_response(),
         Err(error) => {
-            let (status, code) = registry_error_response(&error);
+            let (status, code, message) = registry_error_response(&error);
             (
                 status,
                 Json(ResolveFailure {
                     status: "rejected",
                     code,
-                    message: error.to_string(),
+                    message,
                 }),
             )
                 .into_response()
@@ -216,24 +242,50 @@ async fn resolve(
     }
 }
 
-fn registry_error_response(error: &RegistryError) -> (StatusCode, &'static str) {
+fn registry_error_response(
+    error: &RegistryError,
+) -> (StatusCode, &'static str, &'static str) {
     match error {
-        RegistryError::UnmappedChannel => (StatusCode::NOT_FOUND, "unmapped_channel"),
-        RegistryError::UnauthorizedPrincipal => {
-            (StatusCode::FORBIDDEN, "unauthorized_principal")
-        }
-        RegistryError::RepositoryNotAllowed => {
-            (StatusCode::FORBIDDEN, "repository_not_allowed")
-        }
-        RegistryError::AgentModeNotAllowed => {
-            (StatusCode::FORBIDDEN, "agent_mode_not_allowed")
-        }
-        RegistryError::WriteNotAllowed => (StatusCode::FORBIDDEN, "write_not_allowed"),
-        RegistryError::IssueTeamMismatch => (StatusCode::BAD_REQUEST, "issue_team_mismatch"),
-        RegistryError::InvalidIssueIdentifier => {
-            (StatusCode::BAD_REQUEST, "invalid_issue_identifier")
-        }
-        _ => (StatusCode::BAD_REQUEST, "invalid_request"),
+        RegistryError::UnmappedChannel => (
+            StatusCode::NOT_FOUND,
+            "unmapped_channel",
+            "The Slack channel is not mapped to a project.",
+        ),
+        RegistryError::UnauthorizedPrincipal => (
+            StatusCode::FORBIDDEN,
+            "unauthorized_principal",
+            "The Slack principal is not authorized for this project.",
+        ),
+        RegistryError::RepositoryNotAllowed => (
+            StatusCode::FORBIDDEN,
+            "repository_not_allowed",
+            "The requested repository is outside the project allowlist.",
+        ),
+        RegistryError::AgentModeNotAllowed => (
+            StatusCode::FORBIDDEN,
+            "agent_mode_not_allowed",
+            "The requested agent mode is not allowed for this project.",
+        ),
+        RegistryError::WriteNotAllowed => (
+            StatusCode::FORBIDDEN,
+            "write_not_allowed",
+            "The requested write capability is not allowed for this project.",
+        ),
+        RegistryError::IssueTeamMismatch => (
+            StatusCode::BAD_REQUEST,
+            "issue_team_mismatch",
+            "The Linear issue belongs to a different team.",
+        ),
+        RegistryError::InvalidIssueIdentifier => (
+            StatusCode::BAD_REQUEST,
+            "invalid_issue_identifier",
+            "The Linear issue identifier is invalid.",
+        ),
+        _ => (
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "The request did not satisfy the registry contract.",
+        ),
     }
 }
 
