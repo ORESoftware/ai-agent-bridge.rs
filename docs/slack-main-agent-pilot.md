@@ -30,6 +30,18 @@ https://api.fiducia.cloud/slack/interactions
 
 The application must verify Slack signatures and request freshness before parsing or journaling a request. No gateway authentication cookie or operator bearer may be required on these three Slack-signed endpoints.
 
+## Required bot scopes
+
+The reviewed manifest grants only the scopes needed by the command service:
+
+- `commands` for the two slash commands;
+- `chat:write` for bounded status messages;
+- `channels:history` for approved public-channel context;
+- `groups:history` for approved private-channel context;
+- `usergroups:read` for fail-closed user-group authorization through `usergroups.list`.
+
+The initial pilot authorizes one immutable user ID and therefore does not depend on user-group lookup. `usergroups:read` is nevertheless required before any binding adds `allowed_user_group_ids`; without it, those requests fail closed. Adding this scope changes the installed grant and requires reinstalling the Slack app.
+
 ## Linear routing
 
 | Resource | Stable identifier |
@@ -59,7 +71,8 @@ Using the Slack app settings UI:
 1. Open app `A0BMBAMM5NJ`.
 2. Open **App Manifest**.
 3. Merge and validate `slack-app/manifest.yaml`.
-4. Save the manifest and reinstall the app if Slack reports changed scopes.
+4. Save the manifest.
+5. Reinstall the app so the workspace grants `usergroups:read` and any other reviewed scope changes.
 
 Using an app configuration token:
 
