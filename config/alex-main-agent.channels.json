@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "slack_app": {
+    "name": "alex-main-agent",
+    "app_id": "A0BMBAMM5NJ",
+    "workspace_id": "T01B3C83PMK"
+  },
+  "routing_manifest_path": ".github/alex-main-agent.json",
+  "policy": {
+    "require_signed_slack_requests": true,
+    "reject_stale_requests": true,
+    "idempotency_source": "slack_event_id",
+    "require_linear_issue": true,
+    "branch_and_pr_include_issue_id": true,
+    "post_status_to_origin_thread": true,
+    "organization_allowlist_only": true,
+    "redact_secrets": true
+  },
+  "channels": [
+    {
+      "channel_name": "3fa-app",
+      "channel_id": "C0BL6BEDYFK",
+      "linear_project": "github.com/3FA-app",
+      "routing_issue": "DEN-1272",
+      "delivery_issue": "DEN-1282",
+      "github_repository": "3FA-app/3FA-mcp-server.rs",
+      "base_branch": "main",
+      "routing_pr": "https://github.com/3FA-app/3FA-mcp-server.rs/pull/13"
+    },
+    {
+      "channel_name": "cliptown",
+      "channel_id": "C0BLYPGGFH6",
+      "linear_project": "github.com/cliptown",
+      "routing_issue": "DEN-1273",
+      "delivery_issue": "DEN-1284",
+      "github_repository": "cliptown/cliptown-monorepo",
+      "base_branch": "main",
+      "routing_pr": "https://github.com/cliptown/cliptown-monorepo/pull/11"
+    },
+    {
+      "channel_name": "benefactor-cc",
+      "channel_id": "C0BKP367N95",
+      "linear_project": "github.com/benefactor-cc",
+      "routing_issue": "DEN-1274",
+      "delivery_issue": "DEN-1286",
+      "github_repository": "benefactor-cc/benefactor-cc-mcp-server.rs",
+      "base_branch": "main",
+      "routing_pr": "https://github.com/benefactor-cc/benefactor-cc-mcp-server.rs/pull/13"
+    },
+    {
+      "channel_name": "athlet-o",
+      "channel_id": "C0BLYPTPSFJ",
+      "linear_project": "github.com/athlet-o",
+      "routing_issue": "DEN-1275",
+      "delivery_issue": "DEN-1288",
+      "github_repository": "athlet-o/athleto-mcp-server.rs",
+      "base_branch": "main",
+      "routing_pr": "https://github.com/athlet-o/athleto-mcp-server.rs/pull/5"
+    },
+    {
+      "channel_name": "memebank",
+      "channel_id": "C0BLYPLKETS",
+      "linear_project": "memebank",
+      "routing_issue": "DEN-1276",
+      "delivery_issue": "DEN-1289",
+      "github_repository": "memebank/mbk-api",
+      "base_branch": "master",
+      "routing_pr": "https://github.com/memebank/mbk-api/pull/2",
+      "temporary_target": true,
+      "canonical_bootstrap_issue": "DEN-1043"
+    },
+    {
+      "channel_name": "scintilla-run",
+      "channel_id": "C0BL4GDJHQA",
+      "linear_project": "github.com/scintilla-run",
+      "routing_issue": "DEN-1277",
+      "delivery_issue": "DEN-1290",
+      "github_repository": "scintilla-run/scintilla-mcp-server.rs",
+      "base_branch": "main",
+      "routing_pr": "https://github.com/scintilla-run/scintilla-mcp-server.rs/pull/4"
+    },
+    {
+      "channel_name": "quaestor-ledger",
+      "channel_id": "C0BL4E85DGA",
+      "linear_project": "github.com/quaestor-ledger",
+      "routing_issue": "DEN-1278",
+      "delivery_issue": "DEN-1291",
+      "github_repository": "quaestor-ledger/quaestor-ledger-mcp-server.rs",
+      "base_branch": "main",
+      "routing_pr": "https://github.com/quaestor-ledger/quaestor-ledger-mcp-server.rs/pull/5"
+    },
+    {
+      "channel_name": "daedalus-fab",
+      "channel_id": "C0BKP3DDDPZ",
+      "rejected_channel_ids": ["C0BMB9GSSKY"],
+      "linear_project": "github.com/daedalus-fab",
+      "routing_issue": "DEN-1279",
+      "delivery_issue": "DEN-1292",
+      "github_repository": "daedalus-fab/daedalus-fab-mcp-server.rs",
+      "base_branch": "main",
+      "routing_pr": "https://github.com/daedalus-fab/daedalus-fab-mcp-server.rs/pull/2"
+    },
+    {
+      "channel_name": "hypesiege",
+      "channel_id": "C0BMF6JDSHX",
+      "linear_project": "github.com/hypesiege",
+      "routing_issue": "DEN-1280",
+      "delivery_issue": "DEN-1293",
+      "github_repository": "hypesiege/hypesiege-mcp-server.rs",
+      "base_branch": "main",
+      "routing_pr": "https://github.com/hypesiege/hypesiege-mcp-server.rs/pull/1"
+    },
+    {
+      "channel_name": "streempilot",
+      "channel_id": "C0BMB94FL86",
+      "linear_project": "github.com/streempilot",
+      "routing_issue": "DEN-1281",
+      "delivery_issue": "DEN-1294",
+      "github_repository": "StreemPilot/streempilot-mcp-server.rs",
+      "base_branch": "main",
+      "routing_pr": "https://github.com/StreemPilot/streempilot-mcp-server.rs/pull/1"
+    },
+    {
+      "channel_name": "shared-auth",
+      "channel_id": "C0BMD90HED8",
+      "linear_project": "github.com/shared-auth",
+      "routing_issue": "DEN-1283",
+      "delivery_issue": "DEN-1295",
+      "github_repository": "shared-auth/shared-auth-mcp-server.rs",
+      "base_branch": "main",
+      "routing_pr": "https://github.com/shared-auth/shared-auth-mcp-server.rs/pull/11"
+    },
+    {
+      "channel_name": "opto-sync",
+      "channel_id": "C0BMBARQ7N2",
+      "linear_project": "github.com/opto-sync",
+      "routing_issue": "DEN-1285",
+      "delivery_issue": "DEN-1296",
+      "github_repository": "opto-sync/syncer.rs",
+      "base_branch": "main",
+      "routing_pr": "https://github.com/opto-sync/syncer.rs/pull/1"
+    },
+    {
+      "channel_name": "voxletra",
+      "channel_id": "C0BMB9GPXC6",
+      "linear_project": "github.com/voxletra",
+      "routing_issue": "DEN-1287",
+      "delivery_issue": "DEN-1297",
+      "github_repository": "voxletra/vxl-api-server.rs",
+      "base_branch": "main",
+      "routing_pr": "https://github.com/voxletra/vxl-api-server.rs/pull/2",
+      "temporary_target": true,
+      "canonical_bootstrap_issue": "DEN-164"
+    }
+  ]
+}
