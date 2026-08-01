@@ -2,6 +2,8 @@ const MAX_REGISTRY_BYTES: u64 = 1_048_576;
 
 impl App {
     fn new(config: Config) -> Result<Self> {
+        use std::io::Read as _;
+
         let metadata = fs::metadata(&config.registry_path)
             .map_err(|_| Error::Config("unable to inspect Slack project registry".into()))?;
         if !metadata.is_file() {
@@ -9,13 +11,17 @@ impl App {
                 "Slack project registry path must resolve to a regular file".into(),
             ));
         }
-        if metadata.len() > MAX_REGISTRY_BYTES {
+        let file = fs::File::open(&config.registry_path)
+            .map_err(|_| Error::Config("unable to open Slack project registry".into()))?;
+        let mut bytes = Vec::with_capacity(metadata.len().min(MAX_REGISTRY_BYTES) as usize);
+        file.take(MAX_REGISTRY_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| Error::Config("unable to read Slack project registry".into()))?;
+        if bytes.len() as u64 > MAX_REGISTRY_BYTES {
             return Err(Error::Config(
                 "Slack project registry exceeds the maximum size".into(),
             ));
         }
-        let bytes = fs::read(&config.registry_path)
-            .map_err(|_| Error::Config("unable to read Slack project registry".into()))?;
         let registry = SlackProjectRegistry::from_json(&bytes)
             .map_err(|_| Error::Config("invalid Slack project registry".into()))?;
         let document = serde_json::from_slice::<SlackProjectRegistryDocument>(&bytes)
