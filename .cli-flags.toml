@@ -10,7 +10,7 @@ columns = ["options", "env", "type", "description"]
 allow_unknown = false
 
 [env]
-ignore = ["DATABASE_URL", "RDS_DATABASE_URL", "API_AUTH_BEARER", "AI_AGENT_BRIDGE_TOKEN", "CLAUDE_INBOX_TOKEN", "EMBEDDINGS_API_AUTH_BEARER", "EMBEDDINGS_BEARER", "FIDUCIA_CONTROL_PLANE_SECRET", "FIDUCIA_INTERNAL_SECRET", "WORKFLOW_ADAPTER_AUTH_JSON", "AI_PROVIDER_CONFIG_JSON", "AI_PROVIDER_PRICING_JSON", "AI_PROVIDER_RETRY_POLICY_JSON", "AI_AGENT_RUNNER_BRIDGE_BEARER", "SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN", "SLACK_BRIDGE_BEARER"]
+ignore = ["DATABASE_URL", "RDS_DATABASE_URL", "API_AUTH_BEARER", "AI_AGENT_BRIDGE_TOKEN", "CLAUDE_INBOX_TOKEN", "EMBEDDINGS_API_AUTH_BEARER", "EMBEDDINGS_BEARER", "FIDUCIA_CONTROL_PLANE_SECRET", "FIDUCIA_INTERNAL_SECRET", "WORKFLOW_ADAPTER_AUTH_JSON", "AI_PROVIDER_CONFIG_JSON", "AI_PROVIDER_PRICING_JSON", "AI_PROVIDER_RETRY_POLICY_JSON", "AI_AGENT_RUNNER_BRIDGE_BEARER", "SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN", "SLACK_BRIDGE_BEARER", "SLACK_COORDINATOR_BEARER"]
 
 [flags.host]
 env = "HOST"
@@ -335,3 +335,64 @@ env = "SLACK_MAX_CONCURRENT_WORKFLOWS"
 aliases = ["slack-max-concurrent-workflows"]
 type = "integer"
 help = "Maximum concurrently active Slack-originated workflows."
+
+# ORESoftware Slack slash-command process. Credentials remain in [env].ignore.
+[flags.slack-command-host]
+env = "SLACK_COMMAND_HOST"
+aliases = ["slack-command-host"]
+type = "string"
+help = "Listen address for the ORESoftware Slack slash-command process."
+
+[flags.slack-command-port]
+env = "SLACK_COMMAND_PORT"
+aliases = ["slack-command-port"]
+type = "integer"
+help = "HTTP port for ORESoftware Slack commands and interactions."
+
+[flags.slack-project-registry-path]
+env = "SLACK_PROJECT_REGISTRY_PATH"
+aliases = ["slack-project-registry-path"]
+type = "string"
+help = "Absolute path to the reviewed Slack channel to Linear project registry."
+
+[flags.slack-command-state-dir]
+env = "SLACK_COMMAND_STATE_DIR"
+aliases = ["slack-command-state-dir"]
+type = "string"
+help = "Absolute private directory for create-once Slack command run claims."
+
+[flags.slack-coordinator-url]
+env = "SLACK_COORDINATOR_URL"
+aliases = ["slack-coordinator-url"]
+type = "string"
+help = "Base URL for the durable AI agent coordinator job API."
+
+[flags.slack-chatgpt-agent-key]
+env = "SLACK_CHATGPT_AGENT_KEY"
+aliases = ["slack-chatgpt-agent-key"]
+type = "string"
+help = "Registered bridge identity used by /ores-chatgpt."
+
+[flags.slack-linear-run-project-id]
+env = "SLACK_LINEAR_RUN_PROJECT_ID"
+aliases = ["slack-linear-run-project-id"]
+type = "string"
+help = "Linear project ID for the durable AI Agent Run Queue projection."
+
+[flags.slack-context-message-count]
+env = "SLACK_CONTEXT_MESSAGE_COUNT"
+aliases = ["slack-context-message-count"]
+type = "integer"
+help = "Default recent non-bot Slack messages attached as untrusted task context."
+
+[flags.slack-command-max-concurrent-runs]
+env = "SLACK_COMMAND_MAX_CONCURRENT_RUNS"
+aliases = ["slack-command-max-concurrent-runs"]
+type = "integer"
+help = "Maximum concurrently dispatching Slack slash-command runs."
+
+[flags.slack-command-dry-run]
+env = "SLACK_COMMAND_DRY_RUN"
+aliases = ["slack-command-dry-run"]
+type = "string"
+help = "Keep Slack slash commands from creating bridge workflows or coordinator jobs."
