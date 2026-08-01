@@ -49,7 +49,7 @@ impl App {
         }
         let response = self
             .client
-            .get(SLACK_USERGROUPS_URL)
+            .get(self.config.slack_url("usergroups.list")?)
             .bearer_auth(&self.config.bot_token)
             .query(&[("include_users", "true")])
             .send()
@@ -147,7 +147,7 @@ impl App {
         }
         let response = self
             .client
-            .get(SLACK_HISTORY_URL)
+            .get(self.config.slack_url("conversations.history")?)
             .bearer_auth(&self.config.bot_token)
             .query(&[
                 ("channel", channel_id.to_string()),
@@ -205,7 +205,7 @@ impl App {
         .map_err(|_| Error::Slack)?;
         let response = self
             .client
-            .post(SLACK_VIEWS_OPEN_URL)
+            .post(self.config.slack_url("views.open")?)
             .bearer_auth(&self.config.bot_token)
             .json(&json!({
                 "trigger_id": command.trigger_id,
@@ -330,7 +330,7 @@ impl App {
     ) -> Result<String> {
         let response = self
             .client
-            .post(SLACK_POST_MESSAGE_URL)
+            .post(self.config.slack_url("chat.postMessage")?)
             .bearer_auth(&self.config.bot_token)
             .json(&json!({
                 "channel": request.channel_id,
@@ -355,4 +355,3 @@ impl App {
         slack_ok(response).await?.ts.ok_or(Error::Slack)
     }
 }
-
