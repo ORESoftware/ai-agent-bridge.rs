@@ -1654,6 +1654,22 @@ mod tests {
             poll_interval: Duration::from_millis(DEFAULT_POLL_INTERVAL_MS),
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
             max_concurrent_workflows: DEFAULT_MAX_CONCURRENT_WORKFLOWS,
+            claude_command: commands::DEFAULT_CLAUDE_COMMAND.to_string(),
+            openai_command: commands::DEFAULT_OPENAI_COMMAND.to_string(),
+            claude_model_choices: vec![DEFAULT_CLAUDE_AGENT_KEY.to_string()],
+            openai_model_choices: vec![DEFAULT_OPENAI_AGENT_KEY.to_string()],
+            target_choices: Vec::new(),
+            context_message_default: commands::DEFAULT_CONTEXT_MESSAGES,
+            context_message_max: commands::MAX_CONTEXT_MESSAGES,
+            slack_views_open_url: SLACK_VIEWS_OPEN_URL.to_string(),
+            slack_conversations_history_url: SLACK_CONVERSATIONS_HISTORY_URL.to_string(),
+            broadcast_channel_id: None,
+            linear_api_key: None,
+            linear_team_id: None,
+            linear_project_id: None,
+            linear_state_todo: None,
+            linear_state_started: None,
+            linear_state_done: None,
         }
     }
 
