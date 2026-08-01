@@ -66,12 +66,17 @@ jobs:
       # step is inert until a saved workspace session is supplied. Configure the
       # SLACK_BUILDER_STORAGE_STATE secret (a Playwright storageState JSON) to
       # enable it; until then the specs skip with an explicit reason.
+      # The secrets context is not available in a step-level `if`, so the
+      # presence check happens inside the script and simply emits no path.
       - name: Restore Block Kit Builder session
         id: session
-        if: ${{ secrets.SLACK_BUILDER_STORAGE_STATE != '' }}
         env:
           STORAGE_STATE: ${{ secrets.SLACK_BUILDER_STORAGE_STATE }}
         run: |
+          if [ -z "$STORAGE_STATE" ]; then
+            echo 'No SLACK_BUILDER_STORAGE_STATE secret; browser specs will skip.'
+            exit 0
+          fi
           umask 077
           printf '%s' "$STORAGE_STATE" > "$RUNNER_TEMP/slack-builder-state.json"
           echo "path=$RUNNER_TEMP/slack-builder-state.json" >> "$GITHUB_OUTPUT"
