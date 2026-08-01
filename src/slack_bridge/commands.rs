@@ -45,6 +45,9 @@ const CALLBACK_ID: &str = "agent_dispatch";
 const MAX_FORM_FIELD_BYTES: usize = 8_192;
 const MAX_CONTEXT_BLOCK_BYTES: usize = 12_000;
 const MAX_SINGLE_CONTEXT_MESSAGE_BYTES: usize = 1_500;
+const CONTEXT_OVERFETCH_FACTOR: usize = 4;
+const MAX_HISTORY_FETCH: usize = 100;
+const MAX_SLACK_POST_ATTEMPTS: u32 = 3;
 const LINEAR_GRAPHQL_URL: &str = "https://api.linear.app/graphql";
 
 /// Which provider family a slash command dispatches to. The bridge only ever
