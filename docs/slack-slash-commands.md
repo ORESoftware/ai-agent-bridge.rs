@@ -58,6 +58,18 @@ leaves, and other subtyped tombstones are dropped. Each message is capped at
 1500 bytes and the whole block at 12000 bytes; the composed prompt is then
 capped at the adapter's existing `MAX_PROMPT_BYTES`.
 
+**Bot output is excluded entirely** — messages carrying a `bot_id`, messages from
+`SLACK_BOT_USER_ID`, and messages with no author. This adapter posts its own
+acknowledgements and model replies into the same channel, so including them would
+feed the model its own prior output on every later dispatch, and would let any
+other integration in the channel (alerting, webhooks, CI bots) plant text
+straight into an agent prompt. The Events path already refuses to *act* on bot
+messages for this reason; context must not reintroduce them by the back door.
+
+Filtering happens before the depth cut, so the adapter over-fetches (4× the
+requested depth, capped at 100) and a chatty channel still yields the full number
+of human messages the member asked for.
+
 Set `context_depth` to *No channel context* — or `SLACK_CONTEXT_MESSAGE_DEFAULT=0`
 — to disable it. `SLACK_CONTEXT_MESSAGE_MAX` hard-caps what any member can pick.
 

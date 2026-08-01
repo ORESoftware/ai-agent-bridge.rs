@@ -417,7 +417,9 @@ fn modal_payload_respects_slack_block_kit_limits() {
     let mut config = config();
     // Exercise the widest realistic menus, not just the two-entry default.
     config.claude_model_choices = (0..40).map(|i| format!("claude-variant-{i}")).collect();
-    config.target_choices = (0..40).map(|i| format!("github.com/org/repo-{i}")).collect();
+    config.target_choices = (0..40)
+        .map(|i| format!("github.com/org/repo-{i}"))
+        .collect();
 
     for provider in [Provider::Claude, Provider::OpenAi] {
         let form = SlashCommandForm {
