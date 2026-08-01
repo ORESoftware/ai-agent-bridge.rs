@@ -124,6 +124,7 @@ struct SlackConfig {
     linear_state_todo: Option<String>,
     linear_state_started: Option<String>,
     linear_state_done: Option<String>,
+    linear_include_channel_context: bool,
 }
 
 impl SlackConfig {
