@@ -1,0 +1,88 @@
+name: alex-main-agent manifest drift
+
+on:
+  pull_request:
+    paths:
+      - .github/alex-main-agent.json
+      - .github/workflows/alex-main-agent-manifest-drift.yml
+      - config/alex-main-agent.channels.json
+      - config/alex-main-agent.manifests.lock.json
+      - docs/alex-main-agent-manifest-drift.md
+      - scripts/audit_alex_main_agent_manifests.py
+      - tests/test_audit_alex_main_agent_manifests.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/alex-main-agent-manifest-drift.yml
+      - config/alex-main-agent.channels.json
+      - config/alex-main-agent.manifests.lock.json
+      - docs/alex-main-agent-manifest-drift.md
+      - scripts/audit_alex_main_agent_manifests.py
+      - tests/test_audit_alex_main_agent_manifests.py
+  schedule:
+    - cron: "17 13 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate workflow syntax
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+        with:
+          args: ./.github/workflows/alex-main-agent-manifest-drift.yml
+
+      - name: Compile the audit and tests
+        run: >-
+          python3 -m py_compile
+          scripts/audit_alex_main_agent_manifests.py
+          tests/test_audit_alex_main_agent_manifests.py
+
+      - name: Run fail-closed mutation tests
+        run: python3 -m unittest -v tests/test_audit_alex_main_agent_manifests.py
+
+      - name: Validate the checked-out lock offline
+        run: >-
+          python3 scripts/audit_alex_main_agent_manifests.py
+          --registry config/alex-main-agent.channels.json
+          --lock config/alex-main-agent.manifests.lock.json
+          --report artifacts/alex-main-agent-manifest-audit.offline.json
+
+      - name: Verify exact project pull-request heads and manifests
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/audit_alex_main_agent_manifests.py
+          --registry config/alex-main-agent.channels.json
+          --lock config/alex-main-agent.manifests.lock.json
+          --report artifacts/alex-main-agent-manifest-audit.remote.json
+          --remote
+
+      - name: Publish metadata-only evidence to the job summary
+        if: always()
+        run: |
+          {
+            echo '## alex-main-agent routing manifest audit'
+            echo
+            for report in artifacts/alex-main-agent-manifest-audit.*.json; do
+              if [ -f "${report}" ]; then
+                echo "### ${report}"
+                echo '```json'
+                cat "${report}"
+                echo '```'
+              fi
+            done
+          } >> "${GITHUB_STEP_SUMMARY}"
