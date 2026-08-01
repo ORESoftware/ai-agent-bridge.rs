@@ -25,7 +25,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     && mkdir -p /out/slack-state \
     && mkdir -p /out/slack-command-state/runs
 
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:fccdbb0a547c14e23fcf4ce8ad62ca5d43faae8d22cd292f490fef9946c96e AS bridge
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:fccdbb0a547c14e23fcf4ce8ad62ca5d43b4faae8d22cd292f490fef9946c96e AS bridge
 
 LABEL org.opencontainers.image.source="https://github.com/ORESoftware/ai-agent-bridge.rs" \
       org.opencontainers.image.description="Fiducia live AI-agent conversation and orchestration bridge"
@@ -42,7 +42,7 @@ USER nonroot:nonroot
 EXPOSE 8142 8143
 ENTRYPOINT ["/usr/local/bin/fiducia-ai-agent-bridge"]
 
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:fccdbb0a547c14e23fcf4ce8ad62ca5d43faae8d22cd292f490fef9946c96e AS runner
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:fccdbb0a547c14e23fcf4ce8ad62ca5d43b4faae8d22cd292f490fef9946c96e AS runner
 
 LABEL org.opencontainers.image.source="https://github.com/ORESoftware/ai-agent-bridge.rs" \
       org.opencontainers.image.description="Fiducia multi-provider AI-agent runner"
@@ -52,7 +52,7 @@ COPY --from=builder /out/fiducia-ai-agent-runner /usr/local/bin/fiducia-ai-agent
 USER nonroot:nonroot
 ENTRYPOINT ["/usr/local/bin/fiducia-ai-agent-runner"]
 
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:fccdbb0a547c14e23fcf4ce8ad62ca5d43faae8d22cd292f490fef9946c96e AS slack
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:fccdbb0a547c14e23fcf4ce8ad62ca5d43b4faae8d22cd292f490fef9946c96e AS slack
 
 LABEL org.opencontainers.image.source="https://github.com/ORESoftware/ai-agent-bridge.rs" \
       org.opencontainers.image.description="Authenticated Slack ingress for bounded dual-model workflows"
@@ -69,7 +69,7 @@ USER nonroot:nonroot
 EXPOSE 8150
 ENTRYPOINT ["/usr/local/bin/fiducia-slack-bridge"]
 
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:fccdbb0a547c14e23fcf4ce8ad62ca5d43faae8d22cd292f490fef9946c96e AS slack-command
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:fccdbb0a547c14e23fcf4ce8ad62ca5d43b4faae8d22cd292f490fef9946c96e AS slack-command
 
 LABEL org.opencontainers.image.source="https://github.com/ORESoftware/ai-agent-bridge.rs" \
       org.opencontainers.image.description="ORESoftware Claude and ChatGPT Slack slash-command ingress"
