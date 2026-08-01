@@ -1,4 +1,14 @@
+import { existsSync } from 'node:fs';
+
 import { defineConfig } from '@playwright/test';
+
+// Slack's Block Kit Builder redirects anonymous visitors to /workspace-signin,
+// so this suite can only render anything with a saved workspace session.
+// Point SLACK_BUILDER_STORAGE_STATE at a Playwright storageState JSON file to
+// enable it; without one, every spec skips with an explicit reason rather than
+// reporting a green run that checked nothing.
+const storageState = process.env.SLACK_BUILDER_STORAGE_STATE;
+const authenticated = Boolean(storageState && existsSync(storageState));
 
 // This suite drives a third-party UI (Slack's Block Kit Builder), so it is
 // advisory: it runs on a schedule and on demand, never as a merge gate. The
