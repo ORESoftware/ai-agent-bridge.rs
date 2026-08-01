@@ -67,6 +67,8 @@ const MAX_EVENT_ID_BYTES: usize = 255;
 const MAX_IDENTIFIER_BYTES: usize = 255;
 const MAX_PREFIX_BYTES: usize = 128;
 const SLACK_POST_MESSAGE_URL: &str = "https://slack.com/api/chat.postMessage";
+const SLACK_VIEWS_OPEN_URL: &str = "https://slack.com/api/views.open";
+const SLACK_CONVERSATIONS_HISTORY_URL: &str = "https://slack.com/api/conversations.history";
 
 #[derive(Debug, thiserror::Error)]
 enum AdapterError {
