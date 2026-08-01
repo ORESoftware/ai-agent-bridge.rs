@@ -781,11 +781,11 @@ async fn gather_channel_context(app: &SlackApp, request: &DispatchRequest) -> Op
         return None;
     }
 
-    Some(render_context(
+    render_context(
         &history.messages,
         request.context_depth,
         app.config.bot_user_id.as_deref(),
-    )?)
+    )
 }
 
 /// Turns a raw `conversations.history` page into the transcript block.
