@@ -26,6 +26,7 @@ oauth_config:
       - chat:write
       - channels:history
       - groups:history
+      - usergroups:read
 
 settings:
   interactivity:
