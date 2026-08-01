@@ -40,13 +40,10 @@ const DEFAULT_PORT: u16 = 8151;
 const DEFAULT_CONTEXT_MESSAGES: usize = 5;
 const DEFAULT_BRIDGE_URL: &str = "http://127.0.0.1:8142/";
 const DEFAULT_COORDINATOR_URL: &str = "http://127.0.0.1:8160/";
+const DEFAULT_SLACK_API_BASE_URL: &str = "https://slack.com/api/";
 const DEFAULT_CLAUDE_AGENT: &str = "claude-fable-5";
 const DEFAULT_CHATGPT_AGENT: &str = "gpt-5.6-sol";
 const DEFAULT_LINEAR_RUN_PROJECT: &str = "72e891e2-603d-4903-8d08-bd06d204520f";
-const SLACK_HISTORY_URL: &str = "https://slack.com/api/conversations.history";
-const SLACK_USERGROUPS_URL: &str = "https://slack.com/api/usergroups.list";
-const SLACK_VIEWS_OPEN_URL: &str = "https://slack.com/api/views.open";
-const SLACK_POST_MESSAGE_URL: &str = "https://slack.com/api/chat.postMessage";
 const CALLBACK_ID: &str = "ores-agent-run-v1";
 const MAX_BODY_BYTES: usize = 1_048_576;
 const MAX_PROMPT_BYTES: usize = 100_000;
@@ -120,6 +117,7 @@ struct Config {
     bridge_bearer: Option<String>,
     coordinator_url: String,
     coordinator_bearer: Option<String>,
+    slack_api_base_url: String,
     claude_agent: String,
     chatgpt_agent: String,
     linear_run_project_id: String,
@@ -165,6 +163,10 @@ impl Config {
                 "SLACK_COORDINATOR_BEARER is required for remote coordinator URLs".into(),
             ));
         }
+        let slack_api_base_url = slack_api_base_url(&env_or(
+            "SLACK_API_BASE_URL",
+            DEFAULT_SLACK_API_BASE_URL,
+        ))?;
         let context_messages = env_usize(
             "SLACK_CONTEXT_MESSAGE_COUNT",
             DEFAULT_CONTEXT_MESSAGES,
@@ -187,6 +189,7 @@ impl Config {
             bridge_bearer,
             coordinator_url,
             coordinator_bearer,
+            slack_api_base_url,
             claude_agent: identifier(
                 "SLACK_CLAUDE_AGENT_KEY",
                 &env_or("SLACK_CLAUDE_AGENT_KEY", DEFAULT_CLAUDE_AGENT),
@@ -210,6 +213,12 @@ impl Config {
             Provider::Claude => &self.claude_agent,
             Provider::Chatgpt => &self.chatgpt_agent,
         }
+    }
+
+    fn slack_url(&self, path: &str) -> Result<Url> {
+        Url::parse(&self.slack_api_base_url)
+            .and_then(|base| base.join(path))
+            .map_err(|_| Error::Config("invalid Slack API URL".into()))
     }
 }
 
@@ -260,4 +269,3 @@ fn absolute_path(key: &str) -> Result<PathBuf> {
     }
     Ok(path)
 }
-
