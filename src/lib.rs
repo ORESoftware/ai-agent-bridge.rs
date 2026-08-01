@@ -28,6 +28,7 @@ pub mod runner;
     reason = "keep Slack delivery and durable journal persistence as explicit ordered side effects"
 )]
 pub mod slack_bridge;
+pub mod slack_commands;
 pub mod slack_project_bindings;
 pub mod state;
 pub mod tcp;
