@@ -40,10 +40,7 @@ fn hypesiege_resolves_to_the_allowlisted_draft_pr_target() {
         context.linear_project_id,
         "cd247cb1-870b-471e-89f6-9484df19e798"
     );
-    assert_eq!(
-        context.repository,
-        "hypesiege/hypesiege-mcp-server.rs"
-    );
+    assert_eq!(context.repository, "hypesiege/hypesiege-mcp-server.rs");
     assert_eq!(context.write_policy, WritePolicy::DraftPullRequest);
     assert_eq!(
         context.issue.expect("issue must be parsed").identifier,
