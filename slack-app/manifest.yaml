@@ -1,0 +1,37 @@
+display_information:
+  name: alex-main-agent
+  description: Scoped ORESoftware work intake for Claude and ChatGPT through the AI bridge and coordinator.
+  background_color: "#2C2D30"
+
+features:
+  bot_user:
+    display_name: alex-main-agent
+    always_online: false
+  slash_commands:
+    - command: /ores-claude
+      url: https://api.fiducia.cloud/slack/commands/ores-claude
+      description: Submit a scoped ORESoftware task to Claude.
+      usage_hint: "[task] or leave empty to open the scoped task menu"
+      should_escape: true
+    - command: /ores-chatgpt
+      url: https://api.fiducia.cloud/slack/commands/ores-chatgpt
+      description: Submit a scoped ORESoftware task to ChatGPT.
+      usage_hint: "[task] or leave empty to open the scoped task menu"
+      should_escape: true
+
+oauth_config:
+  scopes:
+    bot:
+      - commands
+      - chat:write
+      - channels:history
+      - groups:history
+
+settings:
+  interactivity:
+    is_enabled: true
+    request_url: https://api.fiducia.cloud/slack/interactions
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: true
+  is_mcp_enabled: false

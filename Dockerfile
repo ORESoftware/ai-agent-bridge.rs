@@ -2,6 +2,7 @@
 
 # One reviewed source tree builds all runtime binaries. Final targets copy only
 # the selected executable into a non-root distroless image.
+# DEN-1041 validates the Slack command image independently in CI.
 FROM rust:1.97.1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa AS builder
 
 WORKDIR /workspace
@@ -16,11 +17,14 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
       --bin fiducia-ai-agent-bridge \
       --bin fiducia-ai-agent-runner \
       --bin fiducia-slack-bridge \
+      --bin fiducia-slack-command \
     && install -D -m 0755 target/release/fiducia-ai-agent-bridge /out/fiducia-ai-agent-bridge \
     && install -D -m 0755 target/release/fiducia-ai-agent-runner /out/fiducia-ai-agent-runner \
     && install -D -m 0755 target/release/fiducia-slack-bridge /out/fiducia-slack-bridge \
+    && install -D -m 0755 target/release/fiducia-slack-command /out/fiducia-slack-command \
     && mkdir -p /out/runtime-state/claude-inbox \
-    && mkdir -p /out/slack-state
+    && mkdir -p /out/slack-state \
+    && mkdir -p /out/slack-command-state/runs
 
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:fccdbb0a547c14e23fcf4ce8ad62ca5d43b4faae8d22cd292f490fef9946c96e AS bridge
 
@@ -65,3 +69,21 @@ ENV SLACK_BRIDGE_HOST=0.0.0.0 \
 USER nonroot:nonroot
 EXPOSE 8150
 ENTRYPOINT ["/usr/local/bin/fiducia-slack-bridge"]
+
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:fccdbb0a547c14e23fcf4ce8ad62ca5d43b4faae8d22cd292f490fef9946c96e AS slack-command
+
+LABEL org.opencontainers.image.source="https://github.com/ORESoftware/ai-agent-bridge.rs" \
+      org.opencontainers.image.description="ORESoftware Claude and ChatGPT Slack slash-command ingress"
+
+COPY --from=builder /out/fiducia-slack-command /usr/local/bin/fiducia-slack-command
+COPY --from=builder --chown=nonroot:nonroot /out/slack-command-state/ /var/lib/slack-command/
+
+ENV SLACK_COMMAND_HOST=0.0.0.0 \
+    SLACK_COMMAND_PORT=8151 \
+    SLACK_COMMAND_STATE_DIR=/var/lib/slack-command/runs \
+    SLACK_CONTEXT_MESSAGE_COUNT=5 \
+    SLACK_COMMAND_DRY_RUN=true
+
+USER nonroot:nonroot
+EXPOSE 8151
+ENTRYPOINT ["/usr/local/bin/fiducia-slack-command"]

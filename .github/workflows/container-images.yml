@@ -35,6 +35,12 @@ jobs:
           - target: runner
             image: fiducia-ai-agent-runner
             entrypoint: /usr/local/bin/fiducia-ai-agent-runner
+          - target: slack
+            image: fiducia-slack-bridge
+            entrypoint: /usr/local/bin/fiducia-slack-bridge
+          - target: slack-command
+            image: fiducia-slack-command
+            entrypoint: /usr/local/bin/fiducia-slack-command
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
