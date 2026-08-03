@@ -27,7 +27,7 @@ The canonical commands are:
 /ores-chatgpt [task]
 ```
 
-The installed app also exposes these convenience aliases:
+The reviewed manifest also defines these convenience aliases; they are not assumed present in the installed app until the remote manifest is reconciled and the app is reinstalled:
 
 ```text
 /x-claude [task]
