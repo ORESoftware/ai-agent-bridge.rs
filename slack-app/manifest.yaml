@@ -18,6 +18,26 @@ features:
       description: Submit a scoped ORESoftware task to ChatGPT.
       usage_hint: "[task] or leave empty to open the scoped task menu"
       should_escape: true
+    - command: /x-claude
+      url: https://api.fiducia.cloud/slack/commands/ores-claude
+      description: Convenience alias for /ores-claude.
+      usage_hint: "[task] or leave empty to open the scoped task menu"
+      should_escape: true
+    - command: /x-chatgpt
+      url: https://api.fiducia.cloud/slack/commands/ores-chatgpt
+      description: Convenience alias for /ores-chatgpt.
+      usage_hint: "[task] or leave empty to open the scoped task menu"
+      should_escape: true
+    - command: /my-claude
+      url: https://api.fiducia.cloud/slack/commands/ores-claude
+      description: Convenience alias for /ores-claude.
+      usage_hint: "[task] or leave empty to open the scoped task menu"
+      should_escape: true
+    - command: /my-chatgpt
+      url: https://api.fiducia.cloud/slack/commands/ores-chatgpt
+      description: Convenience alias for /ores-chatgpt.
+      usage_hint: "[task] or leave empty to open the scoped task menu"
+      should_escape: true
 
 oauth_config:
   scopes:
