@@ -2,9 +2,11 @@ const SLACK_ACK_DEADLINE: Duration = Duration::from_millis(2_500);
 const EXPECTED_APP_ID_ENV: &str = "SLACK_EXPECTED_APP_ID";
 const EXPECTED_TEAM_ID_ENV: &str = "SLACK_EXPECTED_TEAM_ID";
 
-fn configured_slack_identity(config: &Config) -> Result<Option<(String, String)>> {
-    let app_id = env_opt(EXPECTED_APP_ID_ENV);
-    let team_id = env_opt(EXPECTED_TEAM_ID_ENV);
+fn configured_slack_identity_from_values(
+    config: &Config,
+    app_id: Option<String>,
+    team_id: Option<String>,
+) -> Result<Option<(String, String)>> {
     match (app_id, team_id) {
         (Some(app_id), Some(team_id)) => Ok(Some((
             identifier(EXPECTED_APP_ID_ENV, &app_id)?,
@@ -18,6 +20,14 @@ fn configured_slack_identity(config: &Config) -> Result<Option<(String, String)>
             "{EXPECTED_APP_ID_ENV} and {EXPECTED_TEAM_ID_ENV} must be configured together"
         ))),
     }
+}
+
+fn configured_slack_identity(config: &Config) -> Result<Option<(String, String)>> {
+    configured_slack_identity_from_values(
+        config,
+        env_opt(EXPECTED_APP_ID_ENV),
+        env_opt(EXPECTED_TEAM_ID_ENV),
+    )
 }
 
 fn validate_slash_envelope(
@@ -88,6 +98,89 @@ mod installed_app_contract_tests {
             dry_run: true,
             max_concurrent_runs: 1,
         }
+    }
+
+    fn public_config() -> Config {
+        Config {
+            host: "0.0.0.0".parse().unwrap(),
+            ..loopback_config()
+        }
+    }
+
+    fn config_error(result: Result<Option<(String, String)>>) -> String {
+        match result {
+            Err(Error::Config(message)) => message,
+            other => panic!("expected configuration error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn loopback_bind_may_omit_installed_app_identity() {
+        assert_eq!(
+            configured_slack_identity_from_values(&loopback_config(), None, None).unwrap(),
+            None,
+        );
+    }
+
+    #[test]
+    fn public_bind_requires_both_installed_app_identifiers() {
+        assert_eq!(
+            config_error(configured_slack_identity_from_values(
+                &public_config(),
+                None,
+                None,
+            )),
+            "SLACK_EXPECTED_APP_ID and SLACK_EXPECTED_TEAM_ID are required for non-loopback binds",
+        );
+    }
+
+    #[test]
+    fn partial_installed_app_identity_is_rejected_on_every_bind() {
+        for config in [loopback_config(), public_config()] {
+            assert_eq!(
+                config_error(configured_slack_identity_from_values(
+                    &config,
+                    Some(INSTALLED_APP_ID.into()),
+                    None,
+                )),
+                "SLACK_EXPECTED_APP_ID and SLACK_EXPECTED_TEAM_ID must be configured together",
+            );
+            assert_eq!(
+                config_error(configured_slack_identity_from_values(
+                    &config,
+                    None,
+                    Some(INSTALLED_TEAM_ID.into()),
+                )),
+                "SLACK_EXPECTED_APP_ID and SLACK_EXPECTED_TEAM_ID must be configured together",
+            );
+        }
+    }
+
+    #[test]
+    fn paired_installed_app_identity_is_validated_and_preserved() {
+        let identity = configured_slack_identity_from_values(
+            &public_config(),
+            Some(INSTALLED_APP_ID.into()),
+            Some(INSTALLED_TEAM_ID.into()),
+        )
+        .unwrap();
+        assert_eq!(
+            identity,
+            Some((INSTALLED_APP_ID.into(), INSTALLED_TEAM_ID.into())),
+        );
+
+        assert!(configured_slack_identity_from_values(
+            &public_config(),
+            Some("invalid app id".into()),
+            Some(INSTALLED_TEAM_ID.into()),
+        )
+        .is_err());
+        assert!(configured_slack_identity_from_values(
+            &public_config(),
+            Some(INSTALLED_APP_ID.into()),
+            Some("invalid team id".into()),
+        )
+        .is_err());
     }
 
     #[test]
