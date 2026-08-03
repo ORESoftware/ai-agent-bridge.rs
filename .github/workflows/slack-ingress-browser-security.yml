@@ -38,15 +38,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      PLAYWRIGHT_OUTPUT_DIR: ${{ runner.temp }}/slack-command-browser-results
-      SLACK_COMMAND_LOG_DIR: ${{ runner.temp }}/slack-command-browser-logs
       SLACK_COMMAND_BASE_URL: http://127.0.0.1:8151
       SLACK_COMMAND_HOST: 127.0.0.1
       SLACK_COMMAND_PORT: "8151"
       SLACK_SIGNING_SECRET: browser-test-signing-secret
       SLACK_BOT_TOKEN: browser-test-bot-token
       SLACK_PROJECT_REGISTRY_PATH: ${{ github.workspace }}/config/alex-main-agent.channels.json
-      SLACK_COMMAND_STATE_DIR: ${{ runner.temp }}/slack-command-state
       SLACK_API_BASE_URL: http://127.0.0.1:8170/api/
       SLACK_EXPECTED_APP_ID: A0BMBAMM5NJ
       SLACK_EXPECTED_TEAM_ID: T01B3C83PMK
@@ -62,20 +59,32 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
+
+          playwright_output_dir="${RUNNER_TEMP}/slack-command-browser-results"
+          slack_command_log_dir="${RUNNER_TEMP}/slack-command-browser-logs"
+          slack_command_state_dir="${RUNNER_TEMP}/slack-command-state"
+
           mkdir -p \
-            "${PLAYWRIGHT_OUTPUT_DIR}" \
-            "${SLACK_COMMAND_LOG_DIR}" \
-            "${SLACK_COMMAND_STATE_DIR}"
+            "${playwright_output_dir}" \
+            "${slack_command_log_dir}" \
+            "${slack_command_state_dir}"
           chmod 700 \
-            "${PLAYWRIGHT_OUTPUT_DIR}" \
-            "${SLACK_COMMAND_LOG_DIR}" \
-            "${SLACK_COMMAND_STATE_DIR}"
+            "${playwright_output_dir}" \
+            "${slack_command_log_dir}" \
+            "${slack_command_state_dir}"
+
+          {
+            printf 'PLAYWRIGHT_OUTPUT_DIR=%s\n' "${playwright_output_dir}"
+            printf 'SLACK_COMMAND_LOG_DIR=%s\n' "${slack_command_log_dir}"
+            printf 'SLACK_COMMAND_STATE_DIR=%s\n' "${slack_command_state_dir}"
+          } >>"${GITHUB_ENV}"
+
           jq -n \
             --arg workflow "${GITHUB_WORKFLOW}" \
             --arg run_id "${GITHUB_RUN_ID}" \
             --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
             '{workflow: $workflow, run_id: $run_id, run_attempt: $run_attempt}' \
-            >"${PLAYWRIGHT_OUTPUT_DIR}/initialized.json"
+            >"${playwright_output_dir}/initialized.json"
 
       - name: Validate focused workflow syntax
         uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
