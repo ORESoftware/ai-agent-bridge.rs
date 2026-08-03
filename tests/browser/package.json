@@ -7,7 +7,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "playwright test"
+    "test": "playwright test specs/registry.spec.mjs",
+    "test:registry": "playwright test specs/registry.spec.mjs",
+    "test:slack-ingress": "playwright test specs/slack-ingress.spec.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.55.0"
