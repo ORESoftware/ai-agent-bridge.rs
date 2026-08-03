@@ -203,7 +203,7 @@ impl RunRequest {
             provider: metadata.provider,
             team_id: metadata.team_id,
             channel_id: metadata.channel_id,
-            user_id: metadata.user.id,
+            user_id: metadata.user_id,
             prompt,
             action: selected(&payload.view.state, "action", "action")?,
             repository: Some(selected(&payload.view.state, "repository", "repository")?),
