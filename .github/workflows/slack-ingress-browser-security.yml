@@ -38,6 +38,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
+      PLAYWRIGHT_OUTPUT_DIR: ${{ runner.temp }}/slack-command-browser-results
+      SLACK_COMMAND_LOG_DIR: ${{ runner.temp }}/slack-command-browser-logs
       SLACK_COMMAND_BASE_URL: http://127.0.0.1:8151
       SLACK_COMMAND_HOST: 127.0.0.1
       SLACK_COMMAND_PORT: "8151"
@@ -55,6 +57,25 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+
+      - name: Initialize private evidence directories
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p \
+            "${PLAYWRIGHT_OUTPUT_DIR}" \
+            "${SLACK_COMMAND_LOG_DIR}" \
+            "${SLACK_COMMAND_STATE_DIR}"
+          chmod 700 \
+            "${PLAYWRIGHT_OUTPUT_DIR}" \
+            "${SLACK_COMMAND_LOG_DIR}" \
+            "${SLACK_COMMAND_STATE_DIR}"
+          jq -n \
+            --arg workflow "${GITHUB_WORKFLOW}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            '{workflow: $workflow, run_id: $run_id, run_attempt: $run_attempt}' \
+            >"${PLAYWRIGHT_OUTPUT_DIR}/initialized.json"
 
       - name: Validate focused workflow syntax
         uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
@@ -82,9 +103,8 @@ jobs:
           set -euo pipefail
           umask 077
 
-          mkdir -p "${SLACK_COMMAND_STATE_DIR}"
-          service_log="${RUNNER_TEMP}/fiducia-slack-command.log"
-          readiness_json="${RUNNER_TEMP}/fiducia-slack-command-ready.json"
+          service_log="${SLACK_COMMAND_LOG_DIR}/fiducia-slack-command.log"
+          readiness_json="${PLAYWRIGHT_OUTPUT_DIR}/readiness.json"
 
           target/debug/fiducia-slack-command >"${service_log}" 2>&1 &
           service_pid=$!
@@ -124,10 +144,50 @@ jobs:
             .installed_app_identity_enforced == true
           ' "${readiness_json}"
 
-          timeout 2m npm --prefix tests/browser run test:slack-ingress
+          timeout 2m npm --prefix tests/browser run test:slack-ingress \
+            2>&1 | tee "${PLAYWRIGHT_OUTPUT_DIR}/playwright.tap"
 
           if find "${SLACK_COMMAND_STATE_DIR}" -mindepth 1 -print -quit | grep -q .; then
             echo "Rejected ingress requests unexpectedly created a run-journal claim" >&2
             find "${SLACK_COMMAND_STATE_DIR}" -mindepth 1 -maxdepth 1 -printf '%f\n' >&2
             exit 1
           fi
+
+          head_sha="$(jq --raw-output '.pull_request.head.sha // .after // empty' "${GITHUB_EVENT_PATH}")"
+          if [ -z "${head_sha}" ]; then
+            head_sha="${GITHUB_SHA}"
+          fi
+          jq -n \
+            --arg head_sha "${head_sha}" \
+            --arg tested_commit "${GITHUB_SHA}" \
+            --arg service "fiducia-slack-command" \
+            '{
+              schema_version: 1,
+              head_sha: $head_sha,
+              tested_commit: $tested_commit,
+              service: $service,
+              live_external_credentials: false,
+              rejected_run_claim_count: 0
+            }' >"${PLAYWRIGHT_OUTPUT_DIR}/evidence.json"
+
+      - name: Publish run summary
+        if: always()
+        run: |
+          {
+            echo '## Slack signed-ingress browser security'
+            echo
+            echo "- Tested commit: \`${GITHUB_SHA}\`"
+            echo "- Run attempt: \`${GITHUB_RUN_ATTEMPT}\`"
+            echo "- Evidence artifact: \`slack-ingress-browser-security-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\`"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload sanitized browser evidence and service logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: slack-ingress-browser-security-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/slack-command-browser-results
+            ${{ runner.temp }}/slack-command-browser-logs
+          if-no-files-found: error
+          retention-days: 14
