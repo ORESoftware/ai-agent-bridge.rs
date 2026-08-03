@@ -41,10 +41,15 @@ fn loopback_url(value: &str) -> Result<bool> {
 
 fn url_host_is_loopback(url: &Url) -> bool {
     url.host_str().is_some_and(|host| {
-        host.eq_ignore_ascii_case("localhost")
-            || host
-                .parse::<IpAddr>()
-                .is_ok_and(|address| address.is_loopback())
+        if host.eq_ignore_ascii_case("localhost") {
+            return true;
+        }
+        let host = host
+            .strip_prefix('[')
+            .and_then(|value| value.strip_suffix(']'))
+            .unwrap_or(host);
+        host.parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
     })
 }
 
