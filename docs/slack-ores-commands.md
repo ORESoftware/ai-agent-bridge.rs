@@ -1,15 +1,29 @@
-# ORESoftware Slack agent commands
+# alex-main-agent Slack commands
 
-Tracking issue: `DEN-1041`
+Tracking issues: `DEN-1041`, `DEN-1298`
 
-The `fiducia-slack-command` process exposes two exact Slack commands:
+The `fiducia-slack-command` process accepts six reviewed command names. The `/ores-*` names are canonical; `/x-*` and `/my-*` are workspace convenience aliases that use the same provider, authorization, routing, budgets, and write policy.
 
 ```text
 /ores-claude [task]
 /ores-chatgpt [task]
+/x-claude [task]
+/x-chatgpt [task]
+/my-claude [task]
+/my-chatgpt [task]
 ```
 
-A command with text takes the fast path. A command without text exchanges Slack's short-lived `trigger_id` for a modal with these selections:
+## How to invoke the app
+
+Run a command from the message composer of an authorized project channel. Examples:
+
+```text
+/ores-chatgpt investigate DEN-1298 and report the remaining activation blockers
+/x-claude review the current pull request and fix actionable CI errors
+/my-chatgpt
+```
+
+A command with text takes the fast path. A command without text opens a modal with these selections:
 
 - task;
 - action: implement, investigate, review, plan, or triage;
@@ -18,14 +32,18 @@ A command with text takes the fast path. A command without text exchanges Slack'
 - write scope bounded by channel policy;
 - recent channel context: 0, 5, 10, or 20 messages.
 
-The default is the five latest non-bot messages in the channel. Slash commands are channel-level; Slack does not invoke custom slash commands inside message threads. Thread-native work should continue to use the existing app-mention or message-shortcut surface.
+The default is the five latest non-bot messages in the channel. Custom slash commands are channel-level; Slack does not invoke them inside message threads. Run the command in the channel composer, then use the resulting run-status thread for follow-up.
+
+If none of the six commands appears in Slack autocomplete, the installed app configuration is stale or incomplete. Apply `slack-app/manifest.yaml` to app `A0BMBAMM5NJ`, reinstall the app to workspace `T01B3C83PMK`, refresh the Slack client, and retry in `#oresoftware`. The app needs the `commands` scope for the commands to be installed. If a command appears but Slack reports a dispatch or timeout error, verify the public TLS endpoint, ingress, deployment readiness, and the three-second acknowledgement path. If the app responds that the channel or user is unauthorized, update the reviewed channel registry rather than bypassing policy.
 
 ## Architecture
 
 ```text
-Slack /ores-claude or /ores-chatgpt
+Slack /ores-*, /x-*, or /my-*
+  -> one of two canonical provider ingress URLs
   -> fiducia-slack-command
-  -> signed-request and channel/user policy checks
+  -> signed-request and installed-app identity checks
+  -> channel/user/repository/write-policy authorization
   -> bounded Slack context capture
   -> single-model ai-agent-bridge workflow
   -> idempotent ai-agent-coordinator job
@@ -38,20 +56,24 @@ The Slack process is a thin ingress and notification adapter. It does not call m
 
 ## Slack app configuration
 
-Create both commands in the same reviewed Slack app:
+All six commands belong to the same reviewed Slack app. The aliases deliberately share the two canonical request URLs; Slack's signed form payload includes the actual `command` value, and the service accepts only the six reviewed names.
 
 | Command | Request URL |
 |---|---|
-| `/ores-claude` | `https://<public-host>/slack/commands/ores-claude` |
-| `/ores-chatgpt` | `https://<public-host>/slack/commands/ores-chatgpt` |
+| `/ores-claude` | `https://api.fiducia.cloud/slack/commands/ores-claude` |
+| `/x-claude` | `https://api.fiducia.cloud/slack/commands/ores-claude` |
+| `/my-claude` | `https://api.fiducia.cloud/slack/commands/ores-claude` |
+| `/ores-chatgpt` | `https://api.fiducia.cloud/slack/commands/ores-chatgpt` |
+| `/x-chatgpt` | `https://api.fiducia.cloud/slack/commands/ores-chatgpt` |
+| `/my-chatgpt` | `https://api.fiducia.cloud/slack/commands/ores-chatgpt` |
 
 Configure the interactivity request URL as:
 
 ```text
-https://<public-host>/slack/interactions
+https://api.fiducia.cloud/slack/interactions
 ```
 
-Enable escaping of users, channels, and links in command text. Install the app only after the public endpoint has TLS, request signing, resource limits, and rollback protection.
+Enable escaping of users, channels, and links in command text. Install or reinstall the app only after the public endpoint has TLS, request signing, resource limits, and rollback protection.
 
 Minimum bot scopes for the pilot:
 
@@ -123,7 +145,8 @@ Reviewed non-secret settings:
 - `SLACK_LINEAR_RUN_PROJECT_ID`;
 - `SLACK_CONTEXT_MESSAGE_COUNT` (`0`, `5`, `10`, or `20`);
 - `SLACK_COMMAND_MAX_CONCURRENT_RUNS`;
-- `SLACK_COMMAND_DRY_RUN`.
+- `SLACK_COMMAND_DRY_RUN`;
+- `SLACK_EXPECTED_APP_ID` and `SLACK_EXPECTED_TEAM_ID` for non-loopback deployment identity enforcement.
 
 The image defaults to port `8151`, context depth `5`, and `SLACK_COMMAND_DRY_RUN=true`.
 
@@ -131,22 +154,25 @@ The image defaults to port `8151`, context depth `5`, and `SLACK_COMMAND_DRY_RUN
 
 Do not enable live mode until all of these are true:
 
+- the remote Slack app manifest contains all six commands and the interactivity URL;
+- app `A0BMBAMM5NJ` is reinstalled to workspace `T01B3C83PMK` after manifest changes;
 - Slack signatures and stale/replayed requests fail closed;
 - the exact ORESoftware workspace/channel/user IDs are in a reviewed registry;
 - the bot has only the required scopes and is a member of the pilot channel;
+- the public ingress routes the two canonical command endpoints and the interaction endpoint to a ready `fiducia-slack-command` deployment;
 - bridge and coordinator URLs use cluster-local networking or HTTPS plus scoped bearers;
 - the coordinator has a worker for `slack_agent_run` jobs;
 - Linear run-queue reconciliation is enabled and idempotent;
 - repository writes are feature-branch and draft-PR only;
 - provider, runtime, retry, concurrency, token, and spend ceilings are active;
 - the deployment uses an immutable image digest, External Secrets, NetworkPolicy, health/readiness probes, and a tested rollback;
-- a dry-run canary proves the selected five-message context without exposing message bodies in logs.
+- a dry-run canary proves command acknowledgement, the blank-command modal, and selected five-message context without exposing message bodies in logs.
 
 ## Rollback and incident response
 
 1. Set `SLACK_COMMAND_DRY_RUN=true` or scale the command deployment to zero.
-2. Disable the two slash commands or remove their request URLs in Slack.
-3. Revoke/rotate the bot token or signing secret if exposure is suspected.
+2. Disable the six slash commands or remove their request URLs in Slack.
+3. Revoke or rotate the bot token or signing secret if exposure is suspected.
 4. Preserve run IDs and metadata-only evidence; do not copy private prompts or channel history into incident tickets.
 5. Cancel corresponding coordinator jobs and bridge workflows using their stable IDs.
-6. Roll back the Kubernetes image digest and reviewed registry independently.
+6. Roll back the Kubernetes image digest, reviewed registry, and Slack manifest independently.

@@ -1,8 +1,6 @@
 const SLACK_ACK_DEADLINE: Duration = Duration::from_millis(2_500);
 const EXPECTED_APP_ID_ENV: &str = "SLACK_EXPECTED_APP_ID";
 const EXPECTED_TEAM_ID_ENV: &str = "SLACK_EXPECTED_TEAM_ID";
-const INSTALLED_APP_ID: &str = "A0BMBAMM5NJ";
-const INSTALLED_TEAM_ID: &str = "T01B3C83PMK";
 
 fn configured_slack_identity(config: &Config) -> Result<Option<(String, String)>> {
     let app_id = env_opt(EXPECTED_APP_ID_ENV);
@@ -67,6 +65,9 @@ fn parse_interaction_envelope(config: &Config, body: &[u8]) -> Result<Interactio
 mod installed_app_contract_tests {
     use super::*;
 
+    const INSTALLED_APP_ID: &str = "A0BMBAMM5NJ";
+    const INSTALLED_TEAM_ID: &str = "T01B3C83PMK";
+
     fn loopback_config() -> Config {
         Config {
             host: "127.0.0.1".parse().unwrap(),
@@ -98,13 +99,50 @@ mod installed_app_contract_tests {
     }
 
     #[test]
-    fn reviewed_manifest_keeps_exact_app_and_routes() {
+    fn every_reviewed_alias_passes_the_canonical_provider_envelope() {
+        let config = loopback_config();
+        for command in ["%2Fores-claude", "%2Fx-claude", "%2Fmy-claude"] {
+            let body = format!(
+                "command={command}&team_id=T1&channel_id=C1&user_id=U1&text=test&trigger_id=1"
+            );
+            assert!(validate_slash_envelope(&config, body.as_bytes(), Provider::Claude).is_ok());
+            assert!(validate_slash_envelope(&config, body.as_bytes(), Provider::Chatgpt).is_err());
+        }
+        for command in ["%2Fores-chatgpt", "%2Fx-chatgpt", "%2Fmy-chatgpt"] {
+            let body = format!(
+                "command={command}&team_id=T1&channel_id=C1&user_id=U1&text=test&trigger_id=1"
+            );
+            assert!(validate_slash_envelope(&config, body.as_bytes(), Provider::Chatgpt).is_ok());
+            assert!(validate_slash_envelope(&config, body.as_bytes(), Provider::Claude).is_err());
+        }
+    }
+
+    #[test]
+    fn reviewed_manifest_keeps_exact_app_commands_and_routes() {
         let manifest = include_str!("../../slack-app/manifest.yaml");
         assert!(manifest.contains("name: alex-main-agent"));
-        assert!(manifest.contains("command: /ores-claude"));
-        assert!(manifest.contains("command: /ores-chatgpt"));
-        assert!(manifest.contains("https://api.fiducia.cloud/slack/commands/ores-claude"));
-        assert!(manifest.contains("https://api.fiducia.cloud/slack/commands/ores-chatgpt"));
+        for command in [
+            "/ores-claude",
+            "/ores-chatgpt",
+            "/x-claude",
+            "/x-chatgpt",
+            "/my-claude",
+            "/my-chatgpt",
+        ] {
+            assert!(manifest.contains(&format!("command: {command}")));
+        }
+        assert_eq!(
+            manifest
+                .matches("https://api.fiducia.cloud/slack/commands/ores-claude")
+                .count(),
+            3
+        );
+        assert_eq!(
+            manifest
+                .matches("https://api.fiducia.cloud/slack/commands/ores-chatgpt")
+                .count(),
+            3
+        );
         assert!(manifest.contains("https://api.fiducia.cloud/slack/interactions"));
         assert!(manifest.contains("token_rotation_enabled: true"));
         assert!(!manifest.contains("xoxb-"));
