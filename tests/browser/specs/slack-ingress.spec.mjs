@@ -86,6 +86,17 @@ test('reports an identity-enforced dry-run readiness boundary', async ({ page })
   await expect(page.locator('body')).toContainText('"dry_run":true');
 });
 
+test('blocks non-loopback browser traffic before a network connection', async ({ page }) => {
+  let navigationError;
+  try {
+    await page.goto('https://example.com/');
+  } catch (error) {
+    navigationError = error;
+  }
+
+  expect(String(navigationError)).toContain('ERR_BLOCKED_BY_CLIENT');
+});
+
 test('rejects missing and forged Slack signatures', async ({ page }) => {
   const missing = await postCommand(page, { includeSignature: false });
   expect(missing.status).toBe(401);
@@ -133,6 +144,20 @@ test('rejects a valid signature from the wrong installed app', async ({ page }) 
   expect(response.status).toBe(403);
   expect(response.body).not.toContain('<script>');
   expect(await page.evaluate(() => globalThis.pwned)).toBeUndefined();
+});
+
+test('rejects a correctly signed request for an unmapped channel', async ({ page }) => {
+  const body = commandBody();
+  const timestamp = Math.floor(Date.now() / 1000);
+  const response = await postCommand(page, {
+    body,
+    timestamp,
+    requestSignature: signature(body, timestamp),
+  });
+
+  expect(response.status).toBe(403);
+  expect(response.body).not.toContain('Accepted');
+  expect(response.body).not.toContain('DEN-1041');
 });
 
 test('rejects endpoint and payload provider confusion before policy resolution', async ({
