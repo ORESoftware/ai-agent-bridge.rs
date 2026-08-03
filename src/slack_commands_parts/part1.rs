@@ -84,8 +84,8 @@ enum Provider {
 impl Provider {
     fn from_command(command: &str) -> Option<Self> {
         match command.trim() {
-            "/ores-claude" => Some(Self::Claude),
-            "/ores-chatgpt" => Some(Self::Chatgpt),
+            "/ores-claude" | "/x-claude" | "/my-claude" => Some(Self::Claude),
+            "/ores-chatgpt" | "/x-chatgpt" | "/my-chatgpt" => Some(Self::Chatgpt),
             _ => None,
         }
     }
@@ -268,4 +268,33 @@ fn absolute_path(key: &str) -> Result<PathBuf> {
         return Err(Error::Config(format!("{key} must be absolute")));
     }
     Ok(path)
+}
+
+#[cfg(test)]
+mod provider_command_alias_tests {
+    use super::*;
+
+    #[test]
+    fn reviewed_aliases_map_to_the_expected_provider() {
+        for command in ["/ores-claude", "/x-claude", "/my-claude"] {
+            assert_eq!(Provider::from_command(command), Some(Provider::Claude));
+        }
+        for command in ["/ores-chatgpt", "/x-chatgpt", "/my-chatgpt"] {
+            assert_eq!(Provider::from_command(command), Some(Provider::Chatgpt));
+        }
+    }
+
+    #[test]
+    fn unknown_or_lookalike_commands_are_rejected() {
+        for command in [
+            "/claude",
+            "/chatgpt",
+            "/ores-claude-extra",
+            "/ores-chatgpt-extra",
+            "/x_claude",
+            "/my_chatgpt",
+        ] {
+            assert_eq!(Provider::from_command(command), None);
+        }
+    }
 }
