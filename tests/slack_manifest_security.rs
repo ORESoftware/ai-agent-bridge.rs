@@ -55,7 +55,11 @@ fn reviewed_manifest_has_the_exact_required_bot_scope_set() {
     let unique = scopes.iter().copied().collect::<BTreeSet<_>>();
     let expected = REQUIRED_BOT_SCOPES.into_iter().collect::<BTreeSet<_>>();
 
-    assert_eq!(scopes.len(), unique.len(), "bot scopes must not be duplicated");
+    assert_eq!(
+        scopes.len(),
+        unique.len(),
+        "bot scopes must not be duplicated"
+    );
     assert_eq!(unique, expected, "bot scope drift requires security review");
 }
 
@@ -84,5 +88,7 @@ fn user_group_authorization_cannot_drift_from_its_runtime_dependency() {
     let manifest = include_str!("../slack-app/manifest.yaml");
 
     assert!(runtime.contains("usergroups.list"));
-    assert!(manifest.lines().any(|line| line.trim() == "- usergroups:read"));
+    assert!(manifest
+        .lines()
+        .any(|line| line.trim() == "- usergroups:read"));
 }
