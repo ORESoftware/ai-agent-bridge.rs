@@ -35,6 +35,10 @@ An external provider attempt increments `started` immediately before the guarded
 
 Actual token and cost metrics are recorded only after normalized provider usage is accepted by the admission endpoint. Missing or unprovable usage therefore produces no actual-usage increment and the output remains discarded.
 
+## Validation contract
+
+The integration gate must compile the metrics module through the real runner, exercise both in-memory and PostgreSQL feature sets, run Clippy with warnings denied, validate PostgreSQL restart durability, and reject duplicate Prometheus `HELP` or `TYPE` declarations. A green registry-only build is not sufficient: tests must prove that lifecycle boundaries call the registry and that `/metrics` remains public while the listener exposes no mutation route.
+
 ## Zero-replica behavior
 
 The runner Deployment is intentionally absent or scaled to zero before activation. Prometheus must not page on an intentionally absent runner target. Runner target-down alerts should be added only with the separate zero-replica Deployment/Service contract and should be gated by an activation signal or desired replica count. Bridge target alerts do not imply runner health.
