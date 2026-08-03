@@ -74,7 +74,7 @@ jobs:
 
       - name: Install Chromium
         working-directory: tests/browser
-        run: npx playwright install --with-deps chromium
+        run: npx --no-install playwright install --with-deps chromium
 
       - name: Exercise signed-ingress rejection boundaries in Chromium
         shell: bash
@@ -125,3 +125,9 @@ jobs:
           ' "${readiness_json}"
 
           timeout 2m npm --prefix tests/browser run test:slack-ingress
+
+          if find "${SLACK_COMMAND_STATE_DIR}" -mindepth 1 -print -quit | grep -q .; then
+            echo "Rejected ingress requests unexpectedly created a run-journal claim" >&2
+            find "${SLACK_COMMAND_STATE_DIR}" -mindepth 1 -maxdepth 1 -printf '%f\n' >&2
+            exit 1
+          fi
