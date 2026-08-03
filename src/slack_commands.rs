@@ -13,3 +13,4 @@ include!("slack_commands_parts/part7.rs");
 include!("slack_commands_parts/part8.rs");
 include!("slack_commands_parts/part9.rs");
 include!("slack_commands_parts/part10.rs");
+include!("slack_commands_parts/part11.rs");
