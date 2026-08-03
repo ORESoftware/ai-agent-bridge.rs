@@ -41,10 +41,15 @@ fn loopback_url(value: &str) -> Result<bool> {
 
 fn url_host_is_loopback(url: &Url) -> bool {
     url.host_str().is_some_and(|host| {
-        host.eq_ignore_ascii_case("localhost")
-            || host
-                .parse::<IpAddr>()
-                .is_ok_and(|address| address.is_loopback())
+        if host.eq_ignore_ascii_case("localhost") {
+            return true;
+        }
+        let host = host
+            .strip_prefix('[')
+            .and_then(|value| value.strip_suffix(']'))
+            .unwrap_or(host);
+        host.parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
     })
 }
 
@@ -198,7 +203,7 @@ impl RunRequest {
             provider: metadata.provider,
             team_id: metadata.team_id,
             channel_id: metadata.channel_id,
-            user_id: metadata.user_id,
+            user_id: metadata.user.id,
             prompt,
             action: selected(&payload.view.state, "action", "action")?,
             repository: Some(selected(&payload.view.state, "repository", "repository")?),
