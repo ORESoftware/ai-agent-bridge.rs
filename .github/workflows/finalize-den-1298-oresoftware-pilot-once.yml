@@ -1,3 +1,4 @@
+# Second push after workflow registration; the workflow deletes itself on success.
 name: Finalize DEN-1298 oresoftware pilot once
 
 on:
