@@ -465,10 +465,7 @@ mod tests {
             protocol: BRIDGE_PROTOCOL_ID.to_string(),
             service: "ai-agent-bridge".to_string(),
             implementation: "agent-pontifex".to_string(),
-            capabilities: vec![
-                "bridge.channels".to_string(),
-                "bridge.messages".to_string(),
-            ],
+            capabilities: vec!["bridge.channels".to_string(), "bridge.messages".to_string()],
             extensions: BTreeMap::from([(
                 "fiducia.file-leases".to_string(),
                 json!({"fencing": true}),
@@ -496,7 +493,10 @@ mod tests {
         };
         let encoded = serde_json::to_value(&event).unwrap();
         assert_eq!(encoded["type"], "presence");
-        assert_eq!(serde_json::from_value::<bridge::Event>(encoded).unwrap(), event);
+        assert_eq!(
+            serde_json::from_value::<bridge::Event>(encoded).unwrap(),
+            event
+        );
 
         let request = coordinator::CreateJobRequest {
             org: "agent-pontifex".to_string(),
