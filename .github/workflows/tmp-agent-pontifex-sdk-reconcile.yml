@@ -1,9 +1,9 @@
 name: Temporary Agent Pontifex SDK reconciliation
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/shared-protocol-sdk-foundation
+      - main
     paths:
       - .github/workflows/tmp-agent-pontifex-sdk-reconcile.yml
 
@@ -20,10 +20,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: Check out exact trigger commit
+      - name: Check out exact PR head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: true
 
@@ -50,7 +50,7 @@ jobs:
       - name: Commit reviewed reconciliation
         env:
           BRANCH_NAME: agent/shared-protocol-sdk-foundation
-          TRIGGER_SHA: ${{ github.sha }}
+          TRIGGER_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           git fetch origin "$BRANCH_NAME"
           test "$(git rev-parse "origin/$BRANCH_NAME")" = "$TRIGGER_SHA"
