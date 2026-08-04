@@ -103,6 +103,23 @@ replace_once(
 )
 replace_once(
     sdk_path,
+    '''    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+''',
+    '''    let normalized = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
+    normalized.eq_ignore_ascii_case("localhost")
+        || normalized
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+''',
+)
+replace_once(
+    sdk_path,
     '''    #[test]
     fn dynamic_identifiers_are_encoded_as_single_path_segments() {
 ''',
