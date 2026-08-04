@@ -53,7 +53,7 @@ httpdate = "1"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 libc = "0.2"
-hmac = "0.12"
+hmac = "0.13"
 sha2 = "0.10"
 # parking_lot RwLock: no lock poisoning (a panic under the lock can't cascade
 # into every later request), and no Result to unwrap.
