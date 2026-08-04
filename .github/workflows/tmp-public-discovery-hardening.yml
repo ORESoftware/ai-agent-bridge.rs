@@ -58,9 +58,10 @@ jobs:
           rm -rf vendor/k8s-libs-and-shared-defs
           git checkout -- Cargo.lock
 
-      - name: Verify exact scope and remove temporary script
+      - name: Verify exact scope and remove temporary assets
         run: |
           rm scripts/tmp-public-discovery-hardening.py
+          rm .github/workflows/tmp-public-discovery-hardening.yml
           git diff --check
           git status --short
 
@@ -74,6 +75,7 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add \
+            .github/workflows/tmp-public-discovery-hardening.yml \
             scripts/tmp-public-discovery-hardening.py \
             sdk/agent-pontifex-sdk/src/lib.rs \
             src/main.rs \
