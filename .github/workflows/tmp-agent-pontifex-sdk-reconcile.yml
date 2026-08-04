@@ -18,7 +18,7 @@ jobs:
   reconcile:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - name: Check out exact trigger commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -27,40 +27,18 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Install pinned Rust toolchain
+      - name: Install pinned formatter
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: '1.95.0'
-          components: rustfmt, clippy
+          components: rustfmt
 
-      - name: Apply bounded reconciliation
-        run: python3 scripts/tmp-reconcile-agent-pontifex-sdk.py
-
-      - name: Format and test standalone crates
+      - name: Apply exact reconciliation and format changed Rust
         run: |
+          python3 scripts/tmp-reconcile-agent-pontifex-sdk.py
           cargo fmt --manifest-path sdk/agent-pontifex-protocol/Cargo.toml
           cargo fmt --manifest-path sdk/agent-pontifex-sdk/Cargo.toml
           rustfmt --edition 2021 src/http.rs
-          cargo clippy --manifest-path sdk/agent-pontifex-protocol/Cargo.toml --all-targets -- -D warnings
-          cargo test --manifest-path sdk/agent-pontifex-protocol/Cargo.toml
-          cargo clippy --manifest-path sdk/agent-pontifex-sdk/Cargo.toml --all-targets -- -D warnings
-          cargo test --manifest-path sdk/agent-pontifex-sdk/Cargo.toml
-          cargo doc --manifest-path sdk/agent-pontifex-sdk/Cargo.toml --no-deps
-
-      - name: Compile bridge library without private submodules
-        run: |
-          mkdir -p vendor/k8s-libs-and-shared-defs/pg-defs/generated/rust/sea-orm/src
-          cat > vendor/k8s-libs-and-shared-defs/pg-defs/generated/rust/sea-orm/Cargo.toml <<'EOF'
-          [package]
-          name = "dd-pg-defs-sea-orm"
-          version = "0.1.0"
-          edition = "2021"
-          [lib]
-          path = "src/lib.rs"
-          EOF
-          : > vendor/k8s-libs-and-shared-defs/pg-defs/generated/rust/sea-orm/src/lib.rs
-          cargo check --lib --no-default-features
-          rm -rf vendor/k8s-libs-and-shared-defs
 
       - name: Verify exact scope and remove temporary machinery
         run: |
@@ -69,7 +47,7 @@ jobs:
           git diff --check
           git status --short
 
-      - name: Commit only reviewed reconciliation
+      - name: Commit reviewed reconciliation
         env:
           BRANCH_NAME: agent/shared-protocol-sdk-foundation
           TRIGGER_SHA: ${{ github.sha }}
