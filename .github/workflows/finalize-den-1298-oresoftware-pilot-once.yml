@@ -26,14 +26,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - name: Checkout exact pilot branch
+      - name: Checkout exact pilot branch without private submodules
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: agent/den-1298-oresoftware-pilot
           fetch-depth: 0
           persist-credentials: true
           show-progress: false
-          submodules: recursive
+          submodules: false
 
       - name: Reconstruct and apply the reviewed patch
         shell: bash
@@ -61,9 +61,28 @@ jobs:
           set -euo pipefail
           python3 -m json.tool config/alex-main-agent.channels.json >/dev/null
           python3 -m unittest tests.test_audit_alex_main_agent_manifests
+
+          # Cargo parses optional path dependencies even when the feature is off.
+          # Supply a disposable empty crate at the private generated-code path;
+          # the focused default-feature registry test cannot import or execute it.
+          stub='vendor/k8s-libs-and-shared-defs/pg-defs/generated/rust/sea-orm'
+          mkdir -p "$stub/src"
+          cat >"$stub/Cargo.toml" <<'TOML'
+          [package]
+          name = "dd-pg-defs-sea-orm"
+          version = "0.0.0"
+          edition = "2021"
+          publish = false
+
+          [lib]
+          path = "src/lib.rs"
+          TOML
+          printf '%s\n' '#![forbid(unsafe_code)]' >"$stub/src/lib.rs"
+
           cargo fmt --all -- --check
           cargo clippy --all-targets --locked -- -D warnings
           cargo test --locked --test alex_main_agent_registry
+          rm -rf vendor/k8s-libs-and-shared-defs
           git diff --check
 
           python3 - <<'PY'
@@ -94,7 +113,8 @@ jobs:
           base='03f38e876daec61eba587f6cb87393d3cc2a7dac'
           rm -rf \
             .github/den-1298-pilot-patch \
-            .github/workflows/finalize-den-1298-oresoftware-pilot-once.yml
+            .github/workflows/finalize-den-1298-oresoftware-pilot-once.yml \
+            vendor/k8s-libs-and-shared-defs
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
