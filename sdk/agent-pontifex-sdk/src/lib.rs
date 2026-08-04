@@ -70,9 +70,9 @@ impl Client {
     fn endpoint(&self, segments: &[&str]) -> Result<Url, SdkError> {
         let mut url = self.base_url.clone();
         {
-            let mut path = url
-                .path_segments_mut()
-                .map_err(|_| SdkError::InvalidBaseUrl("base URL cannot carry path segments".into()))?;
+            let mut path = url.path_segments_mut().map_err(|_| {
+                SdkError::InvalidBaseUrl("base URL cannot carry path segments".into())
+            })?;
             path.pop_if_empty();
             for segment in segments {
                 validate_path_segment(segment)?;
@@ -156,9 +156,7 @@ impl BridgeClient {
         channel: &str,
         since: Option<u64>,
     ) -> Result<bridge::MessagesResponse, SdkError> {
-        let mut url = self
-            .client
-            .endpoint(&["channels", channel, "messages"])?;
+        let mut url = self.client.endpoint(&["channels", channel, "messages"])?;
         if let Some(since) = since {
             url.query_pairs_mut()
                 .append_pair("since", &since.to_string());
@@ -171,8 +169,7 @@ impl BridgeClient {
         &self,
         request: &bridge::AcquireFileLeaseRequest,
     ) -> Result<serde_json::Value, SdkError> {
-        self.post_json(&["file-leases", "acquire"], request)
-            .await
+        self.post_json(&["file-leases", "acquire"], request).await
     }
 
     async fn post_json<T: Serialize + ?Sized, R: DeserializeOwned>(
@@ -224,8 +221,10 @@ impl CoordinatorClient {
 
     pub async fn get_job(&self, job_id: &str) -> Result<coordinator::Job, SdkError> {
         let url = self.client.endpoint(&["v1", "jobs", job_id])?;
-        let response: coordinator::JobResponse =
-            self.client.decode(self.client.request(Method::GET, url)).await?;
+        let response: coordinator::JobResponse = self
+            .client
+            .decode(self.client.request(Method::GET, url))
+            .await?;
         Ok(response.job)
     }
 
@@ -260,9 +259,7 @@ impl CoordinatorClient {
         operation: &str,
         body: &T,
     ) -> Result<coordinator::Job, SdkError> {
-        let url = self
-            .client
-            .endpoint(&["v1", "jobs", job_id, operation])?;
+        let url = self.client.endpoint(&["v1", "jobs", job_id, operation])?;
         let builder = self.client.request(Method::POST, url).json(body);
         let response: coordinator::JobResponse = self.client.decode(builder).await?;
         Ok(response.job)
@@ -324,7 +321,12 @@ fn ensure_success(status: StatusCode, body: &[u8]) -> Result<(), SdkError> {
         .ok()
         .map(|response| response.error)
         .filter(|message| !message.is_empty())
-        .unwrap_or_else(|| status.canonical_reason().unwrap_or("request failed").to_string());
+        .unwrap_or_else(|| {
+            status
+                .canonical_reason()
+                .unwrap_or("request failed")
+                .to_string()
+        });
     Err(SdkError::Http {
         status: status.as_u16(),
         message: sanitize_public_message(&message),
