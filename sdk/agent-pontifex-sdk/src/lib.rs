@@ -343,8 +343,12 @@ fn is_loopback_host(url: &Url) -> bool {
     let Some(host) = url.host_str() else {
         return false;
     };
+    let normalized_host = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
     host.eq_ignore_ascii_case("localhost")
-        || host
+        || normalized_host
             .parse::<IpAddr>()
             .is_ok_and(|address| address.is_loopback())
 }
