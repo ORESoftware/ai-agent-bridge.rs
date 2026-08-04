@@ -1,0 +1,61 @@
+name: Slack observable event contract
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/slack-observable-event-contract.yml
+      - src/slack_commands.rs
+      - src/slack_commands_parts/part2.rs
+      - src/slack_commands_parts/part5.rs
+      - src/slack_commands_parts/part10.rs
+      - src/slack_commands_parts/part11.rs
+      - src/slack_commands_parts/part12.rs
+      - src/slack_project_bindings.rs
+      - Cargo.toml
+      - Cargo.lock
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/slack-observable-event-contract.yml
+      - src/slack_commands.rs
+      - src/slack_commands_parts/part2.rs
+      - src/slack_commands_parts/part5.rs
+      - src/slack_commands_parts/part10.rs
+      - src/slack_commands_parts/part11.rs
+      - src/slack_commands_parts/part12.rs
+      - src/slack_project_bindings.rs
+      - Cargo.toml
+      - Cargo.lock
+
+permissions:
+  contents: read
+
+concurrency:
+  group: slack-observable-event-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b
+        with:
+          toolchain: 1.97.1
+          components: rustfmt
+
+      - name: Validate formatting and focused contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all --check
+          cargo test --locked observable_event_contract_tests -- --nocapture
+          cargo test --locked ingress_security_tests -- --nocapture
+          cargo test --locked alias_http_contract_tests -- --nocapture
+          git diff --check
