@@ -1,9 +1,9 @@
 name: Temporary public discovery hardening
 
 on:
-  pull_request:
+  push:
     branches:
-      - main
+      - agent/shared-protocol-sdk-foundation
     paths:
       - .github/workflows/tmp-public-discovery-hardening.yml
 
@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-public-discovery-hardening
+  group: temporary-public-discovery-hardening-push
   cancel-in-progress: false
 
 jobs:
@@ -20,10 +20,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - name: Check out exact PR head
+      - name: Check out exact branch head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: true
 
@@ -67,7 +67,7 @@ jobs:
       - name: Commit reviewed code hardening
         env:
           BRANCH_NAME: agent/shared-protocol-sdk-foundation
-          TRIGGER_SHA: ${{ github.event.pull_request.head.sha }}
+          TRIGGER_SHA: ${{ github.sha }}
         run: |
           git fetch origin "$BRANCH_NAME"
           test "$(git rev-parse "origin/$BRANCH_NAME")" = "$TRIGGER_SHA"
