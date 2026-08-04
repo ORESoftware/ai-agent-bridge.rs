@@ -49,6 +49,20 @@ The public crate must not depend on `fiducia-node`, private schemas, reviewer
 credentials, customer tenancy, billing, or private deployment topology. Fiducia
 implementations may consume and extend the public crate.
 
+## Discovery and negotiation
+
+Compatible servers expose `GET /.well-known/agent-pontifex` without requiring
+application credentials. The document binds a canonical bridge or coordinator
+service ID to its matching protocol ID, advertises an explicit supported major-
+version range, and keeps capabilities sorted for deterministic comparison.
+Clients negotiate the highest shared major version and fail closed when the
+service role, protocol, or version range does not match the client they opened.
+
+Remote SDK connections require HTTPS. Plaintext HTTP is accepted only for
+loopback development addresses. Response bodies are consumed incrementally and
+aborted once the four-megabyte SDK ceiling would be exceeded, including chunked
+responses with no `Content-Length` header.
+
 ## Development
 
 ```sh
@@ -63,7 +77,7 @@ denied, tests, and SDK documentation.
 
 1. Review the protocol against both the community bridge/coordinator and the
    Fiducia bridge/control plane.
-2. Stabilize capability names and add server discovery endpoints.
+2. Stabilize capability names and validate the well-known discovery endpoint across both servers.
 3. Move these crates, preserving history, to `agent-pontifex/agent-sdk.rs`.
 4. Pin consumers to immutable tags or commit SHAs.
 5. Keep cross-project inspiration intentional: generic improvements are proposed

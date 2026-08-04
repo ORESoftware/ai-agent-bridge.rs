@@ -14,15 +14,87 @@ use std::error::Error;
 use std::fmt;
 
 pub const PROTOCOL_SCHEMA_VERSION: u16 = 1;
-pub const BRIDGE_PROTOCOL_ID: &str = "agent-pontifex.bridge.v1";
-pub const COORDINATOR_PROTOCOL_ID: &str = "agent-pontifex.coordinator.v1";
+pub const CURRENT_PROTOCOL_MAJOR: u16 = 1;
+pub const BRIDGE_PROTOCOL_ID: &str = "agent-pontifex.bridge";
+pub const COORDINATOR_PROTOCOL_ID: &str = "agent-pontifex.coordinator";
+pub const DISCOVERY_PATH_SEGMENTS: [&str; 2] = [".well-known", "agent-pontifex"];
 pub type Timestamp = String;
+
+const MAX_CAPABILITIES: usize = 256;
+const MAX_EXTENSIONS: usize = 64;
+const MAX_EXTENSION_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServiceKind {
+    Bridge,
+    Coordinator,
+}
+
+impl ServiceKind {
+    pub const fn service_id(self) -> &'static str {
+        match self {
+            Self::Bridge => "bridge",
+            Self::Coordinator => "coordinator",
+        }
+    }
+
+    pub const fn protocol_id(self) -> &'static str {
+        match self {
+            Self::Bridge => BRIDGE_PROTOCOL_ID,
+            Self::Coordinator => COORDINATOR_PROTOCOL_ID,
+        }
+    }
+
+    fn from_service_id(service: &str) -> Option<Self> {
+        match service {
+            "bridge" => Some(Self::Bridge),
+            "coordinator" => Some(Self::Coordinator),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProtocolVersionRange {
+    pub min_major: u16,
+    pub max_major: u16,
+}
+
+impl ProtocolVersionRange {
+    pub const fn current() -> Self {
+        Self {
+            min_major: CURRENT_PROTOCOL_MAJOR,
+            max_major: CURRENT_PROTOCOL_MAJOR,
+        }
+    }
+
+    pub fn validate(self) -> Result<(), ValidationError> {
+        if self.min_major == 0 || self.min_major > self.max_major {
+            return Err(ValidationError::new("invalid protocol major-version range"));
+        }
+        Ok(())
+    }
+
+    pub fn highest_common(self, other: Self) -> Option<u16> {
+        let lower = self.min_major.max(other.min_major);
+        let upper = self.max_major.min(other.max_major);
+        (lower <= upper).then_some(upper)
+    }
+}
+
+impl Default for ProtocolVersionRange {
+    fn default() -> Self {
+        Self::current()
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceDescriptor {
     pub schema_version: u16,
     pub protocol: String,
+    pub protocol_versions: ProtocolVersionRange,
     pub service: String,
     pub implementation: String,
     #[serde(default)]
@@ -32,17 +104,52 @@ pub struct ServiceDescriptor {
 }
 
 impl ServiceDescriptor {
+    pub fn new(
+        kind: ServiceKind,
+        implementation: impl Into<String>,
+        mut capabilities: Vec<String>,
+        extensions: BTreeMap<String, Value>,
+    ) -> Self {
+        capabilities.sort();
+        Self {
+            schema_version: PROTOCOL_SCHEMA_VERSION,
+            protocol: kind.protocol_id().to_string(),
+            protocol_versions: ProtocolVersionRange::current(),
+            service: kind.service_id().to_string(),
+            implementation: implementation.into(),
+            capabilities,
+            extensions,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), ValidationError> {
         if self.schema_version != PROTOCOL_SCHEMA_VERSION {
             return Err(ValidationError::new("unsupported protocol schema version"));
         }
+        self.protocol_versions.validate()?;
         validate_identifier(&self.protocol, "protocol")?;
         validate_identifier(&self.service, "service")?;
         validate_identifier(&self.implementation, "implementation")?;
 
+        let kind = ServiceKind::from_service_id(&self.service)
+            .ok_or_else(|| ValidationError::new("unknown Agent Pontifex service"))?;
+        if self.protocol != kind.protocol_id() {
+            return Err(ValidationError::new(
+                "service and protocol identifiers do not match",
+            ));
+        }
+
+        if self.capabilities.len() > MAX_CAPABILITIES {
+            return Err(ValidationError::new("too many advertised capabilities"));
+        }
         let mut seen = BTreeSet::new();
         for capability in &self.capabilities {
             validate_identifier(capability, "capability")?;
+            if !capability.contains('.') {
+                return Err(ValidationError::new(
+                    "capability identifiers must use a namespace",
+                ));
+            }
             if !seen.insert(capability.as_str()) {
                 return Err(ValidationError::new("duplicate capability"));
             }
@@ -55,15 +162,40 @@ impl ServiceDescriptor {
             ));
         }
 
-        for extension in self.extensions.keys() {
+        if self.extensions.len() > MAX_EXTENSIONS {
+            return Err(ValidationError::new("too many advertised extensions"));
+        }
+        for (extension, value) in &self.extensions {
             validate_identifier(extension, "extension")?;
             if !extension.contains('.') {
                 return Err(ValidationError::new(
                     "extension keys must use a vendor namespace",
                 ));
             }
+            if serde_json::to_vec(value)
+                .map_err(|_| ValidationError::new("extension is not serializable"))?
+                .len()
+                > MAX_EXTENSION_BYTES
+            {
+                return Err(ValidationError::new("extension value is too large"));
+            }
         }
         Ok(())
+    }
+
+    pub fn validate_for(
+        &self,
+        expected: ServiceKind,
+        supported: ProtocolVersionRange,
+    ) -> Result<u16, ValidationError> {
+        self.validate()?;
+        supported.validate()?;
+        if self.service != expected.service_id() || self.protocol != expected.protocol_id() {
+            return Err(ValidationError::new("unexpected Agent Pontifex service"));
+        }
+        self.protocol_versions
+            .highest_common(supported)
+            .ok_or_else(|| ValidationError::new("no compatible protocol major version"))
     }
 }
 
@@ -463,8 +595,9 @@ mod tests {
         let descriptor = ServiceDescriptor {
             schema_version: PROTOCOL_SCHEMA_VERSION,
             protocol: BRIDGE_PROTOCOL_ID.to_string(),
-            service: "ai-agent-bridge".to_string(),
-            implementation: "agent-pontifex".to_string(),
+            protocol_versions: ProtocolVersionRange::current(),
+            service: ServiceKind::Bridge.service_id().to_string(),
+            implementation: "agent-pontifex.ai-agent-bridge".to_string(),
             capabilities: vec!["bridge.channels".to_string(), "bridge.messages".to_string()],
             extensions: BTreeMap::from([(
                 "fiducia.file-leases".to_string(),
@@ -473,13 +606,40 @@ mod tests {
         };
         descriptor.validate().unwrap();
 
+        assert_eq!(
+            descriptor
+                .validate_for(
+                    ServiceKind::Bridge,
+                    ProtocolVersionRange {
+                        min_major: 1,
+                        max_major: 2,
+                    },
+                )
+                .unwrap(),
+            1
+        );
+
         let mut unsorted = descriptor.clone();
         unsorted.capabilities.reverse();
         assert!(unsorted.validate().is_err());
 
-        let mut unnamespaced = descriptor;
+        let mut mismatched = descriptor.clone();
+        mismatched.protocol = COORDINATOR_PROTOCOL_ID.to_string();
+        assert!(mismatched.validate().is_err());
+
+        let mut unnamespaced = descriptor.clone();
         unnamespaced.extensions = BTreeMap::from([("file-leases".to_string(), json!({}))]);
         assert!(unnamespaced.validate().is_err());
+
+        assert!(descriptor
+            .validate_for(
+                ServiceKind::Bridge,
+                ProtocolVersionRange {
+                    min_major: 2,
+                    max_major: 3,
+                },
+            )
+            .is_err());
     }
 
     #[test]

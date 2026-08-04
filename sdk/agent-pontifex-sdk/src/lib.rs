@@ -7,16 +7,26 @@
 
 pub use agent_pontifex_protocol as protocol;
 
-use protocol::{bridge, coordinator, ErrorResponse};
+use protocol::{
+    bridge, coordinator, ErrorResponse, ProtocolVersionRange, ServiceDescriptor, ServiceKind,
+    DISCOVERY_PATH_SEGMENTS,
+};
 use reqwest::header::{HeaderValue, ACCEPT, AUTHORIZATION};
 use reqwest::{Method, StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::net::IpAddr;
 use std::time::Duration;
 use thiserror::Error;
 
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiscoveredService {
+    pub descriptor: ServiceDescriptor,
+    pub negotiated_protocol_major: u16,
+}
 
 #[derive(Clone)]
 pub struct Client {
@@ -67,6 +77,20 @@ impl Client {
         }
     }
 
+    async fn discover(&self, expected: ServiceKind) -> Result<DiscoveredService, SdkError> {
+        let url = self.endpoint(&DISCOVERY_PATH_SEGMENTS)?;
+        let descriptor: ServiceDescriptor = self.decode(self.request(Method::GET, url)).await?;
+        let negotiated_protocol_major = descriptor
+            .validate_for(expected, ProtocolVersionRange::current())
+            .map_err(|error| {
+                SdkError::IncompatibleService(sanitize_public_message(&error.to_string()))
+            })?;
+        Ok(DiscoveredService {
+            descriptor,
+            negotiated_protocol_major,
+        })
+    }
+
     fn endpoint(&self, segments: &[&str]) -> Result<Url, SdkError> {
         let mut url = self.base_url.clone();
         {
@@ -97,19 +121,26 @@ impl Client {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<(StatusCode, Vec<u8>), SdkError> {
-        let response = request.send().await?;
+        let mut response = request.send().await?;
         let status = response.status();
-        if response
-            .content_length()
-            .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
-        {
+        let content_length = response.content_length();
+        if content_length.is_some_and(|length| length > MAX_RESPONSE_BYTES as u64) {
             return Err(SdkError::ResponseTooLarge);
         }
-        let body = response.bytes().await?;
-        if body.len() > MAX_RESPONSE_BYTES {
-            return Err(SdkError::ResponseTooLarge);
+
+        let mut body =
+            Vec::with_capacity(content_length.unwrap_or(0).min(MAX_RESPONSE_BYTES as u64) as usize);
+        while let Some(chunk) = response.chunk().await? {
+            let next_len = body
+                .len()
+                .checked_add(chunk.len())
+                .ok_or(SdkError::ResponseTooLarge)?;
+            if next_len > MAX_RESPONSE_BYTES {
+                return Err(SdkError::ResponseTooLarge);
+            }
+            body.extend_from_slice(&chunk);
         }
-        Ok((status, body.to_vec()))
+        Ok((status, body))
     }
 
     async fn decode<T: DeserializeOwned>(
@@ -128,6 +159,10 @@ pub struct BridgeClient {
 }
 
 impl BridgeClient {
+    pub async fn discover(&self) -> Result<DiscoveredService, SdkError> {
+        self.client.discover(ServiceKind::Bridge).await
+    }
+
     pub async fn register_agent(
         &self,
         request: &bridge::RegisterAgentRequest,
@@ -189,6 +224,10 @@ pub struct CoordinatorClient {
 }
 
 impl CoordinatorClient {
+    pub async fn discover(&self) -> Result<DiscoveredService, SdkError> {
+        self.client.discover(ServiceKind::Coordinator).await
+    }
+
     pub async fn create_job(
         &self,
         request: &coordinator::CreateJobRequest,
@@ -273,6 +312,16 @@ fn normalize_base_url(input: &str) -> Result<Url, SdkError> {
             "only http and https are supported".into(),
         ));
     }
+    if url.host_str().is_none() {
+        return Err(SdkError::InvalidBaseUrl(
+            "base URL must include a host".into(),
+        ));
+    }
+    if url.scheme() == "http" && !is_loopback_host(&url) {
+        return Err(SdkError::InvalidBaseUrl(
+            "plaintext HTTP is allowed only for loopback development".into(),
+        ));
+    }
     if !url.username().is_empty() || url.password().is_some() {
         return Err(SdkError::InvalidBaseUrl(
             "credentials are not allowed in the base URL".into(),
@@ -288,6 +337,16 @@ fn normalize_base_url(input: &str) -> Result<Url, SdkError> {
         url.set_path(&path);
     }
     Ok(url)
+}
+
+fn is_loopback_host(url: &Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 fn validate_path_segment(segment: &str) -> Result<(), SdkError> {
@@ -356,6 +415,8 @@ pub enum SdkError {
     InvalidPathSegment,
     #[error("invalid idempotency key")]
     InvalidIdempotencyKey,
+    #[error("service discovery is incompatible: {0}")]
+    IncompatibleService(String),
     #[error("response exceeds the SDK size limit")]
     ResponseTooLarge,
     #[error("HTTP request failed: {0}")]
@@ -373,6 +434,11 @@ mod tests {
     #[test]
     fn rejects_credential_bearing_or_ambiguous_base_urls() {
         assert!(Client::new("ftp://example.com").is_err());
+        assert!(Client::new("http://example.com").is_err());
+        assert!(Client::new("http://127.0.0.1:8142").is_ok());
+        assert!(Client::new("http://127.0.0.42:8142").is_ok());
+        assert!(Client::new("http://[::1]:8142").is_ok());
+        assert!(Client::new("http://localhost:8142").is_ok());
         assert!(Client::new("https://user:pass@example.com").is_err());
         assert!(Client::new("https://example.com?tenant=one").is_err());
         assert!(Client::new("https://example.com/#fragment").is_err());
@@ -398,6 +464,16 @@ mod tests {
         assert_eq!(
             url.as_str(),
             "https://example.com/root/v1/jobs/owner%2Frepo/heartbeat"
+        );
+    }
+
+    #[test]
+    fn discovery_uses_the_well_known_path() {
+        let client = Client::new("https://example.com/root").unwrap();
+        let url = client.endpoint(&DISCOVERY_PATH_SEGMENTS).unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://example.com/root/.well-known/agent-pontifex"
         );
     }
 }
