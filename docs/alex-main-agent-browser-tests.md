@@ -16,10 +16,11 @@ This test surface proves that the reviewed Slack channel registry is enforced by
 The diagnostic server:
 
 - refuses non-loopback bind addresses;
-- rejects non-loopback `Host` headers;
+- rejects non-loopback and malformed loopback `Host` authorities, including empty, non-numeric, and out-of-range ports;
+- rejects cross-site `Sec-Fetch-Site` requests and any `Origin` that does not exactly match the request's loopback authority;
 - accepts at most 16 KiB request bodies;
-- accepts at most a 1 MiB regular-file registry;
-- emits restrictive Content Security Policy, COOP, CORP, referrer, MIME-sniffing, and cache headers;
+- accepts at most a 1 MiB regular-file registry and rejects symbolic-link registry paths;
+- emits restrictive Content Security Policy, COEP, COOP, CORP, Permissions Policy, referrer, framing, MIME-sniffing, and cache headers on successful and rejected responses;
 - stores no Slack signing secret, bot token, Linear key, GitHub token, or provider credential;
 - returns stable public error codes instead of internal policy details.
 
@@ -59,8 +60,12 @@ Chromium verifies:
 4. rejection of an unauthorized Slack principal;
 5. rejection of a repository escape attempt;
 6. rejection of a Linear issue from another team;
-7. rejection of a non-loopback Host header;
-8. rejection of an oversized JSON request body.
+7. rejection of a non-loopback Host header with hardened error headers;
+8. rejection of malformed loopback Host authorities and invalid ports;
+9. rejection of cross-site and mismatched-loopback-origin requests before policy evaluation;
+10. rejection of an oversized JSON request body.
+
+The Rust binary's focused unit tests additionally prove strict loopback authority parsing, same-origin matching, fetch-metadata admission, and symbolic-link registry rejection.
 
 ## GitHub Actions
 
