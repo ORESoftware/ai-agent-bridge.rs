@@ -2,12 +2,12 @@
 from pathlib import Path
 
 
-def replace_once(path: str, old: str, new: str) -> None:
+def replace_once(path: str, old: str, new: str, label: str) -> None:
     target = Path(path)
     text = target.read_text(encoding="utf-8")
     count = text.count(old)
     if count != 1:
-        raise SystemExit(f"{path}: expected one replacement target, found {count}")
+        raise SystemExit(f"{path}: {label}: expected one replacement target, found {count}")
     target.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
@@ -47,6 +47,7 @@ mod tests {
     }
 }
 ''',
+    "public auth allow-list",
 )
 
 replace_once(
@@ -60,18 +61,15 @@ replace_once(
             | "/metrics"
             | "/.well-known/agent-pontifex"
 ''',
+    "admission bypass allow-list",
 )
 
 sdk_path = "sdk/agent-pontifex-sdk/src/lib.rs"
 replace_once(
     sdk_path,
-    '''        let url = self.endpoint(&DISCOVERY_PATH_SEGMENTS)?;
-        let descriptor: ServiceDescriptor = self.decode(self.request(Method::GET, url)).await?;
-''',
-    '''        let url = self.endpoint(&DISCOVERY_PATH_SEGMENTS)?;
-        let descriptor: ServiceDescriptor =
-            self.decode(self.public_request(Method::GET, url)).await?;
-''',
+    "self.decode(self.request(Method::GET, url)).await?",
+    "self.decode(self.public_request(Method::GET, url)).await?",
+    "credential-free discovery request",
 )
 replace_once(
     sdk_path,
@@ -100,6 +98,7 @@ replace_once(
         request
     }
 ''',
+    "public request builder",
 )
 replace_once(
     sdk_path,
@@ -120,4 +119,5 @@ replace_once(
     #[test]
     fn dynamic_identifiers_are_encoded_as_single_path_segments() {
 ''',
+    "credential regression test",
 )
