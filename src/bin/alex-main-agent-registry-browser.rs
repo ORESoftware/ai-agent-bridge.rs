@@ -14,7 +14,7 @@ use anyhow::{ensure, Context};
 use axum::{
     body::Body,
     extract::{DefaultBodyLimit, Request, State},
-    http::{header, HeaderName, HeaderValue, StatusCode},
+    http::{header, HeaderName, HeaderValue, StatusCode, Uri},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -119,8 +119,12 @@ async fn main() -> anyhow::Result<()> {
 fn read_registry(path: &Path) -> anyhow::Result<Vec<u8>> {
     use std::io::Read as _;
 
-    let metadata = fs::metadata(path)
+    let metadata = fs::symlink_metadata(path)
         .with_context(|| format!("failed to inspect registry at {}", path.display()))?;
+    ensure!(
+        !metadata.file_type().is_symlink(),
+        "registry path must not be a symbolic link"
+    );
     ensure!(metadata.is_file(), "registry path must be a file");
 
     let file = fs::File::open(path)
@@ -141,26 +145,67 @@ async fn shutdown_signal() {
 }
 
 async fn security_headers(request: Request<Body>, next: Next) -> Response {
-    let host_is_allowed = request
+    let Some(host) = request
         .headers()
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(loopback_host);
-    if !host_is_allowed {
-        return (
-            StatusCode::MISDIRECTED_REQUEST,
-            "the registry probe accepts only loopback Host headers",
-        )
-            .into_response();
+        .filter(|value| loopback_host(value))
+    else {
+        return hardened_response(
+            (
+                StatusCode::MISDIRECTED_REQUEST,
+                "the registry probe accepts only strict loopback Host authorities",
+            )
+                .into_response(),
+        );
+    };
+
+    if let Some(origin) = request.headers().get(header::ORIGIN) {
+        let origin_is_allowed = origin
+            .to_str()
+            .ok()
+            .is_some_and(|value| origin_matches_host(value, host));
+        if !origin_is_allowed {
+            return hardened_response(
+                (
+                    StatusCode::FORBIDDEN,
+                    "the registry probe accepts only same-origin browser requests",
+                )
+                    .into_response(),
+            );
+        }
     }
 
-    let mut response = next.run(request).await;
+    if let Some(fetch_site) = request.headers().get("sec-fetch-site") {
+        let fetch_site_is_allowed = fetch_site
+            .to_str()
+            .ok()
+            .is_some_and(fetch_site_is_allowed);
+        if !fetch_site_is_allowed {
+            return hardened_response(
+                (
+                    StatusCode::FORBIDDEN,
+                    "the registry probe rejects cross-site browser requests",
+                )
+                    .into_response(),
+            );
+        }
+    }
+
+    hardened_response(next.run(request).await)
+}
+
+fn hardened_response(mut response: Response) -> Response {
     let headers = response.headers_mut();
     headers.insert(
         HeaderName::from_static("content-security-policy"),
         HeaderValue::from_static(
             "default-src 'self'; base-uri 'none'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; img-src 'none'; object-src 'none'; script-src 'self'; style-src 'self'",
         ),
+    );
+    headers.insert(
+        HeaderName::from_static("cross-origin-embedder-policy"),
+        HeaderValue::from_static("require-corp"),
     );
     headers.insert(
         HeaderName::from_static("cross-origin-opener-policy"),
@@ -171,6 +216,12 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response {
         HeaderValue::from_static("same-origin"),
     );
     headers.insert(
+        HeaderName::from_static("permissions-policy"),
+        HeaderValue::from_static(
+            "accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=()",
+        ),
+    );
+    headers.insert(
         HeaderName::from_static("referrer-policy"),
         HeaderValue::from_static("no-referrer"),
     );
@@ -178,22 +229,79 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response {
         HeaderName::from_static("x-content-type-options"),
         HeaderValue::from_static("nosniff"),
     );
+    headers.insert(
+        HeaderName::from_static("x-frame-options"),
+        HeaderValue::from_static("DENY"),
+    );
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
 }
 
+fn valid_port(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && value.parse::<u16>().is_ok()
+}
+
 fn loopback_host(value: &str) -> bool {
     let value = value.trim();
-    if let Some(ipv6) = value.strip_prefix('[') {
-        return ipv6.split_once(']').is_some_and(|(address, suffix)| {
-            address == "::1" && (suffix.is_empty() || suffix.starts_with(':'))
-        });
+    if value.is_empty()
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+    {
+        return false;
     }
 
-    let hostname = value
-        .split_once(':')
-        .map_or(value, |(hostname, _port)| hostname);
-    hostname == "127.0.0.1" || hostname.eq_ignore_ascii_case("localhost")
+    if let Some(rest) = value.strip_prefix('[') {
+        let Some((address, suffix)) = rest.split_once(']') else {
+            return false;
+        };
+        if address != "::1" {
+            return false;
+        }
+        return if suffix.is_empty() {
+            true
+        } else if let Some(port) = suffix.strip_prefix(':') {
+            valid_port(port)
+        } else {
+            false
+        };
+    }
+
+    if value.contains('[') || value.contains(']') || value.matches(':').count() > 1 {
+        return false;
+    }
+
+    let (hostname, port) = value
+        .rsplit_once(':')
+        .map_or((value, None), |(hostname, port)| (hostname, Some(port)));
+    if hostname != "127.0.0.1" && !hostname.eq_ignore_ascii_case("localhost") {
+        return false;
+    }
+
+    port.map_or(true, valid_port)
+}
+
+fn origin_matches_host(origin: &str, host: &str) -> bool {
+    let Ok(uri) = origin.trim().parse::<Uri>() else {
+        return false;
+    };
+    if !matches!(uri.scheme_str(), Some("http" | "https"))
+        || uri.query().is_some()
+        || (!uri.path().is_empty() && uri.path() != "/")
+    {
+        return false;
+    }
+
+    let Some(authority) = uri.authority() else {
+        return false;
+    };
+    loopback_host(authority.as_str()) && authority.as_str().eq_ignore_ascii_case(host.trim())
+}
+
+fn fetch_site_is_allowed(value: &str) -> bool {
+    matches!(value.trim(), "same-origin" | "same-site" | "none")
 }
 
 async fn index() -> Html<&'static str> {
@@ -394,3 +502,106 @@ pre { border: 1px solid currentColor; min-height: 8rem; overflow: auto; padding:
 pre[data-status="success"] { outline: 0.2rem solid CanvasText; }
 pre[data-status="error"] { outline: 0.2rem dashed CanvasText; }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loopback_hosts_require_strict_authorities_and_numeric_ports() {
+        for host in [
+            "localhost",
+            "LOCALHOST:8160",
+            "127.0.0.1",
+            "127.0.0.1:8160",
+            "[::1]",
+            "[::1]:8160",
+        ] {
+            assert!(loopback_host(host), "expected {host:?} to be accepted");
+        }
+
+        for host in [
+            "",
+            "localhost:",
+            "localhost:not-a-port",
+            "localhost:65536",
+            "127.0.0.1:70000",
+            "[::1]:bogus",
+            "[::1]:65536",
+            "[::1]extra",
+            "::1",
+            "localhost.attacker.example",
+            "attacker@localhost",
+            "localhost/path",
+            "local host",
+            "localhost:\n8160",
+        ] {
+            assert!(!loopback_host(host), "expected {host:?} to be rejected");
+        }
+    }
+
+    #[test]
+    fn browser_origin_must_match_the_exact_loopback_authority() {
+        assert!(origin_matches_host(
+            "http://127.0.0.1:8160",
+            "127.0.0.1:8160"
+        ));
+        assert!(origin_matches_host(
+            "https://LOCALHOST:8160/",
+            "localhost:8160"
+        ));
+
+        for origin in [
+            "null",
+            "https://attacker.example",
+            "http://127.0.0.1:9999",
+            "http://attacker@localhost:8160",
+            "http://localhost:8160/path",
+            "http://localhost:8160/?query=1",
+        ] {
+            assert!(
+                !origin_matches_host(origin, "localhost:8160"),
+                "expected {origin:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn fetch_metadata_rejects_cross_site_contexts() {
+        for value in ["same-origin", "same-site", "none"] {
+            assert!(fetch_site_is_allowed(value));
+        }
+        for value in ["cross-site", "", "unknown"] {
+            assert!(!fetch_site_is_allowed(value));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn registry_reader_rejects_symbolic_links() {
+        use std::{
+            os::unix::fs::symlink,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock must be after the Unix epoch")
+            .as_nanos();
+        let directory = env::temp_dir().join(format!(
+            "alex-main-agent-registry-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).expect("temporary directory should be created");
+
+        let target = directory.join("registry.json");
+        let link = directory.join("registry-link.json");
+        fs::write(&target, b"{}").expect("temporary registry should be written");
+        symlink(&target, &link).expect("temporary symlink should be created");
+
+        let error = read_registry(&link).expect_err("symbolic-link registry must fail closed");
+        assert!(format!("{error:#}").contains("symbolic link"));
+
+        fs::remove_dir_all(directory).expect("temporary directory should be removed");
+    }
+}
