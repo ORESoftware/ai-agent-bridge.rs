@@ -277,7 +277,7 @@ fn loopback_host(value: &str) -> bool {
         return false;
     }
 
-    port.map_or(true, valid_port)
+    port.is_none_or(valid_port)
 }
 
 fn origin_matches_host(origin: &str, host: &str) -> bool {
