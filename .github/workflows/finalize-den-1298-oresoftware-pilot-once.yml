@@ -1,7 +1,12 @@
-# Second push after workflow registration; the workflow deletes itself on success.
+# Same-repository pull-request finalizer; deleted from the branch on success.
 name: Finalize DEN-1298 oresoftware pilot once
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/finalize-den-1298-oresoftware-pilot-once.yml'
+      - '.github/den-1298-pilot-patch/**'
   push:
     branches:
       - agent/den-1298-oresoftware-pilot
@@ -17,7 +22,7 @@ concurrency:
 
 jobs:
   finalize:
-    if: github.actor != 'github-actions[bot]'
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
