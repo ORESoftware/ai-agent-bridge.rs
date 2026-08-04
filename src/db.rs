@@ -1,33 +1,41 @@
 //! Optional Postgres persistence (feature = "postgres").
 //!
-//! This is a *best-effort mirror* of the in-memory state, never on the request
-//! hot path (see [`crate::state::AppState`]'s persist shims, which spawn these).
-//! Tables live in the `ai_agent_bridge` schema defined by `fiducia-interfaces`;
-//! we never create or migrate them here — migrations are human-approved. If the
-//! schema has not been applied yet, writes simply error and are logged.
+//! This is a best-effort mirror of the in-memory state, never on the request
+//! hot path (see [`crate::state::AppState`]'s persistence shims). The canonical
+//! DDL is `pg-defs/schema/schema.sql` in the pinned
+//! `ORESoftware/k8s-libs-and-shared-defs` submodule. Generated SeaORM entities
+//! are adapters only; this service never creates or migrates tables at boot.
 //!
-//! Constants stay schema-qualified so the service does not depend on a mutable
-//! PostgreSQL search path.
+//! Most operations remain explicit parameterized PostgreSQL statements because
+//! they depend on data-modifying CTEs, window functions, JSONB expressions,
+//! server-clock timestamps, or optimistic `EXCLUDED` guards. SeaORM owns the
+//! connection, execution, row decoding, and value binding without approximating
+//! those semantics through a different query shape.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
-use sqlx::postgres::PgPoolOptions;
-use sqlx::{PgPool, Row};
+use sea_orm::sea_query::ArrayType;
+use sea_orm::{
+    ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend,
+    EntityName, FromQueryResult, Statement, Value,
+};
 
 use crate::state::AppState;
 use crate::types::{Agent, ContextEntry, Member, Message};
 
-#[derive(Clone)]
-pub struct Db {
-    pool: PgPool,
-}
-
+const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
 const AGENTS_TABLE: &str = "ai_agent_bridge.agents";
 const CHANNELS_TABLE: &str = "ai_agent_bridge.channels";
 const CHANNEL_MEMBERS_TABLE: &str = "ai_agent_bridge.channel_members";
 const MESSAGES_TABLE: &str = "ai_agent_bridge.messages";
 const SHARED_CONTEXT_TABLE: &str = "ai_agent_bridge.shared_context";
+
+#[derive(Clone)]
+pub struct Db {
+    database: DatabaseConnection,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RestoreCounts {
@@ -37,14 +45,67 @@ pub struct RestoreCounts {
     pub context: usize,
 }
 
+#[derive(Debug, FromQueryResult)]
+struct AgentRow {
+    agent_key: String,
+    display_name: String,
+    kind: String,
+    host: Option<String>,
+    meta_data: serde_json::Value,
+    registered_at: String,
+}
+
+#[derive(Debug, FromQueryResult)]
+struct ChannelRow {
+    slug: String,
+    topic: String,
+    embedding_model: String,
+    embedding: serde_json::Value,
+    created_by: String,
+    created_at: String,
+    meta_data: serde_json::Value,
+}
+
+#[derive(Debug, FromQueryResult)]
+struct MessageStatsRow {
+    channel_slug: String,
+    message_count: i64,
+    max_seq: i64,
+}
+
+#[derive(Debug, FromQueryResult)]
+struct MessageRow {
+    id: uuid::Uuid,
+    channel_slug: String,
+    seq: i64,
+    from_agent_key: String,
+    role: String,
+    content: String,
+    meta_data: serde_json::Value,
+    created_at: String,
+}
+
+#[derive(Debug, FromQueryResult)]
+struct ContextRow {
+    channel_slug: String,
+    ctx_key: String,
+    value: serde_json::Value,
+    version: i32,
+    updated_by: String,
+    updated_at: String,
+}
+
 impl Db {
     pub async fn connect(url: &str) -> anyhow::Result<Self> {
-        let pool = PgPoolOptions::new()
+        verify_generated_entity_contract();
+        let mut options = ConnectOptions::new(url.to_owned());
+        options
             .max_connections(5)
-            .acquire_timeout(std::time::Duration::from_secs(10))
-            .connect(url)
-            .await?;
-        Ok(Self { pool })
+            .min_connections(0)
+            .acquire_timeout(ACQUIRE_TIMEOUT)
+            .sqlx_logging(false);
+        let database = Database::connect(options).await?;
+        Ok(Self { database })
     }
 
     /// Restore durable state before listeners accept traffic. Agent metadata,
@@ -76,17 +137,19 @@ impl Db {
              from {AGENTS_TABLE} order by updated_at desc, agent_key limit $1"
         );
         let limit = i64::try_from(state.config.max_agents).unwrap_or(i64::MAX);
-        let rows = sqlx::query(&sql).bind(limit).fetch_all(&self.pool).await?;
+        let rows = AgentRow::find_by_statement(statement(sql, [limit.into()]))
+            .all(&self.database)
+            .await?;
         let mut restored = 0;
         for row in rows {
-            let kind: String = row.try_get("kind")?;
             let agent = Agent {
-                agent_key: row.try_get("agent_key")?,
-                display_name: row.try_get("display_name")?,
-                kind: serde_json::from_value(serde_json::Value::String(kind)).unwrap_or_default(),
-                host: row.try_get("host")?,
-                meta: row.try_get("meta_data")?,
-                registered_at: row.try_get("registered_at")?,
+                agent_key: row.agent_key,
+                display_name: row.display_name,
+                kind: serde_json::from_value(serde_json::Value::String(row.kind))
+                    .unwrap_or_default(),
+                host: row.host,
+                meta: row.meta_data,
+                registered_at: row.registered_at,
             };
             restored += usize::from(state.restore_agent(agent));
         }
@@ -103,49 +166,41 @@ impl Db {
              from {CHANNELS_TABLE} where status <> 'archived' \
              order by created_at, slug"
         );
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
-        let mut n = 0;
+        let rows = ChannelRow::find_by_statement(Statement::from_string(DbBackend::Postgres, sql))
+            .all(&self.database)
+            .await?;
+        let mut restored = 0;
         for row in rows {
-            // Honor the in-memory channel cap even during a boot restore.
-            if n >= state.config.max_channels {
+            if restored >= state.config.max_channels {
                 tracing::warn!(
-                    loaded = n,
+                    loaded = restored,
                     "reached max_channels during restore; skipping the rest"
                 );
                 break;
             }
-            let slug: String = row.try_get("slug")?;
-            let topic: String = row.try_get("topic").unwrap_or_default();
-            let embedding_model: String = row.try_get("embedding_model").unwrap_or_default();
-            let created_by: String = row.try_get("created_by").unwrap_or_default();
-            let created_at: String = row.try_get("created_at").unwrap_or_default();
-            let meta: serde_json::Value = row
-                .try_get("meta_data")
-                .unwrap_or_else(|_| serde_json::json!({}));
-            let embedding_json: serde_json::Value = row
-                .try_get("embedding")
-                .unwrap_or_else(|_| serde_json::json!([]));
-            let embedding: Vec<f32> = embedding_json
+            let embedding: Vec<f32> = row
+                .embedding
                 .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|v| v.as_f64().map(|f| f as f32))
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_f64().map(|number| number as f32))
                         .collect()
                 })
                 .unwrap_or_default();
             if state.restore_channel(
-                &slug,
-                &topic,
+                &row.slug,
+                &row.topic,
                 embedding,
-                &embedding_model,
-                &created_by,
-                &created_at,
-                meta,
+                &row.embedding_model,
+                &row.created_by,
+                &row.created_at,
+                row.meta_data,
             ) {
-                n += 1;
+                restored += 1;
             }
         }
-        Ok(n)
+        Ok(restored)
     }
 
     async fn load_messages(
@@ -162,21 +217,28 @@ impl Db {
              from {MESSAGES_TABLE} m \
              where m.channel_slug = any($1::text[]) group by m.channel_slug"
         );
-        let stats = sqlx::query(&stats_sql)
-            .bind(channel_slugs)
-            .fetch_all(&self.pool)
-            .await?;
+        let stats = MessageStatsRow::find_by_statement(statement(
+            stats_sql,
+            [text_array(channel_slugs)],
+        ))
+        .all(&self.database)
+        .await?;
         let mut groups: BTreeMap<String, (Vec<Message>, u64, u64)> = BTreeMap::new();
         for row in stats {
-            let slug: String = row.try_get("channel_slug")?;
-            let count: i64 = row.try_get("message_count")?;
-            let max_seq: i64 = row.try_get("max_seq")?;
-            anyhow::ensure!(count >= 0, "negative persisted message count for {slug}");
             anyhow::ensure!(
-                max_seq >= 0,
-                "negative persisted message sequence for {slug}"
+                row.message_count >= 0,
+                "negative persisted message count for {}",
+                row.channel_slug
             );
-            groups.insert(slug, (Vec::new(), count as u64, max_seq as u64));
+            anyhow::ensure!(
+                row.max_seq >= 0,
+                "negative persisted message sequence for {}",
+                row.channel_slug
+            );
+            groups.insert(
+                row.channel_slug,
+                (Vec::new(), row.message_count as u64, row.max_seq as u64),
+            );
         }
 
         let messages_sql = format!(
@@ -194,26 +256,33 @@ impl Db {
         );
         let history_limit = i64::try_from(state.config.history_limit.max(1)).unwrap_or(i64::MAX);
         let content_limit = i64::try_from(state.config.max_content_bytes).unwrap_or(i64::MAX);
-        let rows = sqlx::query(&messages_sql)
-            .bind(channel_slugs)
-            .bind(history_limit)
-            .bind(content_limit)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = MessageRow::find_by_statement(statement(
+            messages_sql,
+            [
+                text_array(channel_slugs),
+                history_limit.into(),
+                content_limit.into(),
+            ],
+        ))
+        .all(&self.database)
+        .await?;
         for row in rows {
-            let slug: String = row.try_get("channel_slug")?;
-            let seq: i64 = row.try_get("seq")?;
-            anyhow::ensure!(seq >= 0, "negative persisted message sequence for {slug}");
-            let role: String = row.try_get("role")?;
+            anyhow::ensure!(
+                row.seq >= 0,
+                "negative persisted message sequence for {}",
+                row.channel_slug
+            );
+            let slug = row.channel_slug;
             let message = Message {
-                id: row.try_get::<uuid::Uuid, _>("id")?.to_string(),
+                id: row.id.to_string(),
                 channel: slug.clone(),
-                seq: seq as u64,
-                from: row.try_get("from_agent_key")?,
-                role: serde_json::from_value(serde_json::Value::String(role)).unwrap_or_default(),
-                content: row.try_get("content")?,
-                meta: row.try_get("meta_data")?,
-                created_at: row.try_get("created_at")?,
+                seq: row.seq as u64,
+                from: row.from_agent_key,
+                role: serde_json::from_value(serde_json::Value::String(row.role))
+                    .unwrap_or_default(),
+                content: row.content,
+                meta: row.meta_data,
+                created_at: row.created_at,
             };
             if let Some((messages, _, _)) = groups.get_mut(&slug) {
                 messages.push(message);
@@ -245,32 +314,32 @@ impl Db {
              order by s.channel_slug, s.ctx_key"
         );
         let content_limit = i64::try_from(state.config.max_content_bytes).unwrap_or(i64::MAX);
-        let rows = sqlx::query(&sql)
-            .bind(channel_slugs)
-            .bind(content_limit)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = ContextRow::find_by_statement(statement(
+            sql,
+            [text_array(channel_slugs), content_limit.into()],
+        ))
+        .all(&self.database)
+        .await?;
         let mut restored = 0;
         for row in rows {
-            let slug: String = row.try_get("channel_slug")?;
-            let version: i32 = row.try_get("version")?;
             anyhow::ensure!(
-                version >= 0,
-                "negative persisted context version for {slug}"
+                row.version >= 0,
+                "negative persisted context version for {}",
+                row.channel_slug
             );
             let entry = ContextEntry {
-                key: row.try_get("ctx_key")?,
-                value: row.try_get("value")?,
-                version: version as u32,
-                updated_by: row.try_get("updated_by")?,
-                updated_at: row.try_get("updated_at")?,
+                key: row.ctx_key,
+                value: row.value,
+                version: row.version as u32,
+                updated_by: row.updated_by,
+                updated_at: row.updated_at,
             };
-            restored += usize::from(state.restore_context_entry(&slug, entry));
+            restored += usize::from(state.restore_context_entry(&row.channel_slug, entry));
         }
         Ok(restored)
     }
 
-    pub async fn upsert_agent(&self, agent: &crate::types::Agent) -> anyhow::Result<()> {
+    pub async fn upsert_agent(&self, agent: &Agent) -> anyhow::Result<()> {
         let kind = serde_json::to_value(agent.kind)?
             .as_str()
             .unwrap_or("other")
@@ -282,15 +351,17 @@ impl Db {
                display_name = excluded.display_name, kind = excluded.kind, \
                host = excluded.host, meta_data = excluded.meta_data, updated_at = now()"
         );
-        sqlx::query(&sql)
-            .bind(&agent.agent_key)
-            .bind(&agent.display_name)
-            .bind(kind)
-            .bind(&agent.host)
-            .bind(&agent.meta)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
+        self.execute(statement(
+            sql,
+            [
+                agent.agent_key.clone().into(),
+                agent.display_name.clone().into(),
+                kind.into(),
+                agent.host.clone().into(),
+                agent.meta.clone().into(),
+            ],
+        ))
+        .await
     }
 
     pub async fn upsert_channel(
@@ -300,7 +371,8 @@ impl Db {
         embedding: &[f32],
     ) -> anyhow::Result<()> {
         let embedding_json = serde_json::to_value(embedding)?;
-        let dims = embedding.len() as i32;
+        let dimensions = i32::try_from(embedding.len())
+            .map_err(|_| anyhow::anyhow!("embedding dimensions exceed PostgreSQL integer"))?;
         let sql = format!(
             "insert into {CHANNELS_TABLE} \
                (slug, topic, embedding_model, embedding, embedding_dimensions, created_by, meta_data) \
@@ -310,23 +382,25 @@ impl Db {
                embedding_model = excluded.embedding_model, \
                embedding_dimensions = excluded.embedding_dimensions, updated_at = now()"
         );
-        sqlx::query(&sql)
-            .bind(&channel.slug)
-            .bind(topic)
-            .bind(&channel.embedding_model)
-            .bind(embedding_json)
-            .bind(dims)
-            .bind(&channel.created_by)
-            .bind(&channel.meta)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
+        self.execute(statement(
+            sql,
+            [
+                channel.slug.clone().into(),
+                topic.to_owned().into(),
+                channel.embedding_model.clone().into(),
+                embedding_json.into(),
+                dimensions.into(),
+                channel.created_by.clone().into(),
+                channel.meta.clone().into(),
+            ],
+        ))
+        .await
     }
 
-    pub async fn insert_message(&self, msg: &Message) -> anyhow::Result<()> {
-        let seq = i64::try_from(msg.seq)
+    pub async fn insert_message(&self, message: &Message) -> anyhow::Result<()> {
+        let sequence = i64::try_from(message.seq)
             .map_err(|_| anyhow::anyhow!("message sequence exceeds PostgreSQL bigint"))?;
-        let role = serde_json::to_value(msg.role)?
+        let role = serde_json::to_value(message.role)?
             .as_str()
             .unwrap_or("user")
             .to_string();
@@ -336,17 +410,19 @@ impl Db {
              values ($1::uuid, $2, (select id from {CHANNELS_TABLE} where slug = $2), $3, $4, $5, $6, $7) \
              on conflict (channel_slug, seq) do nothing"
         );
-        sqlx::query(&sql)
-            .bind(&msg.id)
-            .bind(&msg.channel)
-            .bind(seq)
-            .bind(&msg.from)
-            .bind(role)
-            .bind(&msg.content)
-            .bind(&msg.meta)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
+        self.execute(statement(
+            sql,
+            [
+                message.id.clone().into(),
+                message.channel.clone().into(),
+                sequence.into(),
+                message.from.clone().into(),
+                role.into(),
+                message.content.clone().into(),
+                message.meta.clone().into(),
+            ],
+        ))
+        .await
     }
 
     pub async fn upsert_member(&self, slug: &str, member: &Member) -> anyhow::Result<()> {
@@ -361,28 +437,31 @@ impl Db {
              on conflict (channel_slug, agent_key) do update set \
                role = excluded.role, last_seen_at = now()"
         );
-        sqlx::query(&sql)
-            .bind(slug)
-            .bind(&member.agent_key)
-            .bind(role)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
+        self.execute(statement(
+            sql,
+            [
+                slug.to_owned().into(),
+                member.agent_key.clone().into(),
+                role.into(),
+            ],
+        ))
+        .await
     }
 
     pub async fn remove_member(&self, slug: &str, agent_key: &str) -> anyhow::Result<()> {
         let sql = format!(
             "delete from {CHANNEL_MEMBERS_TABLE} where channel_slug = $1 and agent_key = $2"
         );
-        sqlx::query(&sql)
-            .bind(slug)
-            .bind(agent_key)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
+        self.execute(statement(
+            sql,
+            [slug.to_owned().into(), agent_key.to_owned().into()],
+        ))
+        .await
     }
 
     pub async fn save_context(&self, slug: &str, entry: &ContextEntry) -> anyhow::Result<()> {
+        let version = i32::try_from(entry.version)
+            .map_err(|_| anyhow::anyhow!("context version exceeds PostgreSQL integer"))?;
         let sql = format!(
             "insert into {SHARED_CONTEXT_TABLE} \
                (channel_slug, channel_id, ctx_key, value, version, updated_by) \
@@ -392,14 +471,94 @@ impl Db {
                updated_by = excluded.updated_by, updated_at = now() \
              where {SHARED_CONTEXT_TABLE}.version < excluded.version"
         );
-        sqlx::query(&sql)
-            .bind(slug)
-            .bind(&entry.key)
-            .bind(&entry.value)
-            .bind(entry.version as i32)
-            .bind(&entry.updated_by)
-            .execute(&self.pool)
-            .await?;
+        self.execute(statement(
+            sql,
+            [
+                slug.to_owned().into(),
+                entry.key.clone().into(),
+                entry.value.clone().into(),
+                version.into(),
+                entry.updated_by.clone().into(),
+            ],
+        ))
+        .await
+    }
+
+    async fn execute(&self, statement: Statement) -> anyhow::Result<()> {
+        self.database.execute(statement).await?;
         Ok(())
+    }
+}
+
+fn statement(sql: String, values: impl IntoIterator<Item = Value>) -> Statement {
+    Statement::from_sql_and_values(DbBackend::Postgres, sql, values)
+}
+
+fn text_array(values: &[String]) -> Value {
+    Value::Array(
+        ArrayType::String,
+        Some(Box::new(values.iter().cloned().map(Value::from).collect())),
+    )
+}
+
+fn verify_generated_entity_contract() {
+    use dd_pg_defs_sea_orm::{
+        AgentsEntity, ChannelMembersEntity, ChannelsEntity, MessagesEntity,
+        SharedContextEntity,
+    };
+
+    for (schema, table) in [
+        (AgentsEntity.schema_name(), AgentsEntity.table_name()),
+        (ChannelsEntity.schema_name(), ChannelsEntity.table_name()),
+        (
+            ChannelMembersEntity.schema_name(),
+            ChannelMembersEntity.table_name(),
+        ),
+        (MessagesEntity.schema_name(), MessagesEntity.table_name()),
+        (
+            SharedContextEntity.schema_name(),
+            SharedContextEntity.table_name(),
+        ),
+    ] {
+        debug_assert_eq!(schema, Some("ai_agent_bridge"));
+        debug_assert!(!table.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_entity_contract_names_the_expected_schema_and_tables() {
+        use dd_pg_defs_sea_orm::{
+            AgentsEntity, ChannelMembersEntity, ChannelsEntity, MessagesEntity,
+            SharedContextEntity,
+        };
+
+        assert_eq!(AgentsEntity.schema_name(), Some("ai_agent_bridge"));
+        assert_eq!(AgentsEntity.table_name(), "agents");
+        assert_eq!(ChannelsEntity.table_name(), "channels");
+        assert_eq!(ChannelMembersEntity.table_name(), "channel_members");
+        assert_eq!(MessagesEntity.table_name(), "messages");
+        assert_eq!(SharedContextEntity.table_name(), "shared_context");
+    }
+
+    #[test]
+    fn text_arrays_remain_bound_postgres_values() {
+        let value = text_array(&["a".to_string(), "b".to_string()]);
+        assert!(value.is_array());
+        assert_eq!(value.as_ref_array().map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn complex_statements_keep_placeholders_and_no_interpolation() {
+        let advisory = statement(
+            format!("select * from {MESSAGES_TABLE} where channel_slug = any($1::text[])"),
+            [text_array(&["room".to_string()])],
+        );
+        assert!(advisory.sql.contains("any($1::text[])"));
+        assert!(!advisory.sql.contains("room"));
+        assert!(advisory.values.is_some());
     }
 }

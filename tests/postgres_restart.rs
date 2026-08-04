@@ -5,69 +5,19 @@ use ai_agent_bridge::db::Db;
 use ai_agent_bridge::embed::Embedder;
 use ai_agent_bridge::state::AppState;
 use ai_agent_bridge::types::{Agent, AgentKind, Role};
-use sqlx::Row;
+use sea_orm::{ConnectionTrait, Database, DbBackend, FromQueryResult, Statement};
 
-const TEST_SCHEMA: &str = r#"
-create schema if not exists ai_agent_bridge;
-create table if not exists ai_agent_bridge.agents (
-  id uuid primary key default gen_random_uuid(),
-  agent_key varchar(120) not null unique,
-  display_name varchar(255) not null,
-  kind varchar(64) not null,
-  host varchar(255),
-  meta_data jsonb default '{}'::jsonb not null,
-  created_at timestamptz default now() not null,
-  updated_at timestamptz default now() not null
-);
-create table if not exists ai_agent_bridge.channels (
-  id uuid primary key default gen_random_uuid(),
-  slug varchar(160) not null unique,
-  topic text not null,
-  status varchar(24) default 'active' not null,
-  embedding_model varchar(255) not null,
-  embedding jsonb default '[]'::jsonb not null,
-  embedding_dimensions integer not null,
-  created_by varchar(120) not null,
-  meta_data jsonb default '{}'::jsonb not null,
-  created_at timestamptz default now() not null,
-  updated_at timestamptz default now() not null
-);
-create table if not exists ai_agent_bridge.channel_members (
-  channel_slug varchar(160) not null,
-  channel_id uuid references ai_agent_bridge.channels (id) on delete cascade,
-  agent_key varchar(120) not null,
-  role varchar(32) not null,
-  joined_at timestamptz default now() not null,
-  last_seen_at timestamptz default now() not null,
-  primary key (channel_slug, agent_key)
-);
-create table if not exists ai_agent_bridge.messages (
-  id uuid primary key default gen_random_uuid(),
-  channel_slug varchar(160) not null,
-  channel_id uuid references ai_agent_bridge.channels (id) on delete cascade,
-  seq bigint not null,
-  from_agent_key varchar(120) not null,
-  role varchar(32) not null,
-  content text not null,
-  meta_data jsonb default '{}'::jsonb not null,
-  created_at timestamptz default now() not null,
-  unique (channel_slug, seq)
-);
-create table if not exists ai_agent_bridge.shared_context (
-  channel_slug varchar(160) not null,
-  channel_id uuid references ai_agent_bridge.channels (id) on delete cascade,
-  ctx_key varchar(255) not null,
-  value jsonb not null,
-  version integer not null,
-  updated_by varchar(120) not null,
-  created_at timestamptz default now() not null,
-  updated_at timestamptz default now() not null,
-  primary key (channel_slug, ctx_key)
-);
+const RESET_SQL: &str = r#"
 truncate table ai_agent_bridge.channel_members, ai_agent_bridge.messages,
   ai_agent_bridge.shared_context, ai_agent_bridge.channels,
-  ai_agent_bridge.agents cascade;
+  ai_agent_bridge.agents cascade
 "#;
+
+#[derive(Debug, FromQueryResult)]
+struct MessageCountRow {
+    count: i64,
+    max_seq: i64,
+}
 
 fn state_with_db(db: Db) -> std::sync::Arc<AppState> {
     let config = Config::in_memory();
@@ -84,17 +34,20 @@ fn state_with_db(db: Db) -> std::sync::Arc<AppState> {
 }
 
 #[tokio::test]
-#[ignore = "requires a dedicated FIDUCIA_BRIDGE_TEST_DATABASE_URL"]
+#[ignore = "requires FIDUCIA_BRIDGE_TEST_DATABASE_URL provisioned from canonical pg-defs schema.sql"]
 async fn restart_restores_history_context_and_agent_metadata_without_stale_presence() {
     let database_url = std::env::var("FIDUCIA_BRIDGE_TEST_DATABASE_URL")
-        .expect("FIDUCIA_BRIDGE_TEST_DATABASE_URL must name a dedicated test database");
-    let setup_pool = sqlx::PgPool::connect(&database_url)
+        .expect("FIDUCIA_BRIDGE_TEST_DATABASE_URL must name a dedicated canonical-schema database");
+    let setup = Database::connect(&database_url)
         .await
-        .expect("connect test database");
-    sqlx::raw_sql(TEST_SCHEMA)
-        .execute(&setup_pool)
+        .expect("connect test database through SeaORM");
+    setup
+        .execute(Statement::from_string(
+            DbBackend::Postgres,
+            RESET_SQL.to_owned(),
+        ))
         .await
-        .expect("prepare isolated bridge schema");
+        .expect("reset isolated bridge tables");
 
     let db = Db::connect(&database_url).await.expect("connect bridge DB");
     let original = state_with_db(db.clone());
@@ -213,13 +166,16 @@ async fn restart_restores_history_context_and_agent_metadata_without_stale_prese
     );
     restored.flush_persistence().await;
 
-    let row = sqlx::query(
+    let row = MessageCountRow::find_by_statement(Statement::from_string(
+        DbBackend::Postgres,
         "select count(*)::bigint as count, max(seq)::bigint as max_seq \
-         from ai_agent_bridge.messages where channel_slug = 'restart-room'",
-    )
-    .fetch_one(&setup_pool)
+         from ai_agent_bridge.messages where channel_slug = 'restart-room'"
+            .to_owned(),
+    ))
+    .one(&setup)
     .await
-    .expect("query durable messages");
-    assert_eq!(row.get::<i64, _>("count"), 3);
-    assert_eq!(row.get::<i64, _>("max_seq"), 3);
+    .expect("query durable messages")
+    .expect("count row");
+    assert_eq!(row.count, 3);
+    assert_eq!(row.max_seq, 3);
 }
