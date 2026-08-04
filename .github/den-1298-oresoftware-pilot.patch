@@ -1,0 +1,312 @@
+diff --git a/config/alex-main-agent.channels.json b/config/alex-main-agent.channels.json
+index 605a4e95c2bb9f67860da9e4712fed57d8ff0536..10e2b52d7482c19c1b7bc8e8dd1b617973563985 100644
+--- a/config/alex-main-agent.channels.json
++++ b/config/alex-main-agent.channels.json
+@@ -18,11 +18,38 @@
+         "max_concurrent_runs": 4,
+         "max_runtime_secs": 900,
+         "max_tokens": 250000,
+         "max_spend_cents": 1000,
+         "max_retries": 2
+       },
+       "updated_by": "DEN-1298",
+       "updated_at": "2026-08-01T19:12:00Z"
++    },
++    {
++      "workspace_id": "T01B3C83PMK",
++      "channel_id": "C0BKP2N3LG7",
++      "linear_team_id": "eb8ab169-5afe-4b6f-9cab-3f2aa3e887dc",
++      "linear_team_key": "DEN",
++      "linear_project_id": "7abf8be2-ffa5-4507-bd09-43aa59ca8718",
++      "default_repository": "ORESoftware/ai-agent-bridge.rs",
++      "repository_allowlist": [
++        "ORESoftware/ai-agent-bridge.rs",
++        "ORESoftware/ai-agent-coordinator.rs",
++        "ORESoftware/k8s-cluster"
++      ],
++      "default_agent_mode": "both-parallel",
++      "allowed_agent_modes": ["claude", "chatgpt", "both-parallel", "both-sequential", "review"],
++      "allowed_user_ids": ["U01AZNU2LJ2"],
++      "allowed_user_group_ids": [],
++      "write_policy": "draft_pull_request",
++      "budget_policy": {
++        "max_concurrent_runs": 4,
++        "max_runtime_secs": 900,
++        "max_tokens": 250000,
++        "max_spend_cents": 1000,
++        "max_retries": 2
++      },
++      "updated_by": "DEN-1298",
++      "updated_at": "2026-08-04T11:00:00Z"
+     }
+   ]
+ }
+diff --git a/docs/alex-main-agent-browser-tests.md b/docs/alex-main-agent-browser-tests.md
+index 9436639355abcceac7f0998ecbe11d9ffc55d7ff..efa26630fc12584ea501a18e995addca98b5348c 100644
+--- a/docs/alex-main-agent-browser-tests.md
++++ b/docs/alex-main-agent-browser-tests.md
+@@ -1,10 +1,10 @@
+ ## Components
+ 
+-- `config/alex-main-agent.channels.json` — reviewed 13-channel registry.
++- `config/alex-main-agent.channels.json` — thirteen manifest-backed project channels plus the separately reviewed `#oresoftware` control-plane pilot.
+ - `src/bin/alex-main-agent-registry-browser.rs` — loopback-only diagnostic server that loads the real registry and exposes a minimal policy-resolution form.
+ 
+ The `browser-registry` job in `.github/workflows/ci.yml`:
+ 
+ 5. starts the probe on `127.0.0.1`;
+-6. verifies that all 13 bindings loaded;
++6. verifies that all 14 bindings loaded while the remote manifest audit remains scoped to the thirteen project-owned entries;
+ 7. runs the browser suite with one worker and retained failure traces;
+diff --git a/scripts/audit_alex_main_agent_manifests.py b/scripts/audit_alex_main_agent_manifests.py
+--- a/scripts/audit_alex_main_agent_manifests.py
++++ b/scripts/audit_alex_main_agent_manifests.py
+@@ -7,13 +7,22 @@
+ MAX_LOCK = 262_144
+ MAX_REMOTE = 1_048_576
+ MAX_MANIFEST = 65_536
+-COUNT = 13
++PROJECT_COUNT = 13
++CENTRAL_BINDING_COUNT = PROJECT_COUNT + 1
+ WORKSPACE = "T01B3C83PMK"
+ APP = "A0BMBAMM5NJ"
+ TEAM = "Denman"
+ TEAM_ID = "eb8ab169-5afe-4b6f-9cab-3f2aa3e887dc"
+ TEAM_KEY = "DEN"
+ REJECTED_DAEDALUS = "C0BMB9GSSKY"
++PILOT_CHANNEL = "C0BKP2N3LG7"
++PILOT_LINEAR_PROJECT_ID = "7abf8be2-ffa5-4507-bd09-43aa59ca8718"
++PILOT_DEFAULT_REPOSITORY = "ORESoftware/ai-agent-bridge.rs"
++PILOT_REPOSITORY_ALLOWLIST = (
++    "ORESoftware/ai-agent-bridge.rs",
++    "ORESoftware/ai-agent-coordinator.rs",
++    "ORESoftware/k8s-cluster",
++)
+ SHA1 = re.compile(r"[0-9a-f]{40}")
+ SHA256 = re.compile(r"[0-9a-f]{64}")
+ ISSUE = re.compile(r"DEN-[1-9][0-9]*")
+@@ -41,6 +50,22 @@
+     return hashlib.sha256(raw).hexdigest()
+ 
+ 
++def manifest_locked_registry(
++    registry: Mapping[str, Any], project_channels: set[str]
++) -> dict[str, Any]:
++    obj = as_obj(registry, "central_registry")
++    bindings = as_arr(obj.get("bindings"), "central_registry.bindings")
++    return {
++        "schema_version": obj.get("schema_version"),
++        "bindings": [
++            binding
++            for binding in bindings
++            if isinstance(binding, dict)
++            and binding.get("channel_id") in project_channels
++        ],
++    }
++
++
+ def as_obj(value: Any, label: str) -> dict[str, Any]:
+     if not isinstance(value, dict):
+         raise AuditError("invalid_type", f"{label} must be object")
+@@ -68,8 +93,10 @@
+     pattern(reg["canonical_sha256"], SHA256, "registry digest", "invalid_digest")
+     policy = validate_policy(obj["central_policy"])
+     rows = as_arr(obj["entries"], "lock.entries")
+-    if len(rows) != COUNT:
+-        raise AuditError("contract_mismatch", f"expected {COUNT} lock entries")
++    if len(rows) != PROJECT_COUNT:
++        raise AuditError(
++            "contract_mismatch", f"expected {PROJECT_COUNT} lock entries"
++        )
+ 
+     entries, channels, repos, routing_issues, delivery_issues = [], set(), set(), set(), set()
+     for i, raw_entry in enumerate(rows):
+@@ -93,8 +120,11 @@
+     exact(obj, {"schema_version", "bindings"}, set(), "central_registry")
+     eq(as_int(obj["schema_version"], "central_registry.schema_version", 1, 1), 1, "registry schema")
+     bindings = as_arr(obj["bindings"], "central_registry.bindings")
+-    if len(bindings) != COUNT:
+-        raise AuditError("contract_mismatch", f"expected {COUNT} central bindings")
++    if len(bindings) != CENTRAL_BINDING_COUNT:
++        raise AuditError(
++            "contract_mismatch",
++            f"expected {CENTRAL_BINDING_COUNT} central bindings",
++        )
+     required = {"workspace_id", "channel_id", "linear_team_id", "linear_team_key", "linear_project_id", "default_repository", "repository_allowlist", "default_agent_mode", "allowed_agent_modes", "allowed_user_ids", "allowed_user_group_ids", "write_policy", "budget_policy", "updated_by", "updated_at"}
+     indexed, repos = {}, set()
+     for i, raw_binding in enumerate(bindings):
+@@ -110,7 +140,16 @@
+         eq(binding["linear_team_id"], lock.policy["linear_team_id"], f"{label}.team_id")
+         eq(binding["linear_team_key"], lock.policy["linear_team_key"], f"{label}.team_key")
+         repo = pattern(binding["default_repository"], REPO, f"{label}.repository", "invalid_repository")
+-        eq(string_list(binding["repository_allowlist"], f"{label}.allowlist"), [repo], f"{label}.allowlist")
++        expected_allowlist = (
++            list(PILOT_REPOSITORY_ALLOWLIST)
++            if channel == PILOT_CHANNEL
++            else [repo]
++        )
++        eq(
++            string_list(binding["repository_allowlist"], f"{label}.allowlist"),
++            expected_allowlist,
++            f"{label}.allowlist",
++        )
+         if repo.lower() in repos:
+             raise AuditError("duplicate_repository", repo)
+         repos.add(repo.lower())
+@@ -121,8 +160,13 @@
+         as_str(binding["updated_by"], f"{label}.updated_by")
+         as_str(binding["updated_at"], f"{label}.updated_at")
+         indexed[channel] = binding
+-    if set(indexed) != {entry.slack["channel_id"] for entry in lock.entries}:
++    project_channels = {entry.slack["channel_id"] for entry in lock.entries}
++    if set(indexed) != project_channels | {PILOT_CHANNEL}:
+         raise AuditError("contract_mismatch", "central/lock channel set")
++    pilot = indexed[PILOT_CHANNEL]
++    eq(pilot["linear_project_id"], PILOT_LINEAR_PROJECT_ID, "pilot project UUID")
++    eq(pilot["default_repository"], PILOT_DEFAULT_REPOSITORY, "pilot repository")
++    eq(pilot["updated_by"], "DEN-1298", "pilot owning issue")
+     for entry in lock.entries:
+         binding = indexed[entry.slack["channel_id"]]
+         eq(binding["linear_project_id"], entry.central["linear_project_id"], f"{entry.slack['channel_name']} project UUID")
+@@ -143,9 +187,16 @@
+ def audit(registry_path: Path, lock_path: Path, remote_fetcher: RemoteFetcher | None = None) -> dict[str, Any]:
+     lock = validate_lock(load_json(lock_path, MAX_LOCK, "manifest lock"))
+     registry = parse_json_bytes(read_bounded(registry_path, MAX_REGISTRY, "central registry"), "central registry")
+-    registry_digest = canonical_json_sha256(registry)
+-    eq(registry_digest, lock.registry["canonical_sha256"], "central registry canonical SHA-256")
+     validate_registry(registry, lock)
++    project_channels = {entry.slack["channel_id"] for entry in lock.entries}
++    registry_digest = canonical_json_sha256(
++        manifest_locked_registry(registry, project_channels)
++    )
++    eq(
++        registry_digest,
++        lock.registry["canonical_sha256"],
++        "project registry canonical SHA-256",
++    )
+     manifests = []
+     for entry in lock.entries:
+         status = "locked"
+@@ -156,7 +207,8 @@
+             eq(canonical_json_sha256(validated), entry.source["manifest_sha256"], f"{entry.source['repository']} canonical manifest digest")
+             status = "verified"
+         manifests.append({"repository": entry.source["repository"], "pull_request": entry.source["pull_request"], "head_sha": entry.source["head_sha"], "manifest_sha256": entry.source["manifest_sha256"], "channel_id": entry.slack["channel_id"], "linear_project_id": entry.central["linear_project_id"], "routing_issue": entry.linear["routing_issue"], "delivery_issue": entry.linear["delivery_issue"], "status": status})
+-    return {"schema_version": 1, "status": "pass", "mode": "remote" if remote_fetcher else "offline", "central_registry": {"path": lock.registry["path"], "canonical_sha256": registry_digest, "bindings": len(manifests)}, "manifests": manifests}
++    binding_count = len(as_arr(registry["bindings"], "central_registry.bindings"))
++    return {"schema_version": 1, "status": "pass", "mode": "remote" if remote_fetcher else "offline", "central_registry": {"path": lock.registry["path"], "canonical_sha256": registry_digest, "bindings": binding_count, "manifest_bindings": len(manifests)}, "manifests": manifests}
+ 
+ 
+ def write_report(path: Path, report: Mapping[str, Any]) -> None:
+diff --git a/tests/alex_main_agent_registry.rs b/tests/alex_main_agent_registry.rs
+index c3ce8c30cd7d71636950176d16098eb40320186a..e2cc64f5c0ec61f604c8188a36b84d8f7bffdf41 100644
+--- a/tests/alex_main_agent_registry.rs
++++ b/tests/alex_main_agent_registry.rs
+@@ -1,8 +1,34 @@
+ #[test]
+ fn alex_main_agent_registry_parses_all_project_bindings() {
+     let registry = SlackProjectRegistry::from_json(REGISTRY).expect("registry must be valid");
+-    assert_eq!(registry.binding_count(), 13);
++    assert_eq!(registry.binding_count(), 14);
++}
++
++#[test]
++fn oresoftware_pilot_resolves_only_reviewed_control_plane_repositories() {
++    let registry = SlackProjectRegistry::from_json(REGISTRY).expect("registry must be valid");
++    let mut request = request("C0BKP2N3LG7", ALEX_USER_ID);
++    request.requested_repository = Some("ORESoftware/k8s-cluster".to_string());
++    request.linear_issue_identifier = Some("DEN-1298".to_string());
++
++    let context = registry.resolve(&request).expect("pilot route must resolve");
++    assert_eq!(
++        context.linear_project_id,
++        "7abf8be2-ffa5-4507-bd09-43aa59ca8718"
++    );
++    assert_eq!(context.repository, "ORESoftware/k8s-cluster");
++    assert_eq!(context.write_policy, WritePolicy::DraftPullRequest);
++    assert_eq!(
++        context.issue.expect("issue must be parsed").identifier,
++        "DEN-1298"
++    );
++
++    request.requested_repository = Some("ORESoftware/unreviewed-repository".to_string());
++    assert!(matches!(
++        registry.resolve(&request),
++        Err(RegistryError::RepositoryNotAllowed)
++    ));
+ }
+ 
+ #[test]
+ fn hypesiege_resolves_to_the_allowlisted_draft_pr_target() {
+diff --git a/tests/test_audit_alex_main_agent_manifests.py b/tests/test_audit_alex_main_agent_manifests.py
+index 27e6e5d8bcc671eae28c796b8f3de4cbdd9f5a01..5a58ab769f0f312172fd6960ba1817ee5d9cb4d3 100644
+--- a/tests/test_audit_alex_main_agent_manifests.py
++++ b/tests/test_audit_alex_main_agent_manifests.py
+@@ -1,19 +1,64 @@
+     def _audit(self, registry=None, lock=None, fetcher=None):
+         with tempfile.TemporaryDirectory() as raw:
+             directory = Path(raw)
+             registry_path = self._write(directory, "registry.json", registry if registry is not None else self.registry)
+             lock_value = copy.deepcopy(lock if lock is not None else self.lock)
+-            lock_value["central_registry"]["canonical_sha256"] = manifest_audit.canonical_json_sha256(
+-                registry if registry is not None else self.registry
++            registry_value = registry if registry is not None else self.registry
++            project_channels = {
++                entry["slack"]["channel_id"] for entry in lock_value["entries"]
++            }
++            lock_value["central_registry"]["canonical_sha256"] = (
++                manifest_audit.canonical_json_sha256(
++                    manifest_audit.manifest_locked_registry(
++                        registry_value, project_channels
++                    )
++                )
+             )
+             lock_path = self._write(directory, "lock.json", lock_value)
+             return manifest_audit.audit(registry_path, lock_path, fetcher)
+ 
+-    def test_remote_audit_verifies_all_thirteen_exact_heads(self):
++    def test_remote_audit_verifies_thirteen_project_heads_and_pilot_binding(self):
+         report = self._audit(fetcher=self._fetcher())
+         self.assertEqual(report["status"], "pass")
+         self.assertEqual(report["mode"], "remote")
+-        self.assertEqual(report["central_registry"]["bindings"], 13)
++        self.assertEqual(report["central_registry"]["bindings"], 14)
++        self.assertEqual(report["central_registry"]["manifest_bindings"], 13)
+         self.assertEqual({item["status"] for item in report["manifests"]}, {"verified"})
+ 
++    def test_pilot_binding_is_excluded_from_project_manifest_digest(self):
++        project_channels = {
++            entry["slack"]["channel_id"] for entry in self.lock["entries"]
++        }
++        projected = manifest_audit.manifest_locked_registry(
++            self.registry, project_channels
++        )
++        self.assertEqual(len(projected["bindings"]), 13)
++        self.assertEqual(
++            manifest_audit.canonical_json_sha256(projected),
++            self.lock["central_registry"]["canonical_sha256"],
++        )
++
++    def test_missing_pilot_binding_fails_closed(self):
++        registry = copy.deepcopy(self.registry)
++        registry["bindings"] = [
++            binding
++            for binding in registry["bindings"]
++            if binding["channel_id"] != manifest_audit.PILOT_CHANNEL
++        ]
++        with self.assertRaisesRegex(
++            manifest_audit.AuditError, "expected 14 central bindings"
++        ):
++            self._audit(registry=registry)
++
++    def test_pilot_repository_allowlist_drift_fails_closed(self):
++        registry = copy.deepcopy(self.registry)
++        pilot = next(
++            binding
++            for binding in registry["bindings"]
++            if binding["channel_id"] == manifest_audit.PILOT_CHANNEL
++        )
++        pilot["repository_allowlist"].append("ORESoftware/unreviewed-repository")
++        with self.assertRaisesRegex(manifest_audit.AuditError, "contract_mismatch"):
++            self._audit(registry=registry)
++
+     def test_pr_head_move_fails_closed(self):
