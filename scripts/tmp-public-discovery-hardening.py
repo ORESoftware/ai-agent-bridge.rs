@@ -38,7 +38,7 @@ fn error_response(status: StatusCode, error: &'static str) -> Response {
 }
 
 #[cfg(test)]
-mod tests {
+mod agent_pontifex_discovery_tests {
     use super::is_public_path;
 
     #[test]
