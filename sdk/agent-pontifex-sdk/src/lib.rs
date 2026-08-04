@@ -79,7 +79,8 @@ impl Client {
 
     async fn discover(&self, expected: ServiceKind) -> Result<DiscoveredService, SdkError> {
         let url = self.endpoint(&DISCOVERY_PATH_SEGMENTS)?;
-        let descriptor: ServiceDescriptor = self.decode(self.request(Method::GET, url)).await?;
+        let descriptor: ServiceDescriptor =
+            self.decode(self.public_request(Method::GET, url)).await?;
         let negotiated_protocol_major = descriptor
             .validate_for(expected, ProtocolVersionRange::current())
             .map_err(|error| {
@@ -106,11 +107,14 @@ impl Client {
         Ok(url)
     }
 
-    fn request(&self, method: Method, url: Url) -> reqwest::RequestBuilder {
-        let mut request = self
-            .http
+    fn public_request(&self, method: Method, url: Url) -> reqwest::RequestBuilder {
+        self.http
             .request(method, url)
-            .header(ACCEPT, "application/json");
+            .header(ACCEPT, "application/json")
+    }
+
+    fn request(&self, method: Method, url: Url) -> reqwest::RequestBuilder {
+        let mut request = self.public_request(method, url);
         if let Some(authorization) = &self.authorization {
             request = request.header(AUTHORIZATION, authorization.clone());
         }
@@ -457,6 +461,17 @@ mod tests {
             .is_err());
         assert!(idempotency_header(" run-1").is_err());
         assert!(idempotency_header("run-1").is_ok());
+    }
+
+    #[test]
+    fn discovery_request_does_not_attach_application_credentials() {
+        let client = Client::new("https://example.com")
+            .unwrap()
+            .with_bearer("application-secret")
+            .unwrap();
+        let url = client.endpoint(&DISCOVERY_PATH_SEGMENTS).unwrap();
+        let request = client.public_request(Method::GET, url).build().unwrap();
+        assert!(request.headers().get(AUTHORIZATION).is_none());
     }
 
     #[test]
