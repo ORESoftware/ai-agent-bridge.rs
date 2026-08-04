@@ -1,0 +1,126 @@
+name: Apply DEN-1298 pilot product v2 once
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-den-1298-pilot-product-v2-once.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-den-1298-pilot-product-v2-once
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact pilot branch without private submodules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/den-1298-oresoftware-pilot
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+          submodules: false
+
+      - name: Execute the reviewed semantic product transform
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/finalize-den-1298-oresoftware-pilot-once.yml')
+          lines = path.read_text(encoding='utf-8').splitlines()
+          start = lines.index('      - name: Apply reviewed meanings to the full current files')
+          end = lines.index('      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable', start + 1)
+          run_index = lines.index('        run: |', start, end)
+          prefix = '          '
+          shell = '\n'.join(
+              line[len(prefix):] if line.startswith(prefix) else line
+              for line in lines[run_index + 1:end]
+          ) + '\n'
+          target = Path('/tmp/apply-den-1298-pilot-product.sh')
+          target.write_text(shell, encoding='utf-8')
+          target.chmod(0o700)
+          PY
+          /tmp/apply-den-1298-pilot-product.sh
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt
+
+      - name: Validate changed Python and Rust boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m json.tool config/alex-main-agent.channels.json >/dev/null
+          python3 -m unittest tests.test_audit_alex_main_agent_manifests
+
+          stub='vendor/k8s-libs-and-shared-defs/pg-defs/generated/rust/sea-orm'
+          mkdir -p "$stub/src"
+          cat >"$stub/Cargo.toml" <<'TOML'
+          [package]
+          name = "dd-pg-defs-sea-orm"
+          version = "0.0.0"
+          edition = "2021"
+          publish = false
+
+          [lib]
+          path = "src/lib.rs"
+          TOML
+          printf '%s\n' '#![forbid(unsafe_code)]' >"$stub/src/lib.rs"
+
+          rustfmt --edition 2021 tests/alex_main_agent_registry.rs
+          rustfmt --edition 2021 --check tests/alex_main_agent_registry.rs
+          cargo test --test alex_main_agent_registry
+
+          rm -rf vendor/k8s-libs-and-shared-defs
+          git restore Cargo.lock
+          git diff --check
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          registry = json.loads(Path('config/alex-main-agent.channels.json').read_text())
+          bindings = registry['bindings']
+          assert len(bindings) == 14
+          pilot = [item for item in bindings if item['channel_id'] == 'C0BKP2N3LG7']
+          assert len(pilot) == 1
+          pilot = pilot[0]
+          assert pilot['linear_project_id'] == '7abf8be2-ffa5-4507-bd09-43aa59ca8718'
+          assert pilot['default_repository'] == 'ORESoftware/ai-agent-bridge.rs'
+          assert pilot['repository_allowlist'] == [
+              'ORESoftware/ai-agent-bridge.rs',
+              'ORESoftware/ai-agent-coordinator.rs',
+              'ORESoftware/k8s-cluster',
+          ]
+          assert pilot['allowed_user_ids'] == ['U01AZNU2LJ2']
+          assert pilot['write_policy'] == 'draft_pull_request'
+          PY
+
+      - name: Commit and push only the five product files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            config/alex-main-agent.channels.json \
+            docs/alex-main-agent-browser-tests.md \
+            scripts/audit_alex_main_agent_manifests.py \
+            tests/alex_main_agent_registry.rs \
+            tests/test_audit_alex_main_agent_manifests.py
+          git diff --cached --check
+          expected=$'config/alex-main-agent.channels.json\ndocs/alex-main-agent-browser-tests.md\nscripts/audit_alex_main_agent_manifests.py\ntests/alex_main_agent_registry.rs\ntests/test_audit_alex_main_agent_manifests.py'
+          actual="$(git diff --cached --name-only | sort)"
+          test "$actual" = "$expected"
+          git commit -m 'feat(DEN-1298): add the oresoftware control-plane pilot'
+          git push origin HEAD:agent/den-1298-oresoftware-pilot
