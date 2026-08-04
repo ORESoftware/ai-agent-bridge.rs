@@ -135,6 +135,7 @@ struct SelectedOption {
 struct RunRequest {
     run_id: String,
     source_key: String,
+    occurred_at: String,
     provider: Provider,
     team_id: String,
     channel_id: String,
@@ -157,6 +158,7 @@ impl RunRequest {
         Ok(Self {
             run_id: run_id(&source_key),
             source_key,
+            occurred_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             provider: command.provider(),
             team_id: command.team_id.clone(),
             channel_id: command.channel_id.clone(),
@@ -200,6 +202,7 @@ impl RunRequest {
         Ok(Self {
             run_id: run_id(&source_key),
             source_key,
+            occurred_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             provider: metadata.provider,
             team_id: metadata.team_id,
             channel_id: metadata.channel_id,
