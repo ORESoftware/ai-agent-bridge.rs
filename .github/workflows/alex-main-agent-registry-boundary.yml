@@ -51,14 +51,22 @@ jobs:
           persist-credentials: false
           submodules: false
 
-      - name: Materialize non-Postgres optional dependency metadata
+      - name: Prepare evidence directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "${RUNNER_TEMP}/alex-main-agent-registry-boundary"
+
+      - name: Materialize pinned non-Postgres dependency metadata
         shell: bash
         run: |
           set -euo pipefail
           # Cargo resolves optional path-package metadata even when the feature is
-          # disabled. This focused job never enables `postgres`; the exact private
-          # schema and generated adapter remain the responsibility of the separate
-          # shared-schema lane.
+          # disabled. This is the exact Cargo.toml from submodule commit
+          # 3c84cab532b27d328378f09fba5841f02644ae3b. The focused job never enables
+          # `postgres`; the full generated entities remain the shared-schema lane's
+          # responsibility.
           rm -rf vendor/k8s-libs-and-shared-defs
           mkdir -p vendor/k8s-libs-and-shared-defs/pg-defs/generated/rust/sea-orm/src
           cat > vendor/k8s-libs-and-shared-defs/pg-defs/generated/rust/sea-orm/Cargo.toml <<'EOF'
@@ -79,11 +87,13 @@ jobs:
           toolchain: "1.95.0"
           components: rustfmt, clippy
 
-      - name: Validate focused Rust boundary
+      - name: Regenerate and validate the locked Rust graph
         shell: bash
         run: |
           set -euo pipefail
           rustfmt --edition 2021 --check src/bin/alex-main-agent-registry-browser.rs
+          cargo generate-lockfile
+          cp Cargo.lock "${RUNNER_TEMP}/alex-main-agent-registry-boundary/Cargo.lock"
           cargo clippy --locked --bin alex-main-agent-registry-browser -- -D warnings
           cargo test --locked --bin alex-main-agent-registry-browser
           cargo test --locked --test alex_main_agent_registry
@@ -104,7 +114,6 @@ jobs:
           evidence_dir="${RUNNER_TEMP}/alex-main-agent-registry-boundary"
           probe_log="${evidence_dir}/probe.log"
           health_json="${evidence_dir}/health.json"
-          mkdir -p "${evidence_dir}"
 
           target/debug/alex-main-agent-registry-browser >"${probe_log}" 2>&1 &
           probe_pid=$!
@@ -137,11 +146,11 @@ jobs:
           PLAYWRIGHT_OUTPUT_DIR="${evidence_dir}/playwright" \
             npm --prefix tests/browser run test:registry
 
-      - name: Upload synthetic browser evidence
+      - name: Upload synthetic browser and lock evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: alex-main-agent-registry-boundary-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/alex-main-agent-registry-boundary
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
