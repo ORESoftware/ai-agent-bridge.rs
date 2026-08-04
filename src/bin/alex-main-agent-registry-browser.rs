@@ -177,10 +177,7 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response {
     }
 
     if let Some(fetch_site) = request.headers().get("sec-fetch-site") {
-        let fetch_site_is_allowed = fetch_site
-            .to_str()
-            .ok()
-            .is_some_and(fetch_site_is_allowed);
+        let fetch_site_is_allowed = fetch_site.to_str().ok().is_some_and(fetch_site_is_allowed);
         if !fetch_site_is_allowed {
             return hardened_response(
                 (
