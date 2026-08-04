@@ -1,109 +1,66 @@
-name: DEN-1061 reconcile observable event projection once
+name: Slack observable event contract
 
 on:
-  push:
-    branches:
-      - agent/den-1061-slack-observable-event-v3
+  pull_request:
     paths:
       - .github/workflows/agent-reconcile-den-1061-once.yml
+      - src/slack_commands.rs
+      - src/slack_commands_parts/part2.rs
+      - src/slack_commands_parts/part5.rs
+      - src/slack_commands_parts/part10.rs
+      - src/slack_commands_parts/part11.rs
+      - src/slack_commands_parts/part12.rs
+      - config/alex-main-agent.manifests.lock.json
+      - scripts/audit_alex_main_agent_manifests.py
+      - tests/test_audit_alex_main_agent_manifests.py
+      - Cargo.toml
+      - Cargo.lock
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/agent-reconcile-den-1061-once.yml
+      - src/slack_commands.rs
+      - src/slack_commands_parts/part2.rs
+      - src/slack_commands_parts/part5.rs
+      - src/slack_commands_parts/part10.rs
+      - src/slack_commands_parts/part11.rs
+      - src/slack_commands_parts/part12.rs
+      - config/alex-main-agent.manifests.lock.json
+      - scripts/audit_alex_main_agent_manifests.py
+      - tests/test_audit_alex_main_agent_manifests.py
+      - Cargo.toml
+      - Cargo.lock
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: den-1061-observable-event-reconcile
-  cancel-in-progress: false
+  group: slack-observable-event-contract-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  reconcile:
-    if: >-
-      github.repository == 'ORESoftware/ai-agent-bridge.rs' &&
-      github.ref == 'refs/heads/agent/den-1061-slack-observable-event-v3' &&
-      github.actor == 'ORESoftware'
+  validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
-      - name: Check out the exact reconciliation branch
+      - name: Check out without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: agent/den-1061-slack-observable-event-v3
-          fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
 
-      - name: Fetch the reviewed observable-event source
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b
+        with:
+          toolchain: 1.97.1
+          components: rustfmt
+
+      - name: Validate formatting and focused contracts
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --no-tags origin agent/den-1061-slack-observable-event-v2
-          test "$(git rev-parse FETCH_HEAD)" = "1cf7c24107fa75f08953feab334d6a1c20824a15"
-          git show 1cf7c24107fa75f08953feab334d6a1c20824a15:src/slack_commands_parts/part11.rs \
-            > src/slack_commands_parts/part12.rs
-
-      - name: Reconcile current ingress and reviewed observability semantics
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          def replace_exact(path: str, old: str, new: str, expected: int = 1) -> None:
-              file = Path(path)
-              text = file.read_text(encoding="utf-8")
-              count = text.count(old)
-              if count != expected:
-                  raise SystemExit(f"{path}: expected {expected} occurrences, found {count}")
-              file.write_text(text.replace(old, new), encoding="utf-8")
-
-          replace_exact(
-              "src/slack_commands.rs",
-              'include!("slack_commands_parts/part11.rs");\n',
-              'include!("slack_commands_parts/part11.rs");\ninclude!("slack_commands_parts/part12.rs");\n',
-          )
-          replace_exact(
-              "src/slack_commands_parts/part2.rs",
-              "    source_key: String,\n    provider: Provider,",
-              "    source_key: String,\n    occurred_at: String,\n    provider: Provider,",
-          )
-          replace_exact(
-              "src/slack_commands_parts/part2.rs",
-              "            source_key,\n            provider:",
-              "            source_key,\n            occurred_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),\n            provider:",
-              expected=2,
-          )
-          replace_exact(
-              "src/slack_commands_parts/part5.rs",
-              ") -> Value {\n    json!({\n        \"schema_version\": 1,\n        \"run_id\": request.run_id,",
-              ") -> Value {\n    let observable_event = observable_task_created_event(config, request, resolved, workflow_id);\n    json!({\n        \"schema_version\": 1,\n        \"run_id\": request.run_id,",
-          )
-          replace_exact(
-              "src/slack_commands_parts/part5.rs",
-              "        },\n        \"broadcast_targets\": [\n            \"slack_run_thread\",",
-              "        },\n        \"observable_event\": observable_event,\n        \"broadcast_targets\": [\n            \"slack_run_thread\",",
-          )
-          PY
-
-      - name: Format and test the semantic merge
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo fmt --all
           cargo fmt --all --check
           cargo test --locked observable_event_contract_tests -- --nocapture
           cargo test --locked ingress_security_tests -- --nocapture
           cargo test --locked alias_http_contract_tests -- --nocapture
           python3 -m unittest -v tests/test_audit_alex_main_agent_manifests.py
           git diff --check
-          test -s src/slack_commands_parts/part12.rs
-
-      - name: Commit the reconciled implementation
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src/slack_commands.rs \
-            src/slack_commands_parts/part2.rs \
-            src/slack_commands_parts/part5.rs \
-            src/slack_commands_parts/part12.rs
-          git commit -m 'feat(DEN-1061): reconcile Slack observability with current main'
-          git push origin HEAD:agent/den-1061-slack-observable-event-v3
