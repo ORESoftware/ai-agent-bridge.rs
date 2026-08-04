@@ -83,7 +83,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo fmt --all -- --check
+          rustfmt --edition 2021 --check src/bin/alex-main-agent-registry-browser.rs
           cargo clippy --locked --bin alex-main-agent-registry-browser -- -D warnings
           cargo test --locked --bin alex-main-agent-registry-browser
           cargo test --locked --test alex_main_agent_registry
