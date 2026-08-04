@@ -317,10 +317,10 @@ impl App {
         let url = Url::parse(&self.config.coordinator_url)
             .and_then(|base| base.join("v1/jobs"))
             .map_err(|_| Error::Coordinator)?;
-        let mut http = self.client.post(url).header(
-            "idempotency-key",
-            format!("slack-command:{}", request.run_id),
-        );
+        let mut http = self
+            .client
+            .post(url)
+            .header("idempotency-key", &request.run_id);
         if let Some(token) = &self.config.coordinator_bearer {
             http = http.bearer_auth(token);
         }
@@ -342,6 +342,16 @@ impl App {
             .await
             .ok_or(Error::Coordinator)?;
         if !status.is_success() {
+            let error_code = serde_json::from_slice::<Value>(&body)
+                .ok()
+                .and_then(|value| value.get("error").and_then(Value::as_str).map(str::to_string))
+                .unwrap_or_else(|| "unknown".to_string());
+            warn!(
+                run_id = %request.run_id,
+                status = %status,
+                error_code,
+                "coordinator rejected Slack job creation"
+            );
             return Err(Error::Coordinator);
         }
         Ok(serde_json::from_slice::<JobResponse>(&body)
