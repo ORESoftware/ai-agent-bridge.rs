@@ -107,6 +107,7 @@ fn task_payload(
     context: &[ContextMessage],
     workflow_id: &str,
 ) -> Value {
+    let observable_event = observable_task_created_event(config, request, resolved, workflow_id);
     json!({
         "schema_version": 1,
         "run_id": request.run_id,
@@ -132,6 +133,7 @@ fn task_payload(
             "linear_issue": resolved.issue.as_ref().map(|issue| issue.identifier.as_str()),
             "write_policy": write_policy(resolved.write_policy)
         },
+        "observable_event": observable_event,
         "broadcast_targets": [
             "slack_run_thread",
             "ai_agent_coordinator_job",
