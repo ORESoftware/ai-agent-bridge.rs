@@ -30,10 +30,8 @@ on:
       - "tests/browser/specs/registry.spec.mjs"
   workflow_dispatch:
 
-# Temporary branch-scoped write permission lets this same-repository PR commit
-# the regenerated lockfile once. It is removed in the follow-up commit.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -50,8 +48,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
-          persist-credentials: true
+          persist-credentials: false
           submodules: false
 
       - name: Prepare evidence directory
@@ -90,32 +87,11 @@ jobs:
           toolchain: "1.95.0"
           components: rustfmt, clippy
 
-      - name: Regenerate lock and apply the Rust 1.95 lint fix
-        shell: bash
-        run: |
-          set -euo pipefail
-          sed -i 's/port\.map_or(true, valid_port)/port.is_none_or(valid_port)/' \
-            src/bin/alex-main-agent-registry-browser.rs
-          rustfmt --edition 2021 src/bin/alex-main-agent-registry-browser.rs
-          cargo generate-lockfile
-          cp Cargo.lock "${RUNNER_TEMP}/alex-main-agent-registry-boundary/Cargo.lock"
-          git diff --check
-
-          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" \
-             && "${GITHUB_HEAD_REF}" == "agent/alex-main-agent-diagnostic-harness" ]]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add Cargo.lock src/bin/alex-main-agent-registry-browser.rs
-            if ! git diff --cached --quiet; then
-              git commit -m "build(DEN-1298): refresh lock and satisfy Rust 1.95"
-              git push origin "HEAD:${GITHUB_HEAD_REF}"
-            fi
-          fi
-
       - name: Validate focused Rust boundary
         shell: bash
         run: |
           set -euo pipefail
+          cp Cargo.lock "${RUNNER_TEMP}/alex-main-agent-registry-boundary/Cargo.lock"
           rustfmt --edition 2021 --check src/bin/alex-main-agent-registry-browser.rs
           cargo clippy --locked --bin alex-main-agent-registry-browser -- -D warnings
           cargo test --locked --bin alex-main-agent-registry-browser
