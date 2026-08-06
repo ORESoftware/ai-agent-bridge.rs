@@ -1,0 +1,93 @@
+# Operator-facing gate for the reviewed Slack run modal.
+#
+# `slack-ingress-browser-security.yml` proves the ingress *rejects* what it
+# should. This workflow proves the surface an authorized operator is *shown* is
+# correct: every sub-selection present, the safe defaults preselected, and write
+# scope never wider than the channel policy.
+#
+# It needs no running service and no Slack credentials. The Rust job freezes the
+# real `views.open` payloads and the Chromium job renders exactly those.
+
+name: Slack run modal surface
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/slack-modal-surface.yml
+      - src/slack_commands.rs
+      - src/slack_commands_parts/**
+      - src/slack_project_bindings.rs
+      - tests/slack_modal_fixture.rs
+      - tests/browser/**
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/slack-modal-surface.yml
+      - src/slack_commands.rs
+      - src/slack_commands_parts/**
+      - src/slack_project_bindings.rs
+      - tests/slack_modal_fixture.rs
+      - tests/browser/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  modal-surface:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: "1.95.0"
+
+      # Fails if a modal change landed without regenerating the fixtures, so the
+      # browser job can never assert against a payload the service no longer
+      # sends.
+      - name: Verify the committed modal fixtures are current
+        run: cargo test --locked --test slack_modal_fixture
+
+      - name: Confirm the fixtures are byte-identical after regeneration
+        run: |
+          set -euo pipefail
+          UPDATE_SLACK_MODAL_FIXTURES=1 cargo test --locked --test slack_modal_fixture
+          if ! git diff --quiet -- tests/browser/fixtures; then
+            echo "::error::Regenerating the modal fixtures changed them. Commit the update." >&2
+            git --no-pager diff -- tests/browser/fixtures >&2
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install pinned browser dependency
+        working-directory: tests/browser
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Install Chromium
+        working-directory: tests/browser
+        run: npx --no-install playwright install --with-deps chromium
+
+      - name: Assert the reviewed modal in Chromium
+        working-directory: tests/browser
+        run: npm run test:modal
+
+      - name: Upload browser evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: slack-modal-surface-${{ github.run_id }}-${{ github.run_attempt }}
+          path: tests/browser/test-results
+          retention-days: 7
+          if-no-files-found: ignore
