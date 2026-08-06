@@ -467,7 +467,7 @@ impl Db {
              on conflict (channel_slug, ctx_key) do update set \
                value = excluded.value, version = excluded.version, \
                updated_by = excluded.updated_by, updated_at = now() \
-             where {SHARED_CONTEXT_TABLE}.version < excluded.version"
+             where ai_agent_bridge.shared_context.version < excluded.version"
         );
         self.execute(statement(
             sql,

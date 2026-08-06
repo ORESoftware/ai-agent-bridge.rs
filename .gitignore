@@ -40,4 +40,7 @@ tests/blockkit/node_modules/
 tests/blockkit/artifacts/
 tests/blockkit/playwright-report/
 tests/blockkit/test-results/
+
+# Local/CI manifest-audit reports are uploaded as run artifacts, not source.
+/artifacts/
 tests/blockkit/package-lock.json

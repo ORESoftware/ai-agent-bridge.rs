@@ -22,7 +22,11 @@ function require(condition, message, errors) {
 }
 
 function dependency(manifest, name) {
-  const pattern = new RegExp(`^\\s*${name.replaceAll("-", "\\-")}\\s*=`, "mu");
+  // A hyphen is literal outside a character class. Escaping it is rejected by
+  // newer JavaScript engines when the Unicode flag is enabled, so only escape
+  // characters that are actually special in this regex position.
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const pattern = new RegExp(`^\\s*${escapedName}\\s*=`, "mu");
   return pattern.test(manifest);
 }
 
