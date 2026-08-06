@@ -28,3 +28,7 @@ tmp/
 *.pdb
 .cargo-target-*/
 **/.gradle/
+tmp
+temp
+tmp/worktrees
+temp/worktrees
