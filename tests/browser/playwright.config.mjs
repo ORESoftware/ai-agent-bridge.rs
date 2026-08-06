@@ -14,6 +14,7 @@ export default defineConfig({
   reporter: [['line']],
   use: {
     baseURL:
+      process.env.SLACK_BRIDGE_BASE_URL ??
       process.env.SLACK_COMMAND_BASE_URL ??
       process.env.ALEX_MAIN_AGENT_PROBE_URL ??
       'http://127.0.0.1:8160',

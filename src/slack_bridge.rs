@@ -90,6 +90,7 @@ struct SlackConfig {
     allowed_team_ids: BTreeSet<String>,
     allowed_channel_ids: BTreeSet<String>,
     allowed_thread_ts: BTreeSet<String>,
+    expected_app_id: Option<String>,
     command_prefix: String,
     bridge_url: String,
     bridge_bearer: Option<String>,
@@ -136,6 +137,19 @@ impl SlackConfig {
         let bot_user_id = env_opt("SLACK_BOT_USER_ID")
             .map(|value| normalize_identifier("SLACK_BOT_USER_ID", &value))
             .transpose()?;
+
+        // The installed Slack application identity is a defense-in-depth check on
+        // top of the signing secret, matching the `fiducia-slack-command`
+        // contract. A loopback bind is a local test or sidecar deployment and may
+        // omit it; a publicly reachable bind may not.
+        let expected_app_id = env_opt("SLACK_EXPECTED_APP_ID")
+            .map(|value| normalize_identifier("SLACK_EXPECTED_APP_ID", &value))
+            .transpose()?;
+        if expected_app_id.is_none() && !host.is_loopback() {
+            return Err(AdapterError::Configuration(
+                "SLACK_EXPECTED_APP_ID is required for a non-loopback bind".to_string(),
+            ));
+        }
 
         let command_prefix = env_or("SLACK_COMMAND_PREFIX", DEFAULT_COMMAND_PREFIX);
         validate_command_prefix(&command_prefix)?;
@@ -212,6 +226,7 @@ impl SlackConfig {
             allowed_team_ids,
             allowed_channel_ids,
             allowed_thread_ts,
+            expected_app_id,
             command_prefix,
             bridge_url,
             bridge_bearer,
@@ -641,6 +656,8 @@ struct SlackEnvelope {
     #[serde(default)]
     team_id: Option<String>,
     #[serde(default)]
+    api_app_id: Option<String>,
+    #[serde(default)]
     event: Option<SlackEvent>,
 }
 
@@ -684,11 +701,16 @@ enum EventDecision {
 
 fn classify_event(config: &SlackConfig, envelope: SlackEnvelope) -> EventDecision {
     if envelope.kind == "url_verification" {
-        let Some(team_id) = envelope.team_id.as_deref() else {
-            return EventDecision::Reject;
-        };
-        if !config.allowed_team_ids.contains(team_id) {
-            return EventDecision::Ignore;
+        // Slack's Events API request-URL handshake carries only `token`,
+        // `challenge`, and `type`. It is sent while the Request URL is being
+        // configured, before the endpoint is bound to a workspace, so there is
+        // no `team_id` to match. Requiring one made the handshake unsatisfiable
+        // and left Event Subscriptions impossible to enable. When Slack does
+        // supply a workspace, it is still held to the allowlist.
+        if let Some(team_id) = envelope.team_id.as_deref() {
+            if !config.allowed_team_ids.contains(team_id) {
+                return EventDecision::Ignore;
+            }
         }
         return match envelope.challenge {
             Some(challenge)
@@ -711,6 +733,17 @@ fn classify_event(config: &SlackConfig, envelope: SlackEnvelope) -> EventDecisio
     };
     if !config.allowed_team_ids.contains(&team_id) {
         return EventDecision::Ignore;
+    }
+
+    // Reject events minted by any application other than the reviewed install,
+    // even when the payload carries an allowlisted workspace.
+    if let Some(expected_app_id) = config.expected_app_id.as_deref() {
+        let Some(api_app_id) = envelope.api_app_id.as_deref() else {
+            return EventDecision::Reject;
+        };
+        if api_app_id != expected_app_id {
+            return EventDecision::Reject;
+        }
     }
 
     let Some(event_id) = envelope.event_id else {
@@ -1185,7 +1218,8 @@ async fn healthz() -> impl IntoResponse {
 async fn readyz(State(app): State<Arc<SlackApp>>) -> impl IntoResponse {
     Json(json!({
         "ok": true,
-        "dry_run": app.config.dry_run
+        "dry_run": app.config.dry_run,
+        "installed_app_identity_enforced": app.config.expected_app_id.is_some()
     }))
 }
 
@@ -1482,6 +1516,9 @@ fn truncate_utf8(value: &str, maximum_bytes: usize) -> String {
 mod tests {
     use super::*;
 
+    /// Immutable identifier of the reviewed Slack application install.
+    const TEST_APP_ID: &str = "A0BMBAMM5NJ";
+
     fn test_config(path: PathBuf) -> SlackConfig {
         SlackConfig {
             host: DEFAULT_HOST.parse().unwrap(),
@@ -1492,6 +1529,7 @@ mod tests {
             allowed_team_ids: ["T1".to_string()].into_iter().collect(),
             allowed_channel_ids: ["C1".to_string()].into_iter().collect(),
             allowed_thread_ts: BTreeSet::new(),
+            expected_app_id: Some(TEST_APP_ID.to_string()),
             command_prefix: DEFAULT_COMMAND_PREFIX.to_string(),
             bridge_url: DEFAULT_BRIDGE_URL.to_string(),
             bridge_bearer: None,
@@ -1520,6 +1558,7 @@ mod tests {
             challenge: None,
             event_id: Some("Ev123".to_string()),
             team_id: Some("T1".to_string()),
+            api_app_id: Some(TEST_APP_ID.to_string()),
             event: Some(SlackEvent {
                 kind: "app_mention".to_string(),
                 channel: Some("C1".to_string()),
@@ -1633,6 +1672,7 @@ mod tests {
             challenge: Some("abc123".to_string()),
             event_id: None,
             team_id: Some("T1".to_string()),
+            api_app_id: Some(TEST_APP_ID.to_string()),
             event: None,
         };
         assert_eq!(
@@ -1649,9 +1689,75 @@ mod tests {
             challenge: Some("abc123".to_string()),
             event_id: None,
             team_id: Some("T2".to_string()),
+            api_app_id: Some(TEST_APP_ID.to_string()),
             event: None,
         };
         assert_eq!(classify_event(&config, envelope), EventDecision::Ignore);
+    }
+
+    /// Slack's real Events API handshake carries only `token`, `challenge`, and
+    /// `type`. Rejecting it for a missing workspace made Event Subscriptions
+    /// impossible to enable on this endpoint.
+    #[test]
+    fn url_verification_without_workspace_completes_the_slack_handshake() {
+        let config = test_config(temp_path("challenge-no-team"));
+        let envelope = SlackEnvelope {
+            kind: "url_verification".to_string(),
+            challenge: Some("3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P".to_string()),
+            event_id: None,
+            team_id: None,
+            api_app_id: None,
+            event: None,
+        };
+        assert_eq!(
+            classify_event(&config, envelope),
+            EventDecision::Challenge(
+                "3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P".to_string()
+            )
+        );
+    }
+
+    /// The exact JSON Slack posts to the Request URL must survive deserialization
+    /// and reach the challenge branch, not just the hand-built struct.
+    #[test]
+    fn url_verification_wire_payload_completes_the_slack_handshake() {
+        let config = test_config(temp_path("challenge-wire"));
+        let body = br#"{"token":"Jhj5dZrVaK7ZwHHjRyZWjbDl","challenge":"abc123","type":"url_verification"}"#;
+        let envelope = serde_json::from_slice::<SlackEnvelope>(body).expect("payload parses");
+        assert_eq!(
+            classify_event(&config, envelope),
+            EventDecision::Challenge("abc123".to_string())
+        );
+    }
+
+    #[test]
+    fn events_from_another_installed_application_are_rejected() {
+        let config = test_config(temp_path("foreign-app"));
+        let mut envelope = event_envelope("!ask-both hello");
+        envelope.api_app_id = Some("A0FOREIGNAPP".to_string());
+        assert_eq!(classify_event(&config, envelope), EventDecision::Reject);
+    }
+
+    #[test]
+    fn events_without_an_application_identity_are_rejected_when_enforced() {
+        let config = test_config(temp_path("missing-app"));
+        let mut envelope = event_envelope("!ask-both hello");
+        envelope.api_app_id = None;
+        assert_eq!(classify_event(&config, envelope), EventDecision::Reject);
+    }
+
+    /// A loopback sidecar may run without a configured install identity; the
+    /// workspace and channel allowlists still apply.
+    #[test]
+    fn events_are_accepted_when_application_identity_is_not_configured() {
+        let mut config = test_config(temp_path("unenforced-app"));
+        config.expected_app_id = None;
+        let mut envelope = event_envelope("!ask-both hello");
+        envelope.api_app_id = Some("A0FOREIGNAPP".to_string());
+        assert!(matches!(
+            classify_event(&config, envelope),
+            EventDecision::Accept(_)
+        ));
     }
 
     #[test]
