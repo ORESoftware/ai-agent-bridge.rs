@@ -48,6 +48,7 @@ jobs:
           args: >-
             ./.github/workflows/ci.yml
             ./.github/workflows/slack-ingress-browser-security.yml
+            ./.github/workflows/slack-bridge-events-browser-security.yml
             ./.github/workflows/seaorm-branch.yml
       - name: Audit provider credential hygiene
         run: python3 scripts/audit-provider-secrets.py

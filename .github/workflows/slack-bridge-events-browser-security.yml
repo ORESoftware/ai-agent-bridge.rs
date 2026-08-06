@@ -1,0 +1,191 @@
+name: Slack bridge events browser security
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/slack-bridge-events-browser-security.yml
+      - Cargo.lock
+      - Cargo.toml
+      - src/bin/fiducia-slack-bridge.rs
+      - src/slack_bridge.rs
+      - tests/browser/**
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/slack-bridge-events-browser-security.yml
+      - Cargo.lock
+      - Cargo.toml
+      - src/bin/fiducia-slack-bridge.rs
+      - src/slack_bridge.rs
+      - tests/browser/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  chromium-events-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      SLACK_BRIDGE_BASE_URL: http://127.0.0.1:8152
+      SLACK_BRIDGE_HOST: 127.0.0.1
+      SLACK_BRIDGE_PORT: "8152"
+      SLACK_SIGNING_SECRET: browser-test-signing-secret
+      SLACK_ALLOWED_TEAM_IDS: T01B3C83PMK
+      SLACK_ALLOWED_CHANNEL_IDS: C_BROWSER_BRIDGE_TEST
+      SLACK_BRIDGE_TEST_CHANNEL_ID: C_BROWSER_BRIDGE_TEST
+      SLACK_EXPECTED_APP_ID: A0BMBAMM5NJ
+      SLACK_EXPECTED_TEAM_ID: T01B3C83PMK
+      SLACK_BOT_USER_ID: UBOTBROWSERTEST
+      SLACK_COMMAND_PREFIX: "!ask-both"
+      SLACK_BRIDGE_DRY_RUN: "true"
+      SLACK_MAX_CONCURRENT_WORKFLOWS: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Initialize private evidence directories
+        run: |
+          set -euo pipefail
+          umask 077
+
+          playwright_output_dir="${RUNNER_TEMP}/slack-bridge-browser-results"
+          bridge_log_dir="${RUNNER_TEMP}/slack-bridge-browser-logs"
+          bridge_state_dir="${RUNNER_TEMP}/slack-bridge-state"
+
+          mkdir -p \
+            "${playwright_output_dir}" \
+            "${bridge_log_dir}" \
+            "${bridge_state_dir}"
+          chmod 700 \
+            "${playwright_output_dir}" \
+            "${bridge_log_dir}" \
+            "${bridge_state_dir}"
+
+          {
+            printf 'PLAYWRIGHT_OUTPUT_DIR=%s\n' "${playwright_output_dir}"
+            printf 'SLACK_BRIDGE_LOG_DIR=%s\n' "${bridge_log_dir}"
+            printf 'SLACK_IDEMPOTENCY_PATH=%s/events.journal\n' "${bridge_state_dir}"
+          } >>"${GITHUB_ENV}"
+
+      - name: Validate focused workflow syntax
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+        with:
+          args: ./.github/workflows/slack-bridge-events-browser-security.yml
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: "1.95.0"
+
+      - name: Build the production Slack events bridge
+        run: cargo build --locked --bin fiducia-slack-bridge
+
+      - name: Install pinned browser dependency
+        working-directory: tests/browser
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Install Chromium
+        working-directory: tests/browser
+        run: npx --no-install playwright install --with-deps chromium
+
+      - name: Exercise signed event-ingress boundaries in Chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+
+          service_log="${SLACK_BRIDGE_LOG_DIR}/fiducia-slack-bridge.log"
+          readiness_json="${PLAYWRIGHT_OUTPUT_DIR}/readiness.json"
+
+          target/debug/fiducia-slack-bridge >"${service_log}" 2>&1 &
+          service_pid=$!
+
+          cleanup() {
+            status=$?
+            kill "${service_pid}" 2>/dev/null || true
+            wait "${service_pid}" 2>/dev/null || true
+            if [ "${status}" -ne 0 ]; then
+              cat "${service_log}"
+            fi
+            exit "${status}"
+          }
+          trap cleanup EXIT
+
+          ready=0
+          for _attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error \
+              "${SLACK_BRIDGE_BASE_URL}/readyz" >"${readiness_json}"; then
+              ready=1
+              break
+            fi
+            if ! kill -0 "${service_pid}" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "${ready}" -ne 1 ]; then
+            cat "${service_log}"
+            exit 1
+          fi
+
+          jq -e '
+            .ok == true and
+            .dry_run == true and
+            .installed_app_identity_enforced == true
+          ' "${readiness_json}"
+
+          timeout 2m npm --prefix tests/browser run test:slack-bridge-events \
+            2>&1 | tee "${PLAYWRIGHT_OUTPUT_DIR}/playwright.tap"
+
+          # Dry-run mode must never reach a provider, Slack, GitHub, or Linear.
+          if grep -aqE '"outcome":"(bridge_failure|slack_failure)"' "${service_log}"; then
+            echo "Dry-run ingress attempted a downstream write" >&2
+            exit 1
+          fi
+
+          head_sha="$(jq --raw-output '.pull_request.head.sha // .after // empty' "${GITHUB_EVENT_PATH}")"
+          if [ -z "${head_sha}" ]; then
+            head_sha="${GITHUB_SHA}"
+          fi
+          jq -n \
+            --arg head_sha "${head_sha}" \
+            --arg tested_commit "${GITHUB_SHA}" \
+            --arg service "fiducia-slack-bridge" \
+            '{
+              schema_version: 1,
+              head_sha: $head_sha,
+              tested_commit: $tested_commit,
+              service: $service,
+              live_external_credentials: false,
+              dry_run: true
+            }' >"${PLAYWRIGHT_OUTPUT_DIR}/evidence.json"
+
+      - name: Publish run summary
+        if: always()
+        run: |
+          {
+            echo '## Slack bridge signed event-ingress browser security'
+            echo
+            echo "- Tested commit: \`${GITHUB_SHA}\`"
+            echo "- Run attempt: \`${GITHUB_RUN_ATTEMPT}\`"
+            echo "- Evidence artifact: \`slack-bridge-events-browser-security-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\`"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload sanitized browser evidence and service logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: slack-bridge-events-browser-security-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/slack-bridge-browser-results
+            ${{ runner.temp }}/slack-bridge-browser-logs
+          if-no-files-found: error
+          retention-days: 14
