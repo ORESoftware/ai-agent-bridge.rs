@@ -103,10 +103,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # This job builds only `alex-main-agent-registry-browser` and drives it through
+      # Chromium. It never enables the `postgres` feature and never reads `vendor/`,
+      # so it does not need submodules. Cloning them recursively made the job depend
+      # on the private ORESoftware/k8s-libs-and-shared-defs, which the repo-scoped
+      # GITHUB_TOKEN cannot read — checkout 404'd and every later step was skipped.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          submodules: recursive
+          submodules: false
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: "1.95.0"
