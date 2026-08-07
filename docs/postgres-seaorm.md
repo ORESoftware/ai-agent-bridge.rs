@@ -11,11 +11,19 @@ The application does not own DDL or run migrations at startup.
 | --- | --- |
 | Canonical shared DDL | `vendor/k8s-libs-and-shared-defs/pg-defs/schema/schema.sql` |
 | Generated entities | `vendor/k8s-libs-and-shared-defs/pg-defs/generated/rust/sea-orm` |
-| Migration diff / verify / reviewed apply | `declarative-migrations/declarative-postgres-migrate.rs` through the pinned shared `dpm.sh` wrapper |
+| Migration implementation | `declarative-migrations/declarative-postgres-migrate.rs` |
+| Reviewed release | `dpm` v0.3.2 |
 | Runtime connection, restore, and writes | `src/db.rs` through SeaORM |
+
+The Linux x86-64 release artifact is
+`dpm-v0.3.2-x86_64-unknown-linux-gnu.tar.gz` with SHA-256
+`4258755a946f6f3a49e33538889523e4736180624a186bddc90180994612d3aa`.
 
 The shared repository is pinned as an immutable Git submodule. Generated
 entities are adapters to the DDL contract; they are not migration sources.
+Private cross-repository schema certification is performed from
+`ORESoftware/k8s-cluster` through its repository-scoped GitHub App/deploy-key
+boundary; no PAT or copied private key belongs in this repository.
 
 ## Why several queries remain explicit Statements
 
@@ -59,15 +67,24 @@ scripts/dpm.sh review
 # scripts/dpm.sh apply  # explicit human action only
 ```
 
+At the CLI boundary, DPM accepts SQL sources, target and shadow databases:
+
+```sh
+dpm apply \
+  --source-sql pg-defs/schema/schema.sql \
+  --target "$DATABASE_URL" \
+  --shadow "$SHADOW_DATABASE_URL" \
+  --yes
+```
+
 Destructive changes require both reviewed DPM consent flags. Neither DPM nor an
 ORM migration command belongs in bridge startup or deployment arguments.
 
 ## Local and CI verification
 
-Initialize submodules, then run:
+Initialize the reviewed dependencies, then run:
 
 ```sh
-git submodule update --init --recursive
 node --test scripts/seaorm-policy.test.mjs
 EXPECTED_SHARED_COMMIT=3c84cab532b27d328378f09fba5841f02644ae3b \
   node scripts/check-seaorm-policy.mjs
