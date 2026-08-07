@@ -26,6 +26,26 @@ pub(crate) fn validate_service_origin(
     allowlist_env: &str,
     service_label: &str,
 ) -> Result<(), String> {
+    let loopback = validate_service_transport(
+        url,
+        internal_http_hosts,
+        allowlist_env,
+        service_label,
+    )?;
+    if !loopback && bearer.is_none() {
+        return Err(format!(
+            "remote {service_label} URLs require a bearer token"
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_service_transport(
+    url: &Url,
+    internal_http_hosts: Option<&str>,
+    allowlist_env: &str,
+    service_label: &str,
+) -> Result<bool, String> {
     let host = url
         .host_str()
         .ok_or_else(|| format!("{service_label} URL requires a host"))?
@@ -46,12 +66,7 @@ pub(crate) fn validate_service_origin(
         _ => return Err(format!("{service_label} URL scheme must be http or https")),
     }
 
-    if !loopback && bearer.is_none() {
-        return Err(format!(
-            "remote {service_label} URLs require a bearer token"
-        ));
-    }
-    Ok(())
+    Ok(loopback)
 }
 
 fn parse_internal_http_hosts(
@@ -166,14 +181,13 @@ mod tests {
                 "http://ai-agent-coordinator.ai-agent-coordinator.svc.cluster.local:8080/",
             ),
         ] {
-            assert!(validate_service_origin(
+            assert!(!validate_service_transport(
                 &url(value),
-                Some("test-only"),
                 Some(allowed),
                 SLACK_INTERNAL_HTTP_HOSTS_ENV,
                 label,
             )
-            .is_ok());
+            .unwrap());
         }
     }
 
