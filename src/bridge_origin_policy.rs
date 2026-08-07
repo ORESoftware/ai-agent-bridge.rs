@@ -3,8 +3,7 @@ use std::net::IpAddr;
 
 use reqwest::Url;
 
-pub(crate) const INTERNAL_HTTP_HOSTS_ENV: &str =
-    "AI_AGENT_RUNNER_BRIDGE_INTERNAL_HTTP_HOSTS";
+pub(crate) const INTERNAL_HTTP_HOSTS_ENV: &str = "AI_AGENT_RUNNER_BRIDGE_INTERNAL_HTTP_HOSTS";
 
 pub(crate) fn validate_bridge_origin(
     url: &Url,
@@ -46,9 +45,7 @@ fn parse_internal_http_hosts(raw: Option<&str>) -> Result<BTreeSet<String>, Stri
     for entry in raw.split(',') {
         let host = entry.trim().to_ascii_lowercase();
         if host.is_empty() {
-            return Err(format!(
-                "{INTERNAL_HTTP_HOSTS_ENV} contains an empty host"
-            ));
+            return Err(format!("{INTERNAL_HTTP_HOSTS_ENV} contains an empty host"));
         }
         if !is_kubernetes_service_fqdn(&host) {
             return Err(format!(
@@ -109,9 +106,11 @@ mod tests {
             None,
         )
         .is_ok());
-        assert!(validate_bridge_origin(&url("https://bridge.example.com/"), None, None)
-            .unwrap_err()
-            .contains("bearer"));
+        assert!(
+            validate_bridge_origin(&url("https://bridge.example.com/"), None, None)
+                .unwrap_err()
+                .contains("bearer")
+        );
     }
 
     #[test]
