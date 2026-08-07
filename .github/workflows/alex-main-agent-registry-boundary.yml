@@ -8,6 +8,7 @@ on:
       - "Cargo.toml"
       - "config/alex-main-agent.channels.json"
       - "docs/alex-main-agent-browser-tests.md"
+      - "scripts/materialize-optional-seaorm-metadata.sh"
       - "src/bin/alex-main-agent-registry-browser.rs"
       - "src/slack_project_bindings.rs"
       - "tests/alex_main_agent_registry.rs"
@@ -22,6 +23,7 @@ on:
       - "Cargo.toml"
       - "config/alex-main-agent.channels.json"
       - "docs/alex-main-agent-browser-tests.md"
+      - "scripts/materialize-optional-seaorm-metadata.sh"
       - "src/bin/alex-main-agent-registry-browser.rs"
       - "src/slack_project_bindings.rs"
       - "tests/alex_main_agent_registry.rs"
@@ -59,28 +61,7 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/alex-main-agent-registry-boundary"
 
       - name: Materialize pinned non-Postgres dependency metadata
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Cargo resolves optional path-package metadata even when the feature is
-          # disabled. This is the exact Cargo.toml from submodule commit
-          # 3c84cab532b27d328378f09fba5841f02644ae3b. The focused job never enables
-          # `postgres`; the full generated entities remain the shared-schema lane's
-          # responsibility.
-          rm -rf vendor/k8s-libs-and-shared-defs
-          mkdir -p vendor/k8s-libs-and-shared-defs/pg-defs/generated/rust/sea-orm/src
-          cat > vendor/k8s-libs-and-shared-defs/pg-defs/generated/rust/sea-orm/Cargo.toml <<'EOF'
-          [package]
-          name = "dd-pg-defs-sea-orm"
-          version = "0.1.0"
-          edition = "2021"
-
-          [dependencies]
-          sea-orm = { version = "1", features = ["macros", "with-uuid", "with-json", "with-chrono"] }
-          serde = { version = "1", features = ["derive"] }
-          EOF
-          printf '%s\n' '#![forbid(unsafe_code)]' > \
-            vendor/k8s-libs-and-shared-defs/pg-defs/generated/rust/sea-orm/src/lib.rs
+        run: bash scripts/materialize-optional-seaorm-metadata.sh
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
