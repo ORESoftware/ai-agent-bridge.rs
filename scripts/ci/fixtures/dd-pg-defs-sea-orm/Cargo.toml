@@ -9,5 +9,5 @@ publish = false
 # enabling the root `postgres` feature with this placeholder fails at compile
 # time and directs callers to the centralized private-schema certification lane.
 [dependencies]
-sea-orm = { version = "1", features = ["macros", "with-uuid", "with-json", "with-chrono"] }
+sea-orm = { version = "1", default-features = false, features = ["macros", "with-uuid", "with-json", "with-chrono"] }
 serde = { version = "1", features = ["derive"] }
