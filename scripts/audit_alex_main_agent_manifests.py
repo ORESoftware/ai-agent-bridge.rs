@@ -22,13 +22,22 @@ MAX_REGISTRY = 1_048_576
 MAX_LOCK = 262_144
 MAX_REMOTE = 1_048_576
 MAX_MANIFEST = 65_536
-COUNT = 13
+PROJECT_COUNT = 13
+CENTRAL_BINDING_COUNT = PROJECT_COUNT + 1
 WORKSPACE = "T01B3C83PMK"
 APP = "A0BMBAMM5NJ"
 TEAM = "Denman"
 TEAM_ID = "eb8ab169-5afe-4b6f-9cab-3f2aa3e887dc"
 TEAM_KEY = "DEN"
 REJECTED_DAEDALUS = "C0BMB9GSSKY"
+PILOT_CHANNEL = "C0BKP2N3LG7"
+PILOT_LINEAR_PROJECT_ID = "7abf8be2-ffa5-4507-bd09-43aa59ca8718"
+PILOT_DEFAULT_REPOSITORY = "ORESoftware/ai-agent-bridge.rs"
+PILOT_REPOSITORY_ALLOWLIST = (
+    "ORESoftware/ai-agent-bridge.rs",
+    "ORESoftware/ai-agent-coordinator.rs",
+    "ORESoftware/k8s-cluster",
+)
 SHA1 = re.compile(r"[0-9a-f]{40}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 ISSUE = re.compile(r"DEN-[1-9][0-9]*")
@@ -94,6 +103,22 @@ def load_json(path: Path, limit: int, label: str) -> Any:
 def canonical_json_sha256(value: Any) -> str:
     raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(raw).hexdigest()
+
+
+def manifest_locked_registry(
+    registry: Mapping[str, Any], project_channels: set[str]
+) -> dict[str, Any]:
+    obj = as_obj(registry, "central_registry")
+    bindings = as_arr(obj.get("bindings"), "central_registry.bindings")
+    return {
+        "schema_version": obj.get("schema_version"),
+        "bindings": [
+            binding
+            for binding in bindings
+            if isinstance(binding, dict)
+            and binding.get("channel_id") in project_channels
+        ],
+    }
 
 
 def as_obj(value: Any, label: str) -> dict[str, Any]:
@@ -211,8 +236,10 @@ def validate_lock(raw: Any) -> Lock:
     pattern(reg["canonical_sha256"], SHA256, "registry digest", "invalid_digest")
     policy = validate_policy(obj["central_policy"])
     rows = as_arr(obj["entries"], "lock.entries")
-    if len(rows) != COUNT:
-        raise AuditError("contract_mismatch", f"expected {COUNT} lock entries")
+    if len(rows) != PROJECT_COUNT:
+        raise AuditError(
+            "contract_mismatch", f"expected {PROJECT_COUNT} lock entries"
+        )
 
     entries, channels, repos, routing_issues, delivery_issues = [], set(), set(), set(), set()
     for i, raw_entry in enumerate(rows):
@@ -292,8 +319,11 @@ def validate_registry(raw: Any, lock: Lock) -> None:
     exact(obj, {"schema_version", "bindings"}, set(), "central_registry")
     eq(as_int(obj["schema_version"], "central_registry.schema_version", 1, 1), 1, "registry schema")
     bindings = as_arr(obj["bindings"], "central_registry.bindings")
-    if len(bindings) != COUNT:
-        raise AuditError("contract_mismatch", f"expected {COUNT} central bindings")
+    if len(bindings) != CENTRAL_BINDING_COUNT:
+        raise AuditError(
+            "contract_mismatch",
+            f"expected {CENTRAL_BINDING_COUNT} central bindings",
+        )
     required = {"workspace_id", "channel_id", "linear_team_id", "linear_team_key", "linear_project_id", "default_repository", "repository_allowlist", "default_agent_mode", "allowed_agent_modes", "allowed_user_ids", "allowed_user_group_ids", "write_policy", "budget_policy", "updated_by", "updated_at"}
     indexed, repos = {}, set()
     for i, raw_binding in enumerate(bindings):
@@ -309,7 +339,16 @@ def validate_registry(raw: Any, lock: Lock) -> None:
         eq(binding["linear_team_id"], lock.policy["linear_team_id"], f"{label}.team_id")
         eq(binding["linear_team_key"], lock.policy["linear_team_key"], f"{label}.team_key")
         repo = pattern(binding["default_repository"], REPO, f"{label}.repository", "invalid_repository")
-        eq(string_list(binding["repository_allowlist"], f"{label}.allowlist"), [repo], f"{label}.allowlist")
+        expected_allowlist = (
+            list(PILOT_REPOSITORY_ALLOWLIST)
+            if channel == PILOT_CHANNEL
+            else [repo]
+        )
+        eq(
+            string_list(binding["repository_allowlist"], f"{label}.allowlist"),
+            expected_allowlist,
+            f"{label}.allowlist",
+        )
         if repo.lower() in repos:
             raise AuditError("duplicate_repository", repo)
         repos.add(repo.lower())
@@ -320,8 +359,13 @@ def validate_registry(raw: Any, lock: Lock) -> None:
         as_str(binding["updated_by"], f"{label}.updated_by")
         as_str(binding["updated_at"], f"{label}.updated_at")
         indexed[channel] = binding
-    if set(indexed) != {entry.slack["channel_id"] for entry in lock.entries}:
+    project_channels = {entry.slack["channel_id"] for entry in lock.entries}
+    if set(indexed) != project_channels | {PILOT_CHANNEL}:
         raise AuditError("contract_mismatch", "central/lock channel set")
+    pilot = indexed[PILOT_CHANNEL]
+    eq(pilot["linear_project_id"], PILOT_LINEAR_PROJECT_ID, "pilot project UUID")
+    eq(pilot["default_repository"], PILOT_DEFAULT_REPOSITORY, "pilot repository")
+    eq(pilot["updated_by"], "DEN-1298", "pilot owning issue")
     for entry in lock.entries:
         binding = indexed[entry.slack["channel_id"]]
         eq(binding["linear_project_id"], entry.central["linear_project_id"], f"{entry.slack['channel_name']} project UUID")
@@ -441,9 +485,16 @@ def validate_pr(raw: Any, entry: LockEntry) -> None:
 def audit(registry_path: Path, lock_path: Path, remote_fetcher: RemoteFetcher | None = None) -> dict[str, Any]:
     lock = validate_lock(load_json(lock_path, MAX_LOCK, "manifest lock"))
     registry = parse_json_bytes(read_bounded(registry_path, MAX_REGISTRY, "central registry"), "central registry")
-    registry_digest = canonical_json_sha256(registry)
-    eq(registry_digest, lock.registry["canonical_sha256"], "central registry canonical SHA-256")
     validate_registry(registry, lock)
+    project_channels = {entry.slack["channel_id"] for entry in lock.entries}
+    registry_digest = canonical_json_sha256(
+        manifest_locked_registry(registry, project_channels)
+    )
+    eq(
+        registry_digest,
+        lock.registry["canonical_sha256"],
+        "project registry canonical SHA-256",
+    )
     manifests = []
     for entry in lock.entries:
         status = "locked"
@@ -454,7 +505,8 @@ def audit(registry_path: Path, lock_path: Path, remote_fetcher: RemoteFetcher | 
             eq(canonical_json_sha256(validated), entry.source["manifest_sha256"], f"{entry.source['repository']} canonical manifest digest")
             status = "verified"
         manifests.append({"repository": entry.source["repository"], "pull_request": entry.source["pull_request"], "head_sha": entry.source["head_sha"], "manifest_sha256": entry.source["manifest_sha256"], "channel_id": entry.slack["channel_id"], "linear_project_id": entry.central["linear_project_id"], "routing_issue": entry.linear["routing_issue"], "delivery_issue": entry.linear["delivery_issue"], "status": status})
-    return {"schema_version": 1, "status": "pass", "mode": "remote" if remote_fetcher else "offline", "central_registry": {"path": lock.registry["path"], "canonical_sha256": registry_digest, "bindings": len(manifests)}, "manifests": manifests}
+    binding_count = len(as_arr(registry["bindings"], "central_registry.bindings"))
+    return {"schema_version": 1, "status": "pass", "mode": "remote" if remote_fetcher else "offline", "central_registry": {"path": lock.registry["path"], "canonical_sha256": registry_digest, "bindings": binding_count, "manifest_bindings": len(manifests)}, "manifests": manifests}
 
 
 def write_report(path: Path, report: Mapping[str, Any]) -> None:

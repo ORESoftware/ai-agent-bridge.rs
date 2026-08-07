@@ -299,6 +299,41 @@
       },
       "updated_by": "DEN-1298",
       "updated_at": "2026-08-01T19:12:00Z"
+    },
+    {
+      "workspace_id": "T01B3C83PMK",
+      "channel_id": "C0BKP2N3LG7",
+      "linear_team_id": "eb8ab169-5afe-4b6f-9cab-3f2aa3e887dc",
+      "linear_team_key": "DEN",
+      "linear_project_id": "7abf8be2-ffa5-4507-bd09-43aa59ca8718",
+      "default_repository": "ORESoftware/ai-agent-bridge.rs",
+      "repository_allowlist": [
+        "ORESoftware/ai-agent-bridge.rs",
+        "ORESoftware/ai-agent-coordinator.rs",
+        "ORESoftware/k8s-cluster"
+      ],
+      "default_agent_mode": "both-parallel",
+      "allowed_agent_modes": [
+        "claude",
+        "chatgpt",
+        "both-parallel",
+        "both-sequential",
+        "review"
+      ],
+      "allowed_user_ids": [
+        "U01AZNU2LJ2"
+      ],
+      "allowed_user_group_ids": [],
+      "write_policy": "draft_pull_request",
+      "budget_policy": {
+        "max_concurrent_runs": 4,
+        "max_runtime_secs": 900,
+        "max_tokens": 250000,
+        "max_spend_cents": 1000,
+        "max_retries": 2
+      },
+      "updated_by": "DEN-1298",
+      "updated_at": "2026-08-04T11:00:00Z"
     }
   ]
 }

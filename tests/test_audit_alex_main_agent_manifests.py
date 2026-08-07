@@ -76,18 +76,63 @@ class ManifestAuditTest(unittest.TestCase):
             directory = Path(raw)
             registry_path = self._write(directory, "registry.json", registry if registry is not None else self.registry)
             lock_value = copy.deepcopy(lock if lock is not None else self.lock)
-            lock_value["central_registry"]["canonical_sha256"] = manifest_audit.canonical_json_sha256(
-                registry if registry is not None else self.registry
+            registry_value = registry if registry is not None else self.registry
+            project_channels = {
+                entry["slack"]["channel_id"] for entry in lock_value["entries"]
+            }
+            lock_value["central_registry"]["canonical_sha256"] = (
+                manifest_audit.canonical_json_sha256(
+                    manifest_audit.manifest_locked_registry(
+                        registry_value, project_channels
+                    )
+                )
             )
             lock_path = self._write(directory, "lock.json", lock_value)
             return manifest_audit.audit(registry_path, lock_path, fetcher)
 
-    def test_remote_audit_verifies_all_thirteen_exact_heads(self):
+    def test_remote_audit_verifies_thirteen_project_heads_and_pilot_binding(self):
         report = self._audit(fetcher=self._fetcher())
         self.assertEqual(report["status"], "pass")
         self.assertEqual(report["mode"], "remote")
-        self.assertEqual(report["central_registry"]["bindings"], 13)
+        self.assertEqual(report["central_registry"]["bindings"], 14)
+        self.assertEqual(report["central_registry"]["manifest_bindings"], 13)
         self.assertEqual({item["status"] for item in report["manifests"]}, {"verified"})
+
+    def test_pilot_binding_is_excluded_from_project_manifest_digest(self):
+        project_channels = {
+            entry["slack"]["channel_id"] for entry in self.lock["entries"]
+        }
+        projected = manifest_audit.manifest_locked_registry(
+            self.registry, project_channels
+        )
+        self.assertEqual(len(projected["bindings"]), 13)
+        self.assertEqual(
+            manifest_audit.canonical_json_sha256(projected),
+            self.lock["central_registry"]["canonical_sha256"],
+        )
+
+    def test_missing_pilot_binding_fails_closed(self):
+        registry = copy.deepcopy(self.registry)
+        registry["bindings"] = [
+            binding
+            for binding in registry["bindings"]
+            if binding["channel_id"] != manifest_audit.PILOT_CHANNEL
+        ]
+        with self.assertRaisesRegex(
+            manifest_audit.AuditError, "expected 14 central bindings"
+        ):
+            self._audit(registry=registry)
+
+    def test_pilot_repository_allowlist_drift_fails_closed(self):
+        registry = copy.deepcopy(self.registry)
+        pilot = next(
+            binding
+            for binding in registry["bindings"]
+            if binding["channel_id"] == manifest_audit.PILOT_CHANNEL
+        )
+        pilot["repository_allowlist"].append("ORESoftware/unreviewed-repository")
+        with self.assertRaisesRegex(manifest_audit.AuditError, "contract_mismatch"):
+            self._audit(registry=registry)
 
     def test_pr_head_move_fails_closed(self):
         def mutate(entry, pr):
