@@ -10,9 +10,41 @@ pub(crate) fn validate_bridge_origin(
     bearer: Option<&str>,
     internal_http_hosts: Option<&str>,
 ) -> Result<(), String> {
+    validate_service_origin(
+        url,
+        bearer,
+        internal_http_hosts,
+        INTERNAL_HTTP_HOSTS_ENV,
+        "bridge",
+    )
+}
+
+pub(crate) fn validate_service_origin(
+    url: &Url,
+    bearer: Option<&str>,
+    internal_http_hosts: Option<&str>,
+    allowlist_env: &str,
+    service_label: &str,
+) -> Result<(), String> {
+    let loopback =
+        validate_service_transport(url, internal_http_hosts, allowlist_env, service_label)?;
+    if !loopback && bearer.is_none() {
+        return Err(format!(
+            "remote {service_label} URLs require a bearer token"
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_service_transport(
+    url: &Url,
+    internal_http_hosts: Option<&str>,
+    allowlist_env: &str,
+    service_label: &str,
+) -> Result<bool, String> {
     let host = url
         .host_str()
-        .ok_or_else(|| "bridge URL requires a host".to_string())?
+        .ok_or_else(|| format!("{service_label} URL requires a host"))?
         .to_ascii_lowercase();
     let loopback = is_loopback_host(&host);
 
@@ -20,23 +52,23 @@ pub(crate) fn validate_bridge_origin(
         "https" => {}
         "http" if loopback => {}
         "http" => {
-            let allowlist = parse_internal_http_hosts(internal_http_hosts)?;
+            let allowlist = parse_internal_http_hosts(internal_http_hosts, allowlist_env)?;
             if !allowlist.contains(&host) {
                 return Err(format!(
-                    "remote bridge HTTP host is not listed in {INTERNAL_HTTP_HOSTS_ENV}"
+                    "remote {service_label} HTTP host is not listed in {allowlist_env}"
                 ));
             }
         }
-        _ => return Err("bridge URL scheme must be http or https".to_string()),
+        _ => return Err(format!("{service_label} URL scheme must be http or https")),
     }
 
-    if !loopback && bearer.is_none() {
-        return Err("remote bridge URLs require a bearer token".to_string());
-    }
-    Ok(())
+    Ok(loopback)
 }
 
-fn parse_internal_http_hosts(raw: Option<&str>) -> Result<BTreeSet<String>, String> {
+fn parse_internal_http_hosts(
+    raw: Option<&str>,
+    allowlist_env: &str,
+) -> Result<BTreeSet<String>, String> {
     let mut hosts = BTreeSet::new();
     let Some(raw) = raw else {
         return Ok(hosts);
@@ -45,11 +77,11 @@ fn parse_internal_http_hosts(raw: Option<&str>) -> Result<BTreeSet<String>, Stri
     for entry in raw.split(',') {
         let host = entry.trim().to_ascii_lowercase();
         if host.is_empty() {
-            return Err(format!("{INTERNAL_HTTP_HOSTS_ENV} contains an empty host"));
+            return Err(format!("{allowlist_env} contains an empty host"));
         }
         if !is_kubernetes_service_fqdn(&host) {
             return Err(format!(
-                "{INTERNAL_HTTP_HOSTS_ENV} entries must be exact *.svc.cluster.local DNS names"
+                "{allowlist_env} entries must be exact *.svc.cluster.local DNS names"
             ));
         }
         hosts.insert(host);
@@ -87,6 +119,8 @@ fn is_loopback_host(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SLACK_INTERNAL_HTTP_HOSTS_ENV: &str = "SLACK_INTERNAL_HTTP_HOSTS";
 
     fn url(value: &str) -> Url {
         Url::parse(value).unwrap()
@@ -128,6 +162,29 @@ mod tests {
         )
         .unwrap_err()
         .contains(INTERNAL_HTTP_HOSTS_ENV));
+    }
+
+    #[test]
+    fn one_slack_allowlist_can_admit_exact_bridge_and_coordinator_hosts() {
+        let allowed = "dd-ai-agent-bridge.default.svc.cluster.local,ai-agent-coordinator.ai-agent-coordinator.svc.cluster.local";
+        for (label, value) in [
+            (
+                "Slack bridge",
+                "http://dd-ai-agent-bridge.default.svc.cluster.local:8142/",
+            ),
+            (
+                "Slack coordinator",
+                "http://ai-agent-coordinator.ai-agent-coordinator.svc.cluster.local:8080/",
+            ),
+        ] {
+            assert!(!validate_service_transport(
+                &url(value),
+                Some(allowed),
+                SLACK_INTERNAL_HTTP_HOSTS_ENV,
+                label,
+            )
+            .unwrap());
+        }
     }
 
     #[test]
