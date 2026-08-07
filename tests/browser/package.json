@@ -10,7 +10,8 @@
     "test": "playwright test specs/registry.spec.mjs",
     "test:registry": "playwright test specs/registry.spec.mjs",
     "test:slack-ingress": "playwright test specs/slack-ingress.spec.mjs",
-    "test:slack-bridge-events": "playwright test specs/slack-bridge-events.spec.mjs"
+    "test:slack-bridge-events": "playwright test specs/slack-bridge-events.spec.mjs",
+    "test:modal": "playwright test specs/modal.spec.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.55.0"
