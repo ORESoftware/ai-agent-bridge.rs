@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/slack-observable-event-contract.yml
+      - scripts/materialize-optional-seaorm-metadata.sh
       - src/slack_commands.rs
       - src/slack_commands_parts/part2.rs
       - src/slack_commands_parts/part5.rs
@@ -17,6 +18,7 @@ on:
     branches: [main]
     paths:
       - .github/workflows/slack-observable-event-contract.yml
+      - scripts/materialize-optional-seaorm-metadata.sh
       - src/slack_commands.rs
       - src/slack_commands_parts/part2.rs
       - src/slack_commands_parts/part5.rs
@@ -43,6 +45,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          submodules: false
+
+      - name: Materialize optional SeaORM package metadata
+        run: bash scripts/materialize-optional-seaorm-metadata.sh
 
       - name: Install pinned Rust toolchain
         uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b
@@ -54,7 +60,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo fmt --all --check
+          cargo fmt --all -- --check
           cargo test --locked observable_event_contract_tests -- --nocapture
           cargo test --locked ingress_security_tests -- --nocapture
           cargo test --locked alias_http_contract_tests -- --nocapture
