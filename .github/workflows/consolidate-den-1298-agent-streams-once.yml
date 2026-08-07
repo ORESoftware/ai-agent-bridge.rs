@@ -26,122 +26,60 @@ jobs:
           submodules: false
           fetch-depth: 0
 
-      - name: Verify exact source heads
+      - name: Verify exact reviewed source lineage
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "6209f567e41eb381ec5985d3d8eeb036f03e09bb"
+          base_merge=6209f567e41eb381ec5985d3d8eeb036f03e09bb
+          source_head=a539f1c414dff4e5ea006a8023e68c96607c9e8c
+          carrier=.github/workflows/consolidate-den-1298-agent-streams-once.yml
+
+          git merge-base --is-ancestor "${base_merge}" HEAD
+          test "$(git diff --name-only "${base_merge}"...HEAD)" = "${carrier}"
           git fetch --no-tags origin \
             refs/heads/agent/alex-main-agent-diagnostic-harness:refs/remotes/origin/agent/alex-main-agent-diagnostic-harness
           test "$(git rev-parse refs/remotes/origin/agent/alex-main-agent-diagnostic-harness)" = \
-            "a539f1c414dff4e5ea006a8023e68c96607c9e8c"
+            "${source_head}"
 
-      - name: Apply reviewed hardening without the stale lockfile
+      - name: Apply the semantic merge and self-delete
         shell: bash
         run: |
           set -euo pipefail
           source_ref=refs/remotes/origin/agent/alex-main-agent-diagnostic-harness
 
           git checkout "${source_ref}" -- \
+            docs/alex-main-agent-browser-tests.md \
             src/bin/alex-main-agent-registry-browser.rs \
             tests/browser/specs/registry.spec.mjs
-
           git show "${source_ref}:.github/workflows/alex-main-agent-registry-boundary.yml" > \
             .github/workflows/alex-main-agent-registry-boundary.yml
-          sed -i 's/\.bindings == 13/.bindings == 14/' \
-            .github/workflows/alex-main-agent-registry-boundary.yml
 
-          cat > docs/alex-main-agent-browser-tests.md <<'EOF'
-          # alex-main-agent browser and registry tests
+          python - <<'PY'
+          from pathlib import Path
 
-          Tracking issue: `DEN-1298`
+          workflow = Path('.github/workflows/alex-main-agent-registry-boundary.yml')
+          text = workflow.read_text()
+          needle = '.bindings == 13'
+          assert text.count(needle) == 1, 'expected one focused binding assertion'
+          workflow.write_text(text.replace(needle, '.bindings == 14'))
 
-          This test surface proves that the reviewed Slack channel registry is enforced by the production Rust `SlackProjectRegistry` resolver. It is not a mock Slack page and it is not a production HTTP service.
+          docs = Path('docs/alex-main-agent-browser-tests.md')
+          text = docs.read_text()
+          old = '`config/alex-main-agent.channels.json` — reviewed 13-channel registry.'
+          new = ('`config/alex-main-agent.channels.json` — thirteen manifest-backed project '
+                 'channels plus the separately reviewed `#oresoftware` control-plane pilot.')
+          assert text.count(old) == 1, 'expected reviewed registry description'
+          text = text.replace(old, new)
+          old = '6. verifies that all 13 bindings loaded;'
+          new = ('6. verifies that all 14 bindings loaded while the remote manifest audit '
+                 'remains scoped to the thirteen project-owned entries;')
+          assert text.count(old) == 1, 'expected binding-count runbook step'
+          docs.write_text(text.replace(old, new))
+          PY
 
-          ## Components
-
-          - `config/alex-main-agent.channels.json` — thirteen manifest-backed project channels plus the separately reviewed `#oresoftware` control-plane pilot.
-          - `src/bin/alex-main-agent-registry-browser.rs` — loopback-only diagnostic server that loads the real registry and exposes a minimal policy-resolution form.
-          - `tests/alex_main_agent_registry.rs` — Rust integration tests for registry parsing and core authorization boundaries.
-          - `tests/browser/specs/registry.spec.mjs` — Playwright scenarios executed in Chromium.
-
-          ## Security boundary
-
-          The diagnostic server:
-
-          - refuses non-loopback bind addresses;
-          - rejects non-loopback and malformed loopback `Host` authorities, including empty, non-numeric, and out-of-range ports;
-          - rejects cross-site `Sec-Fetch-Site` requests and any `Origin` that does not exactly match the request's loopback authority;
-          - accepts at most 16 KiB request bodies;
-          - accepts at most a 1 MiB regular-file registry and rejects symbolic-link registry paths;
-          - emits restrictive Content Security Policy, COEP, COOP, CORP, Permissions Policy, referrer, framing, MIME-sniffing, and cache headers on successful and rejected responses;
-          - stores no Slack signing secret, bot token, Linear key, GitHub token, or provider credential;
-          - returns stable public error codes instead of internal policy details.
-
-          The production Slack command process independently enforces the same 1 MiB regular-file registry boundary before parsing.
-
-          ## Local run
-
-          Use the pinned Rust toolchain and a supported Node runtime:
-
-          ```bash
-          cargo build --locked --bin alex-main-agent-registry-browser
-
-          npm --prefix tests/browser install --ignore-scripts --no-audit --no-fund
-          npx --prefix tests/browser playwright install chromium
-
-          ALEX_MAIN_AGENT_REGISTRY_PATH="$PWD/config/alex-main-agent.channels.json" \
-          ALEX_MAIN_AGENT_PROBE_ADDR=127.0.0.1:8160 \
-            target/debug/alex-main-agent-registry-browser
-          ```
-
-          In another shell:
-
-          ```bash
-          ALEX_MAIN_AGENT_PROBE_URL=http://127.0.0.1:8160 \
-            npm --prefix tests/browser test
-          ```
-
-          Do not bind the diagnostic to a public, container-wide, or cluster-wide interface. It is designed only for local and CI verification.
-
-          ## Browser scenarios
-
-          Chromium verifies:
-
-          1. restrictive browser security headers;
-          2. successful Hypesiege resolution through the real Rust registry;
-          3. rejection of the misspelled Daedalus channel;
-          4. rejection of an unauthorized Slack principal;
-          5. rejection of a repository escape attempt;
-          6. rejection of a Linear issue from another team;
-          7. rejection of a non-loopback Host header with hardened error headers;
-          8. rejection of malformed loopback Host authorities and invalid ports;
-          9. rejection of cross-site and mismatched-loopback-origin requests before policy evaluation;
-          10. rejection of an oversized JSON request body.
-
-          The Rust binary's focused unit tests additionally prove strict loopback authority parsing, same-origin matching, fetch-metadata admission, and symbolic-link registry rejection.
-
-          ## GitHub Actions
-
-          The `alex-main-agent registry boundary` workflow:
-
-          1. checks out without persisted credentials;
-          2. materializes only the exact pinned optional dependency metadata required for non-Postgres resolution;
-          3. validates the Rust diagnostic with formatting, warnings-denied Clippy, and focused tests;
-          4. installs the exact Playwright test version with lifecycle scripts disabled;
-          5. installs Chromium;
-          6. starts the probe on `127.0.0.1`;
-          7. verifies that all 14 bindings loaded while the remote manifest audit remains scoped to the thirteen project-owned entries;
-          8. runs the browser suite with one worker and retained failure traces;
-          9. terminates the probe and prints its log on failure.
-
-          The repository-wide workflows continue to own actionlint, provider-secret auditing, all-target Rust validation, PostgreSQL restart durability, cargo-audit, images, and flags-2-env checks. Their private shared-schema credential boundary is tracked separately in issue `#84`.
-          EOF
-
-          sed -i 's/^          //' docs/alex-main-agent-browser-tests.md
           rm .github/workflows/consolidate-den-1298-agent-streams-once.yml
 
-      - name: Validate the semantic merge
+      - name: Validate combined 14-route policy
         shell: bash
         run: |
           set -euo pipefail
@@ -150,7 +88,7 @@ jobs:
           python scripts/audit_alex_main_agent_manifests.py \
             --registry config/alex-main-agent.channels.json \
             --lock config/alex-main-agent.manifest-lock.json \
-            --output "${RUNNER_TEMP}/alex-main-agent-audit.json"
+            --report "${RUNNER_TEMP}/alex-main-agent-audit.json"
           jq -e '
             .status == "pass" and
             .mode == "offline" and
@@ -171,7 +109,7 @@ jobs:
           actual=$(git status --short | sed 's/^...//' | sort)
           test "${actual}" = "$(printf '%s\n' "${expected}" | sort)"
 
-      - name: Commit clean product files and self-delete
+      - name: Commit clean product files
         shell: bash
         run: |
           set -euo pipefail
