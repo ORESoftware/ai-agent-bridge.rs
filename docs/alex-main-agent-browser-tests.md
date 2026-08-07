@@ -6,7 +6,7 @@ This test surface proves that the reviewed Slack channel registry is enforced by
 
 ## Components
 
-- `config/alex-main-agent.channels.json` — reviewed 13-channel registry.
+- `config/alex-main-agent.channels.json` — thirteen manifest-backed project channels plus the separately reviewed `#oresoftware` control-plane pilot.
 - `src/bin/alex-main-agent-registry-browser.rs` — loopback-only diagnostic server that loads the real registry and exposes a minimal policy-resolution form.
 - `tests/alex_main_agent_registry.rs` — Rust integration tests for registry parsing and core authorization boundaries.
 - `tests/browser/specs/registry.spec.mjs` — Playwright scenarios executed in Chromium.
@@ -71,7 +71,7 @@ The `browser-registry` job in `.github/workflows/ci.yml`:
 3. installs the exact Playwright test version with lifecycle scripts disabled;
 4. installs Chromium;
 5. starts the probe on `127.0.0.1`;
-6. verifies that all 13 bindings loaded;
+6. verifies that all 14 bindings loaded while the remote manifest audit remains scoped to the thirteen project-owned entries;
 7. runs the browser suite with one worker and retained failure traces;
 8. terminates the probe and prints its log on failure.
 
