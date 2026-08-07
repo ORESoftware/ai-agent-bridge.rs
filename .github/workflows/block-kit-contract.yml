@@ -7,7 +7,7 @@
 # This job is deliberately NOT a merge gate: it drives a third-party UI that can
 # change or gate itself behind a workspace login at any time. The deterministic
 # ceilings gate in CI instead, via the Rust test
-# `modal_payload_respects_slack_block_kit_limits`.
+# `both_provider_modals_respect_slack_block_kit_limits`.
 name: Block Kit contract
 
 on:
@@ -17,8 +17,8 @@ on:
     - cron: '17 6 * * 1'
   pull_request:
     paths:
-      - 'src/slack_bridge.rs'
-      - 'src/slack_bridge/**'
+      - 'src/slack_commands.rs'
+      - 'src/slack_commands_parts/**'
       - 'tests/blockkit/**'
       - '.github/workflows/block-kit-contract.yml'
 
@@ -50,7 +50,7 @@ jobs:
       # Generates target/blockkit/*.json from the same build_modal() the adapter
       # calls, so the browser check can never drift from the shipped payload.
       - name: Emit Block Kit fixtures from the adapter
-        run: cargo test --locked --lib slack_bridge::commands
+        run: cargo test --locked --lib slack_commands::block_kit
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -121,7 +121,7 @@ jobs:
               echo "builder and set it as the \`SLACK_BUILDER_STORAGE_STATE\` secret."
               echo
               echo "The deterministic Block Kit ceilings are enforced regardless, by"
-              echo "\`modal_payload_respects_slack_block_kit_limits\` in the CI workflow."
+              echo "\`both_provider_modals_respect_slack_block_kit_limits\` in CI."
             elif [ "$RENDER_OUTCOME" = "success" ]; then
               echo "Rendered both modals in the builder with no payload errors."
             else

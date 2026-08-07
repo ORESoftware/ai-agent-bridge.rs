@@ -150,6 +150,31 @@ Reviewed non-secret settings:
 
 The image defaults to port `8151`, context depth `5`, and `SLACK_COMMAND_DRY_RUN=true`.
 
+## Testing the dialog
+
+A malformed `views.open` payload surfaces to a member only as "the dispatch
+dialog could not be opened", so the modal is checked at two levels.
+
+**Gating, offline** — `both_provider_modals_respect_slack_block_kit_limits` builds every modal —
+both providers x all three write policies x all four context depths, against a
+full 100-repository allowlist — and asserts Slack's documented ceilings: modal title ≤ 24 characters,
+`private_metadata` ≤ 3000, ≤ 100 blocks, `block_id`/`action_id` ≤ 255,
+`plain_text_input.max_length` ≤ 3000, ≤ 100 options per menu, option labels ≤ 75
+characters, option values ≤ 150, and every `initial_option` actually present in
+its own `options` list. This runs in the normal CI workflow.
+
+**Advisory, browser** — `.github/workflows/block-kit-contract.yml` renders the
+real payload in Slack's Block Kit Builder with Playwright and uploads a
+screenshot. The fixtures come from `emits_block_kit_fixtures_for_the_browser_contract`, which serialises the output of the same `modal()` the adapter calls, so the browser check cannot drift from what ships.
+
+That job never gates a merge, and it is **inert without credentials**: an
+anonymous request to the builder redirects to `app.slack.com/workspace-signin`.
+Save a Playwright `storageState` JSON for a workspace that can open the builder
+and set it as the `SLACK_BUILDER_STORAGE_STATE` secret to enable it. Until then
+the specs skip with an explicit reason and the job summary says so rather than
+implying a pass. If the secret is present but the session has expired, the specs
+*fail* instead of skipping, so a stale credential cannot hide indefinitely.
+
 ## Activation gates
 
 Do not enable live mode until all of these are true:

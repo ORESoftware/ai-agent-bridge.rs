@@ -24,7 +24,7 @@ use reqwest::{redirect::Policy, Client, Response as HttpResponse, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::{net::TcpListener, sync::Semaphore};
+use tokio::{net::TcpListener, sync::Semaphore, time::sleep};
 use tower_http::{catch_panic::CatchPanicLayer, trace::TraceLayer};
 use tracing::{info, warn};
 
@@ -52,6 +52,8 @@ const MAX_CONTEXT_MESSAGE_BYTES: usize = 4_000;
 const MAX_CONTEXT_TOTAL_BYTES: usize = 32_000;
 const MAX_REMOTE_RESPONSE_BYTES: usize = 1_048_576;
 const MAX_SLACK_RESPONSE_BYTES: usize = 65_536;
+const MAX_SLACK_POST_ATTEMPTS: u32 = 3;
+const MAX_SLACK_RETRY_AFTER_SECS: u64 = 10;
 const MAX_IDENTIFIER_BYTES: usize = 255;
 
 #[derive(Debug, thiserror::Error)]

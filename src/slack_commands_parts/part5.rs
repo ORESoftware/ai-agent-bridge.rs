@@ -217,6 +217,56 @@ fn decode_signature(value: &str) -> Option<[u8; 32]> {
     Some(output)
 }
 
+/// Posts to Slack with a bounded retry budget, honouring a bounded `Retry-After`.
+///
+/// Slack rate-limits `chat.postMessage` per channel, and a single-attempt post
+/// silently drops the message on a 429. The dual-model adapter already retries
+/// three times for the same reason; this keeps the command surface consistent
+/// with it rather than being the one path that loses a delivery.
+async fn post_message_with_retry(
+    client: &Client,
+    url: Url,
+    token: &str,
+    payload: &Value,
+) -> Result<SlackResponse> {
+    let mut last = Error::Slack;
+    for attempt in 0..MAX_SLACK_POST_ATTEMPTS {
+        let response = client
+            .post(url.clone())
+            .bearer_auth(token)
+            .json(payload)
+            .send()
+            .await;
+
+        match response {
+            Ok(response) => {
+                let retry_after = response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .map(|seconds| seconds.clamp(1, MAX_SLACK_RETRY_AFTER_SECS));
+                match slack_ok(response).await {
+                    Ok(ok) => return Ok(ok),
+                    Err(error) => {
+                        last = error;
+                        if attempt + 1 < MAX_SLACK_POST_ATTEMPTS {
+                            sleep(Duration::from_secs(retry_after.unwrap_or(1))).await;
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                last = Error::Slack;
+                if attempt + 1 < MAX_SLACK_POST_ATTEMPTS {
+                    sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
+    }
+    Err(last)
+}
+
 async fn slack_ok(response: HttpResponse) -> Result<SlackResponse> {
     let status = response.status();
     let body = read_bounded(response, MAX_SLACK_RESPONSE_BYTES)

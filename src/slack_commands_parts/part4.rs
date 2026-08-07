@@ -368,11 +368,8 @@ impl App {
         workflow_id: &str,
         job_id: &str,
     ) -> Result<String> {
-        let response = self
-            .client
-            .post(self.config.slack_url("chat.postMessage")?)
-            .bearer_auth(&self.config.bot_token)
-            .json(&json!({
+        let url = self.config.slack_url("chat.postMessage")?;
+        let payload = json!({
                 "channel": request.channel_id,
                 "text": format!(
                     ":large_blue_circle: *{} work dispatched*\nRun: `{}`\nCoordinator job: `{}`\nBridge workflow: `{}`\nRepository: `{}`\nOwning Linear project: `{}`\nRun queue project: `{}`\nContext: {} latest non-bot channel messages\nWrite policy: `{}`",
@@ -388,10 +385,15 @@ impl App {
                 ),
                 "unfurl_links": false,
                 "unfurl_media": false
-            }))
-            .send()
-            .await
-            .map_err(|_| Error::Slack)?;
-        slack_ok(response).await?.ts.ok_or(Error::Slack)
+        });
+
+        // This acknowledgement is the only record a member sees that their run
+        // was accepted, and it carries the run, job and workflow ids used to
+        // trace it. Dropping it on a transient 429 loses that trail while the
+        // work still executes, so delivery is retried within a bounded budget.
+        post_message_with_retry(&self.client, url, &self.config.bot_token, &payload)
+            .await?
+            .ts
+            .ok_or(Error::Slack)
     }
 }
