@@ -24,6 +24,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::net::TcpListener;
 
+use crate::bridge_origin_policy::{validate_bridge_origin, INTERNAL_HTTP_HOSTS_ENV};
 use crate::providers::parse_provider_configs;
 
 const DEFAULT_HEALTH_PORT: u16 = 8_144;
@@ -144,18 +145,15 @@ impl RunnerHealth {
         if base_url.query().is_some() || base_url.fragment().is_some() {
             anyhow::bail!("AI_AGENT_RUNNER_BRIDGE_URL must not contain a query or fragment");
         }
-        let bridge_host = base_url
-            .host_str()
-            .ok_or_else(|| anyhow::anyhow!("AI_AGENT_RUNNER_BRIDGE_URL requires a host"))?
-            .to_ascii_lowercase();
-        let bearer = env_opt("AI_AGENT_RUNNER_BRIDGE_BEARER")
-            .or_else(|| env_opt("API_AUTH_BEARER"));
-        if base_url.scheme() != "https" && !is_loopback_host(&bridge_host) {
-            anyhow::bail!("remote runner bridge URLs must use HTTPS");
-        }
-        if !is_loopback_host(&bridge_host) && bearer.is_none() {
-            anyhow::bail!("remote runner health probes require a bridge bearer token");
-        }
+        let bearer =
+            env_opt("AI_AGENT_RUNNER_BRIDGE_BEARER").or_else(|| env_opt("API_AUTH_BEARER"));
+        let internal_http_hosts = env_opt(INTERNAL_HTTP_HOSTS_ENV);
+        validate_bridge_origin(
+            &base_url,
+            bearer.as_deref(),
+            internal_http_hosts.as_deref(),
+        )
+        .map_err(|error| anyhow::anyhow!("invalid runner bridge configuration: {error}"))?;
         if !base_url.path().ends_with('/') {
             base_url.set_path(&format!("{}/", base_url.path()));
         }
@@ -405,14 +403,6 @@ fn env_bool(key: &str, default: bool) -> anyhow::Result<bool> {
         Some("0" | "false" | "no" | "off") => Ok(false),
         Some(_) => anyhow::bail!("{key} must be a boolean"),
     }
-}
-
-fn is_loopback_host(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost")
-        || host
-            .trim_matches(|character| character == '[' || character == ']')
-            .parse::<IpAddr>()
-            .is_ok_and(|address| address.is_loopback())
 }
 
 #[cfg(test)]
