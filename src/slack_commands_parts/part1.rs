@@ -126,6 +126,10 @@ struct Config {
     context_messages: usize,
     dry_run: bool,
     max_concurrent_runs: usize,
+    // Socket Mode ingress. Off by default: the reviewed production posture is
+    // the signed Request URL. See docs/slack-socket-mode.md.
+    socket_mode: bool,
+    app_token: Option<String>,
 }
 
 impl Config {
@@ -180,6 +184,13 @@ impl Config {
                 "SLACK_CONTEXT_MESSAGE_COUNT must be 0, 5, 10, or 20".into(),
             ));
         }
+
+        // Socket Mode trades Slack's per-request HMAC for connection-level auth
+        // on an app token, so it is opt-in and must carry that token explicitly.
+        let socket_mode = env_bool("SLACK_SOCKET_MODE", false)?;
+        let app_token = env_opt("SLACK_APP_TOKEN");
+        validate_app_token(socket_mode, app_token.as_deref())?;
+
         Ok(Self {
             host,
             port,
@@ -205,6 +216,8 @@ impl Config {
                 &env_or("SLACK_LINEAR_RUN_PROJECT_ID", DEFAULT_LINEAR_RUN_PROJECT),
             )?,
             context_messages,
+            socket_mode,
+            app_token,
             dry_run: env_bool("SLACK_COMMAND_DRY_RUN", true)?,
             max_concurrent_runs: env_usize("SLACK_COMMAND_MAX_CONCURRENT_RUNS", 8, 1, 128)?,
         })

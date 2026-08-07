@@ -143,6 +143,8 @@ mod alias_http_contract_tests {
             chatgpt_agent: "gpt-5.6-sol".into(),
             linear_run_project_id: DEFAULT_LINEAR_RUN_PROJECT.into(),
             context_messages: 5,
+            socket_mode: false,
+            app_token: None,
             dry_run: true,
             max_concurrent_runs: 8,
         };
