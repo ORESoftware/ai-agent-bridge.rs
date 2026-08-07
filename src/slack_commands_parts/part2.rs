@@ -1,3 +1,5 @@
+const SLACK_INTERNAL_HTTP_HOSTS_ENV: &str = "SLACK_INTERNAL_HTTP_HOSTS";
+
 fn identifier(name: &str, value: &str) -> Result<String> {
     let value = value.trim();
     if value.is_empty()
@@ -24,9 +26,14 @@ fn service_url(value: &str) -> Result<String> {
             "service URL must not contain credentials or query data".into(),
         ));
     }
-    if url.scheme() != "https" && !url_host_is_loopback(&url) {
-        return Err(Error::Config("remote service URLs must use HTTPS".into()));
-    }
+    let internal_http_hosts = env_opt(SLACK_INTERNAL_HTTP_HOSTS_ENV);
+    crate::bridge_origin_policy::validate_service_transport(
+        &url,
+        internal_http_hosts.as_deref(),
+        SLACK_INTERNAL_HTTP_HOSTS_ENV,
+        "Slack service",
+    )
+    .map_err(Error::Config)?;
     if !url.path().ends_with('/') {
         let path = format!("{}/", url.path().trim_end_matches('/'));
         url.set_path(&path);
@@ -286,4 +293,3 @@ fn find_issue(text: &str) -> Option<String> {
             Some(token.to_string())
         })
 }
-
