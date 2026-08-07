@@ -26,12 +26,8 @@ pub(crate) fn validate_service_origin(
     allowlist_env: &str,
     service_label: &str,
 ) -> Result<(), String> {
-    let loopback = validate_service_transport(
-        url,
-        internal_http_hosts,
-        allowlist_env,
-        service_label,
-    )?;
+    let loopback =
+        validate_service_transport(url, internal_http_hosts, allowlist_env, service_label)?;
     if !loopback && bearer.is_none() {
         return Err(format!(
             "remote {service_label} URLs require a bearer token"
