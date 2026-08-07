@@ -21,8 +21,15 @@ function require(condition, message, errors) {
   if (!condition) errors.push(message);
 }
 
+function escapeRegularExpression(value) {
+  // Escape only syntax characters that are special outside a character class.
+  // `\-` is an invalid identity escape under Unicode regex mode, so replacing
+  // every hyphen broke policy evaluation for `sea-orm` and other Cargo names.
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
 function dependency(manifest, name) {
-  const pattern = new RegExp(`^\\s*${name.replaceAll("-", "\\-")}\\s*=`, "mu");
+  const pattern = new RegExp(`^\\s*${escapeRegularExpression(name)}\\s*=`, "mu");
   return pattern.test(manifest);
 }
 
