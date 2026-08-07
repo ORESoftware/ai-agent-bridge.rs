@@ -1,135 +1,80 @@
-name: container images
+name: container image authority
 
 on:
   pull_request:
     paths:
-      - Dockerfile
-      - .dockerignore
-      - Cargo.toml
-      - Cargo.lock
-      - src/**
       - .github/workflows/container-images.yml
+      - Cargo.lock
+      - Cargo.toml
+      - Dockerfile
+      - vendor/k8s-libs-and-shared-defs
   push:
     branches: [main]
-    tags: ['v*']
+    paths:
+      - .github/workflows/container-images.yml
+      - Cargo.lock
+      - Cargo.toml
+      - Dockerfile
+      - vendor/k8s-libs-and-shared-defs
+  workflow_dispatch:
 
+# Ordinary bridge CI must not receive a credential for the private shared-schema
+# repository. PostgreSQL-enabled image certification and publication are owned by
+# ORESoftware/k8s-cluster#1107 under its reviewed credential boundary.
 permissions:
   contents: read
-  packages: write
 
 concurrency:
-  group: container-images-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  EXPECTED_SHARED_COMMIT: e76b23cb2e23782438a3b03dacc26adfab1bb7fb
+  K8S_CERTIFICATION_ISSUE: ORESoftware/k8s-cluster#1107
+
 jobs:
-  image:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: bridge
-            image: fiducia-ai-agent-bridge
-            entrypoint: /usr/local/bin/fiducia-ai-agent-bridge
-          - target: runner
-            image: fiducia-ai-agent-runner
-            entrypoint: /usr/local/bin/fiducia-ai-agent-runner
-          - target: slack
-            image: fiducia-slack-bridge
-            entrypoint: /usr/local/bin/fiducia-slack-bridge
-          - target: slack-command
-            image: fiducia-slack-command
-            entrypoint: /usr/local/bin/fiducia-slack-command
+  authority-boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          submodules: recursive
+          submodules: false
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
-
-      - name: Extract immutable image metadata
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
-        with:
-          images: ghcr.io/oresoftware/${{ matrix.image }}
-          flavor: latest=false
-          tags: |
-            type=sha,format=long
-            type=ref,event=tag
-            type=raw,value=main,enable={{is_default_branch}}
-          labels: |
-            org.opencontainers.image.title=${{ matrix.image }}
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-
-      - name: Build local image for contract tests
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: .
-          target: ${{ matrix.target }}
-          platforms: linux/amd64
-          load: true
-          push: false
-          tags: local/${{ matrix.image }}:${{ github.sha }}
-          cache-from: type=gha,scope=${{ matrix.target }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
-
-      - name: Verify non-root immutable runtime contract
-        env:
-          IMAGE: local/${{ matrix.image }}:${{ github.sha }}
-          EXPECTED_ENTRYPOINT: ${{ matrix.entrypoint }}
+      - name: Validate image authority boundary
+        shell: bash
         run: |
           set -euo pipefail
-          test "$(docker image inspect --format '{{.Config.User}}' "$IMAGE")" = 'nonroot:nonroot'
-          test "$(docker image inspect --format '{{index .Config.Entrypoint 0}}' "$IMAGE")" = "$EXPECTED_ENTRYPOINT"
-          test -z "$(docker image inspect --format '{{join .Config.Cmd " "}}' "$IMAGE")"
 
-      - name: Scan image for high and critical vulnerabilities
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
-        with:
-          image-ref: local/${{ matrix.image }}:${{ github.sha }}
-          format: table
-          exit-code: '1'
-          ignore-unfixed: true
-          vuln-type: os,library
-          severity: HIGH,CRITICAL
+          test "$(git ls-tree HEAD vendor/k8s-libs-and-shared-defs | awk '{print $3}')" = \
+            "${EXPECTED_SHARED_COMMIT}"
 
-      - name: Log in to GitHub Container Registry
-        if: github.event_name == 'push'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-          scope: oresoftware/${{ matrix.image }}@push
+          grep -F 'cargo build --locked --release --features postgres --bin "${BINARY}"' Dockerfile
+          grep -F 'ORESoftware/k8s-cluster#1107' .github/workflows/container-images.yml
 
-      - name: Publish digest-addressable image with SBOM and provenance
-        id: publish
-        if: github.event_name == 'push'
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: .
-          target: ${{ matrix.target }}
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          annotations: ${{ steps.meta.outputs.annotations }}
-          cache-from: type=gha,scope=${{ matrix.target }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
-          sbom: true
-          provenance: mode=max
+          for binary in \
+            fiducia-ai-agent-bridge \
+            fiducia-ai-agent-runner \
+            fiducia-slack-bridge \
+            fiducia-slack-command; do
+            grep -F "name = \"${binary}\"" Cargo.toml
+          done
 
-      - name: Record published digest
-        if: github.event_name == 'push'
+          ! grep -Eq \
+            'packages:[[:space:]]*write|docker/login-action|docker/build-push-action|push:[[:space:]]*true' \
+            .github/workflows/container-images.yml
+
+          git diff --check
+
+      - name: Record delegated certification status
+        shell: bash
         run: |
           {
-            echo '### ${{ matrix.image }}'
+            echo '## PostgreSQL-enabled image authority'
             echo
-            echo '`${{ steps.publish.outputs.digest }}`'
-            echo
-            echo 'Deploy by digest only; tags are discovery aliases.'
-          } >> "$GITHUB_STEP_SUMMARY"
+            echo '- Bridge workflow: credential-free policy guard only'
+            echo "- Shared-schema gitlink: \`${EXPECTED_SHARED_COMMIT}\`"
+            echo "- Private DPM/PostgreSQL/image certification owner: \`${K8S_CERTIFICATION_ISSUE}\`"
+            echo '- Registry publication: disabled here until exact-head certification and immutable digest evidence exist'
+          } >>"${GITHUB_STEP_SUMMARY}"
