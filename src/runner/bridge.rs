@@ -94,12 +94,8 @@ impl BridgeClient {
         let bearer =
             env_opt("AI_AGENT_RUNNER_BRIDGE_BEARER").or_else(|| env_opt("API_AUTH_BEARER"));
         let internal_http_hosts = env_opt(INTERNAL_HTTP_HOSTS_ENV);
-        validate_bridge_origin(
-            &base_url,
-            bearer.as_deref(),
-            internal_http_hosts.as_deref(),
-        )
-        .map_err(BridgeClientError::InvalidConfig)?;
+        validate_bridge_origin(&base_url, bearer.as_deref(), internal_http_hosts.as_deref())
+            .map_err(BridgeClientError::InvalidConfig)?;
         if !base_url.path().ends_with('/') {
             base_url.set_path(&format!("{}/", base_url.path()));
         }
