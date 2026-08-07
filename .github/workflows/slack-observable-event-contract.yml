@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - .github/workflows/slack-observable-event-contract.yml
+      - .gitmodules
+      - scripts/ci/prepare-credential-free-build.sh
+      - scripts/ci/fixtures/dd-pg-defs-sea-orm/**
       - src/slack_commands.rs
       - src/slack_commands_parts/part2.rs
       - src/slack_commands_parts/part5.rs
@@ -17,6 +20,9 @@ on:
     branches: [main]
     paths:
       - .github/workflows/slack-observable-event-contract.yml
+      - .gitmodules
+      - scripts/ci/prepare-credential-free-build.sh
+      - scripts/ci/fixtures/dd-pg-defs-sea-orm/**
       - src/slack_commands.rs
       - src/slack_commands_parts/part2.rs
       - src/slack_commands_parts/part5.rs
@@ -38,11 +44,17 @@ jobs:
   validate:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      EXPECTED_SHARED_COMMIT: e76b23cb2e23782438a3b03dacc26adfab1bb7fb
     steps:
       - name: Check out without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          submodules: false
+
+      - name: Prepare credential-free build inputs
+        run: bash scripts/ci/prepare-credential-free-build.sh
 
       - name: Install pinned Rust toolchain
         uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b

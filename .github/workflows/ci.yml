@@ -1,5 +1,8 @@
-# CI pipeline: secret hygiene, formatting, clippy (warnings as errors), tests,
-# canonical-schema Postgres durability, browser automation, and flags-2-env audits.
+# Credential-free CI for the bridge, runner, Slack ingress, routing registry,
+# provider hygiene, browser automation, and flags-2-env contracts.
+#
+# Private shared-schema/Postgres certification is intentionally centralized in
+# ORESoftware/k8s-cluster behind its reviewed GitHub App boundary.
 name: CI
 
 on:
@@ -17,74 +20,68 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
-    services:
-      postgres:
-        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
-        env:
-          POSTGRES_DB: bridge_restart
-          POSTGRES_USER: bridge
-          POSTGRES_PASSWORD: bridge-test-only
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U bridge -d bridge_restart"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+    timeout-minutes: 45
     env:
-      EXPECTED_SHARED_COMMIT: 3c84cab532b27d328378f09fba5841f02644ae3b
-      DPM_INSTALLER_COMMIT: f7180770fc0c7a3dbf9b83dcdc2ac6255da31ffc
-      FIDUCIA_BRIDGE_TEST_DATABASE_URL: postgresql://bridge:bridge-test-only@localhost:5432/bridge_restart
-      SHADOW_DATABASE_URL: postgresql://bridge:bridge-test-only@localhost:5432/postgres
+      EXPECTED_SHARED_COMMIT: e76b23cb2e23782438a3b03dacc26adfab1bb7fb
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          submodules: recursive
+          submodules: false
+
+      - name: Prepare credential-free build inputs
+        run: bash scripts/ci/prepare-credential-free-build.sh
+
       - name: Validate GitHub Actions
         uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
         with:
           args: >-
             ./.github/workflows/ci.yml
+            ./.github/workflows/container-images.yml
             ./.github/workflows/slack-ingress-browser-security.yml
-            ./.github/workflows/seaorm-branch.yml
+            ./.github/workflows/slack-bridge-events-browser-security.yml
+
       - name: Audit provider credential hygiene
         run: python3 scripts/audit-provider-secrets.py
+
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: "1.95.0"
           components: rustfmt, clippy
-      - name: Validate shared schema and SeaORM policy
+
+      - name: Validate the exact shared-schema pin and policy parser
         shell: bash
         run: |
           set -euo pipefail
+          pinned_shared_commit="$(git ls-tree HEAD -- vendor/k8s-libs-and-shared-defs | awk '$2 == "commit" { print $3 }')"
+          test "${pinned_shared_commit}" = "${EXPECTED_SHARED_COMMIT}"
           node --test scripts/seaorm-policy.test.mjs
-          node scripts/check-seaorm-policy.mjs
-      - name: Install pinned declarative migration tool
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Lint credential-free targets
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test credential-free targets
+        run: cargo test --all-targets --locked
+
+      - name: Check credential-free targets
+        run: cargo check --all-targets --locked
+
+      - name: Prove the placeholder cannot certify Postgres
         shell: bash
         run: |
           set -euo pipefail
-          curl --proto '=https' --tlsv1.2 -fsSL \
-            "https://raw.githubusercontent.com/declarative-migrations/declarative-postgres-migrate.rs/${DPM_INSTALLER_COMMIT}/scripts/install.sh" \
-            | bash
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Provision disposable Postgres through DPM bootstrap
-        shell: bash
-        run: |
-          set -euo pipefail
-          export PATH="$HOME/.local/bin:$PATH"
-          vendor/k8s-libs-and-shared-defs/pg-defs/scripts/dpm.sh bootstrap \
-            > "${RUNNER_TEMP}/canonical-schema.sql"
-          psql "$FIDUCIA_BRIDGE_TEST_DATABASE_URL" \
-            -v ON_ERROR_STOP=1 \
-            -f "${RUNNER_TEMP}/canonical-schema.sql"
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets --locked --features postgres -- -D warnings
-      - run: cargo test --all-targets --locked
-      - run: cargo check --all-targets --locked --features postgres
-      - name: Test PostgreSQL restart durability
-        run: cargo test --locked --features postgres --test postgres_restart -- --ignored
+          log="${RUNNER_TEMP}/postgres-placeholder-check.log"
+          if cargo check --locked --features postgres >"${log}" 2>&1; then
+            echo "postgres unexpectedly compiled with the credential-free placeholder" >&2
+            exit 1
+          fi
+          grep -F \
+            'the credential-free dd-pg-defs-sea-orm placeholder was compiled' \
+            "${log}"
+
       - name: Reject direct SQLx and boot-migration paths
         shell: bash
         run: |
@@ -92,9 +89,11 @@ jobs:
           ! grep -RInE \
             '(^|[^A-Za-z0-9_])sqlx::(query|query_as|query_scalar|raw_sql|migrate!)|\bPgPool(Options)?\b|^sqlx[[:space:]]*=' \
             Cargo.toml src tests
+
       - uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2.85.0
         with:
           tool: cargo-audit@0.22.2
+
       - run: cargo audit
       - run: make -B -C vendor/flags-2-env all
       - run: vendor/flags-2-env/build/flags2env audit .cli-flags.toml
@@ -102,26 +101,37 @@ jobs:
   browser-registry:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      EXPECTED_SHARED_COMMIT: e76b23cb2e23782438a3b03dacc26adfab1bb7fb
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          submodules: recursive
+          submodules: false
+
+      - name: Prepare credential-free build inputs
+        run: bash scripts/ci/prepare-credential-free-build.sh
+
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: "1.95.0"
+
       - name: Verify Node runtime
         run: |
           node --version
           npm --version
+
       - name: Build loopback registry probe
         run: cargo build --locked --bin alex-main-agent-registry-browser
+
       - name: Install pinned browser test dependency
         working-directory: tests/browser
         run: npm install --ignore-scripts --no-audit --no-fund
+
       - name: Install Chromium
         working-directory: tests/browser
         run: npx playwright install --with-deps chromium
+
       - name: Exercise registry policy through Chromium
         env:
           ALEX_MAIN_AGENT_PROBE_ADDR: 127.0.0.1:8160
@@ -162,5 +172,5 @@ jobs:
             cat "${probe_log}"
             exit 1
           fi
-          grep --fixed-strings '"bindings":13' "${health_json}"
+          grep --fixed-strings '"bindings":14' "${health_json}"
           npm --prefix tests/browser test

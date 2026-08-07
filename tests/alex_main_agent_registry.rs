@@ -24,7 +24,35 @@ fn request(channel_id: &str, user_id: &str) -> ResolveRequest {
 #[test]
 fn alex_main_agent_registry_parses_all_project_bindings() {
     let registry = SlackProjectRegistry::from_json(REGISTRY).expect("registry must be valid");
-    assert_eq!(registry.binding_count(), 13);
+    assert_eq!(registry.binding_count(), 14);
+}
+
+#[test]
+fn oresoftware_pilot_resolves_only_reviewed_control_plane_repositories() {
+    let registry = SlackProjectRegistry::from_json(REGISTRY).expect("registry must be valid");
+    let mut request = request("C0BKP2N3LG7", ALEX_USER_ID);
+    request.requested_repository = Some("ORESoftware/k8s-cluster".to_string());
+    request.linear_issue_identifier = Some("DEN-1298".to_string());
+
+    let context = registry
+        .resolve(&request)
+        .expect("pilot route must resolve");
+    assert_eq!(
+        context.linear_project_id,
+        "7abf8be2-ffa5-4507-bd09-43aa59ca8718"
+    );
+    assert_eq!(context.repository, "oresoftware/k8s-cluster");
+    assert_eq!(context.write_policy, WritePolicy::DraftPullRequest);
+    assert_eq!(
+        context.issue.expect("issue must be parsed").identifier,
+        "DEN-1298"
+    );
+
+    request.requested_repository = Some("ORESoftware/unreviewed-repository".to_string());
+    assert!(matches!(
+        registry.resolve(&request),
+        Err(RegistryError::RepositoryNotAllowed)
+    ));
 }
 
 #[test]
