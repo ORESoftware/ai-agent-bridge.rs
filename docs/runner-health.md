@@ -22,9 +22,12 @@ following are true:
 
 A transient bridge failure does not immediately fail readiness. The last successful
 poll remains valid only until `AI_AGENT_RUNNER_READY_MAX_STALENESS_MS` expires.
-The bounded monitor refuses redirects, requires HTTPS and a bearer token for a
+The bounded monitor refuses redirects, requires a bearer token for every
 non-loopback bridge, caps response bodies at 1 MiB, and never emits upstream error
-bodies.
+bodies. Non-loopback origins require HTTPS by default. Bearer-authenticated HTTP
+is accepted only when the exact Kubernetes service FQDN is listed in
+`AI_AGENT_RUNNER_BRIDGE_INTERNAL_HTTP_HOSTS`; wildcards, public hosts, IPs, ports,
+schemes, paths, and short names are rejected.
 
 Health responses contain only:
 
@@ -47,10 +50,13 @@ configuration JSON.
 | `AI_AGENT_RUNNER_READY_MAX_STALENESS_MS` | `30000` | Maximum age of the last successful workflows probe |
 | `AI_AGENT_RUNNER_HEALTH_PROBE_INTERVAL_MS` | `5000` | Bridge probe interval, bounded to 250–60000 ms and never above the staleness limit |
 | `AI_AGENT_RUNNER_HEALTH_PROBE_TIMEOUT_SECS` | `5` | Total/connect timeout for each bounded probe |
+| `AI_AGENT_RUNNER_BRIDGE_INTERNAL_HTTP_HOSTS` | unset | Exact comma-separated `*.svc.cluster.local` hosts allowed to use bearer-authenticated HTTP |
 
-The monitor uses the same `AI_AGENT_RUNNER_BRIDGE_URL` and
-`AI_AGENT_RUNNER_BRIDGE_BEARER`/`API_AUTH_BEARER` boundary as the runner. A scoped
-credential must have both `agent:read` and `workflow:read`.
+The monitor uses the same `AI_AGENT_RUNNER_BRIDGE_URL`,
+`AI_AGENT_RUNNER_BRIDGE_BEARER`/`API_AUTH_BEARER`, and internal-HTTP host policy
+as the runner. A scoped credential must have both `agent:read` and
+`workflow:read`. Execution and readiness therefore cannot disagree about whether
+a bridge origin is admissible.
 
 ## Kubernetes probe contract
 
@@ -73,6 +79,19 @@ readinessProbe:
   timeoutSeconds: 2
   failureThreshold: 2
 ```
+
+A separate runner using the bridge ClusterIP must use the complete service FQDN:
+
+```yaml
+- name: AI_AGENT_RUNNER_BRIDGE_URL
+  value: http://dd-ai-agent-bridge.default.svc.cluster.local:8142/
+- name: AI_AGENT_RUNNER_BRIDGE_INTERNAL_HTTP_HOSTS
+  value: dd-ai-agent-bridge.default.svc.cluster.local
+```
+
+The scoped bridge bearer is still required, and NetworkPolicy must permit only
+the runner-to-bridge port. The HTTP exception is not a replacement for TLS on
+other remote origins.
 
 Do not point runner probes at bridge port 8142. A healthy bridge does not prove that
 the provider runner has registered, can poll workflows, or is safe to receive work.
