@@ -7,6 +7,7 @@ on:
       - Cargo.lock
       - Cargo.toml
       - config/alex-main-agent.channels.json
+      - scripts/materialize-optional-seaorm-metadata.sh
       - slack-app/manifest.yaml
       - src/bin/fiducia-slack-command.rs
       - src/slack_commands.rs
@@ -19,6 +20,7 @@ on:
       - Cargo.lock
       - Cargo.toml
       - config/alex-main-agent.channels.json
+      - scripts/materialize-optional-seaorm-metadata.sh
       - slack-app/manifest.yaml
       - src/bin/fiducia-slack-command.rs
       - src/slack_commands.rs
@@ -53,7 +55,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          submodules: recursive
+          submodules: false
+
+      - name: Materialize optional SeaORM package metadata
+        run: bash scripts/materialize-optional-seaorm-metadata.sh
 
       - name: Initialize private evidence directories
         run: |
