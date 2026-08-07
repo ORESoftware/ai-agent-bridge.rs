@@ -48,6 +48,10 @@ pub fn router(state: Arc<AppState>) -> Router {
     let public = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(healthz))
+        .route(
+            "/.well-known/agent-pontifex",
+            get(agent_pontifex_descriptor),
+        )
         .route("/metrics", get(prometheus_metrics))
         .route("/", get(index))
         // Backward-compatible claude-inbox contract (see crate::compat).
@@ -135,8 +139,59 @@ async fn auth(
     next.run(req).await
 }
 
+fn agent_pontifex_bridge_descriptor() -> crate::agent_pontifex_protocol::ServiceDescriptor {
+    use crate::agent_pontifex_protocol::{ServiceDescriptor, ServiceKind};
+
+    let descriptor = ServiceDescriptor::new(
+        ServiceKind::Bridge,
+        "oresoftware.ai-agent-bridge",
+        vec![
+            "bridge.agents".to_string(),
+            "bridge.channels".to_string(),
+            "bridge.context".to_string(),
+            "bridge.file-leases".to_string(),
+            "bridge.messages".to_string(),
+            "bridge.presence".to_string(),
+            "bridge.semantic-resolution".to_string(),
+            "bridge.transport.http".to_string(),
+            "bridge.transport.sse".to_string(),
+            "bridge.transport.tcp".to_string(),
+        ],
+        std::collections::BTreeMap::new(),
+    );
+    debug_assert!(descriptor.validate().is_ok());
+    descriptor
+}
+
+async fn agent_pontifex_descriptor() -> impl IntoResponse {
+    Json(agent_pontifex_bridge_descriptor())
+}
+
 async fn healthz() -> impl IntoResponse {
     Json(json!({ "ok": true, "service": "ai-agent-bridge" }))
+}
+
+#[cfg(test)]
+mod agent_pontifex_discovery_tests {
+    use super::*;
+    use crate::agent_pontifex_protocol::{ProtocolVersionRange, ServiceKind, BRIDGE_PROTOCOL_ID};
+
+    #[test]
+    fn bridge_descriptor_is_deterministic_and_v1_compatible() {
+        let descriptor = agent_pontifex_bridge_descriptor();
+        assert_eq!(descriptor.protocol, BRIDGE_PROTOCOL_ID);
+        assert_eq!(descriptor.service, ServiceKind::Bridge.service_id());
+        assert_eq!(
+            descriptor
+                .validate_for(ServiceKind::Bridge, ProtocolVersionRange::current())
+                .unwrap(),
+            1
+        );
+        let mut sorted = descriptor.capabilities.clone();
+        sorted.sort();
+        assert_eq!(descriptor.capabilities, sorted);
+        assert!(descriptor.extensions.is_empty());
+    }
 }
 
 async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {

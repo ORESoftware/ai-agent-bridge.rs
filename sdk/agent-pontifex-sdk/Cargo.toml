@@ -1,0 +1,18 @@
+[package]
+name = "agent-pontifex-sdk"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Typed, credential-safe HTTP client for Agent Pontifex bridges and coordinators"
+license = "MIT"
+repository = "https://github.com/ORESoftware/ai-agent-bridge.rs"
+
+[dependencies]
+agent-pontifex-protocol = { path = "../agent-pontifex-protocol" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

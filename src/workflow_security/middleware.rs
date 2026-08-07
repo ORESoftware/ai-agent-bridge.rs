@@ -11,9 +11,7 @@ pub async fn enforce(
     let (parts, body) = request.into_parts();
     let body_bytes = match to_bytes(body, security.max_body_bytes).await {
         Ok(bytes) => bytes,
-        Err(_) => {
-            return error_response(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large")
-        }
+        Err(_) => return error_response(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large"),
     };
     let body_json = if body_bytes.is_empty() {
         None
@@ -65,7 +63,10 @@ pub async fn enforce(
     request.extensions_mut().insert(identity);
     if let Some(global) = &security.global_bearer {
         let Ok(value) = HeaderValue::from_str(&format!("Bearer {global}")) else {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "auth_configuration_error");
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "auth_configuration_error",
+            );
         };
         request.headers_mut().insert(header::AUTHORIZATION, value);
     }
@@ -182,9 +183,7 @@ fn access_rule(method: &Method, path: &str) -> Option<AccessRule> {
                 identity_field: None,
             }
         }
-        (&Method::GET, path)
-            if path.starts_with("/channels/") && path.ends_with("/context") =>
-        {
+        (&Method::GET, path) if path.starts_with("/channels/") && path.ends_with("/context") => {
             AccessRule {
                 scope: "context:read",
                 identity_field: None,
@@ -200,17 +199,13 @@ fn access_rule(method: &Method, path: &str) -> Option<AccessRule> {
                 identity_field: Some("updated_by"),
             }
         }
-        (&Method::POST, path)
-            if path.starts_with("/channels/") && path.ends_with("/messages") =>
-        {
+        (&Method::POST, path) if path.starts_with("/channels/") && path.ends_with("/messages") => {
             AccessRule {
                 scope: "channel:post",
                 identity_field: Some("from"),
             }
         }
-        (&Method::GET, path)
-            if path.starts_with("/channels/") && path.ends_with("/messages") =>
-        {
+        (&Method::GET, path) if path.starts_with("/channels/") && path.ends_with("/messages") => {
             AccessRule {
                 scope: "channel:read",
                 identity_field: None,
@@ -252,9 +247,22 @@ fn contains_reserved_context_key(body: Option<&serde_json::Value>) -> bool {
 }
 
 fn is_public_path(path: &str) -> bool {
-    matches!(path, "/" | "/health" | "/healthz" | "/readyz" | "/metrics")
+    matches!(
+        path,
+        "/" | "/health" | "/healthz" | "/readyz" | "/metrics" | "/.well-known/agent-pontifex"
+    )
 }
 
 fn error_response(status: StatusCode, error: &'static str) -> Response {
     (status, Json(json!({ "ok": false, "error": error }))).into_response()
+}
+
+#[cfg(test)]
+mod agent_pontifex_discovery_tests {
+    use super::is_public_path;
+
+    #[test]
+    fn agent_pontifex_discovery_is_public() {
+        assert!(is_public_path("/.well-known/agent-pontifex"));
+    }
 }

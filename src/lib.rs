@@ -5,6 +5,8 @@
 //! what the test suite exercises. Postgres persistence (the `db` module) is
 //! optional and compiled in only with `--features postgres`.
 
+#[path = "../sdk/agent-pontifex-protocol/src/lib.rs"]
+pub mod agent_pontifex_protocol;
 pub mod assignment_claims;
 pub mod blind_competition;
 pub mod compat;
