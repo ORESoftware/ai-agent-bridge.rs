@@ -239,6 +239,11 @@ mod installed_app_contract_tests {
             3
         );
         assert!(manifest.contains("https://api.fiducia.cloud/slack/interactions"));
+        assert!(manifest.contains("- commands"));
+        assert!(manifest.contains("- chat:write"));
+        assert!(manifest.contains("- channels:history"));
+        assert!(manifest.contains("- groups:history"));
+        assert!(manifest.contains("- usergroups:read"));
         assert!(manifest.contains("token_rotation_enabled: true"));
         assert!(!manifest.contains("xoxb-"));
         assert!(!manifest.contains("signing_secret"));
