@@ -96,6 +96,8 @@ jobs:
             .central_registry.manifest_bindings == 13 and
             (.manifests | length) == 13
           ' "${RUNNER_TEMP}/alex-main-agent-audit.json"
+          find . -type d -name __pycache__ -prune -exec rm -rf {} +
+          find . -type f -name '*.py[co]' -delete
           git diff --check
 
           expected=$(cat <<'EOF'
@@ -107,6 +109,7 @@ jobs:
           EOF
           )
           actual=$(git status --short | sed 's/^...//' | sort)
+          printf 'changed paths:\n%s\n' "${actual}"
           test "${actual}" = "$(printf '%s\n' "${expected}" | sort)"
 
       - name: Commit clean product files
