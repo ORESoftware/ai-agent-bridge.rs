@@ -38,6 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
+      EXPECTED_SHARED_COMMIT: 3c84cab532b27d328378f09fba5841f02644ae3b
       SLACK_BRIDGE_BASE_URL: http://127.0.0.1:8152
       SLACK_BRIDGE_HOST: 127.0.0.1
       SLACK_BRIDGE_PORT: "8152"
@@ -63,8 +64,6 @@ jobs:
       # and installs the fail-closed placeholder, keeping the lane runnable
       # without a credential for the private repository.
       - name: Prepare credential-free build inputs
-        env:
-          EXPECTED_SHARED_COMMIT: 3c84cab532b27d328378f09fba5841f02644ae3b
         run: bash scripts/ci/prepare-credential-free-build.sh
 
       - name: Initialize private evidence directories

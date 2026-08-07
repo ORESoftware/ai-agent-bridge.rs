@@ -134,6 +134,10 @@ jobs:
       - name: Record published digest
         if: github.event_name == 'push'
         run: |
+          # Actions substitutes workflow expressions before the shell runs, so
+          # the single quotes are deliberate: they stop the shell reinterpreting
+          # the injected value. shellcheck cannot see that template step.
+          # shellcheck disable=SC2016
           {
             echo '### ${{ matrix.image }}'
             echo
