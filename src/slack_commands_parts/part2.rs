@@ -286,4 +286,3 @@ fn find_issue(text: &str) -> Option<String> {
             Some(token.to_string())
         })
 }
-
