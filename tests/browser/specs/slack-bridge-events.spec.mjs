@@ -294,3 +294,86 @@ test('rejects malformed JSON bodies that carry a valid signature', async ({ page
   expect(response.status).toBe(400);
   expect(response.contentType).toContain('application/json');
 });
+
+// DEN-2863: idempotency must not be conditional on spare capacity. The lane
+// runs at SLACK_MAX_CONCURRENT_WORKFLOWS=1 precisely so this holds at the
+// ceiling; Slack retries on 503, so answering a claimed delivery with
+// capacity_exceeded would invite another delivery of work already claimed.
+test('recognizes a retry as duplicate rather than shedding it at capacity', async ({ page }) => {
+  const body = eventBody();
+
+  const first = await postSigned(page, body);
+  expect(first.status).toBe(200);
+  expect(JSON.parse(first.body).accepted).toBe(true);
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const retry = await postSigned(page, body);
+    expect(retry.status).toBe(200);
+    expect(JSON.parse(retry.body).duplicate).toBe(true);
+  }
+});
+
+test('answers a status lookup for a known delivery while saturated', async ({ page }) => {
+  const body = eventBody();
+  const accepted = await postSigned(page, body);
+  expect(JSON.parse(accepted.body).accepted).toBe(true);
+  const deliveredId = JSON.parse(body).event_id;
+
+  const lookup = await postSigned(
+    page,
+    eventBody({ event: { text: `${commandPrefix} status ${deliveredId}` } }),
+  );
+
+  expect(lookup.status).toBe(200);
+  const payload = JSON.parse(lookup.body);
+  expect(payload.event_id).toBe(deliveredId);
+  expect(payload.state).not.toBe('unknown');
+});
+
+test('reports unknown for a status lookup that names no known delivery', async ({ page }) => {
+  const lookup = await postSigned(
+    page,
+    eventBody({ event: { text: `${commandPrefix} status EvNeverDelivered` } }),
+  );
+
+  expect(lookup.status).toBe(200);
+  expect(JSON.parse(lookup.body).state).toBe('unknown');
+});
+
+test('rejects a status lookup whose target is not a usable identifier', async ({ page }) => {
+  const lookup = await postSigned(
+    page,
+    eventBody({ event: { text: `${commandPrefix} status ../../etc/passwd` } }),
+  );
+
+  expect(lookup.status).toBe(400);
+});
+
+test('exposes scrapeable outcome counters carrying no Slack content', async ({ page }) => {
+  const response = await page.goto('/metrics');
+  expect(response).not.toBeNull();
+  expect(response.status()).toBe(200);
+
+  const body = await response.text();
+  expect(body).toContain('# TYPE slack_bridge_requests_total counter');
+
+  // Every series is declared up front, so an outcome that has not happened yet
+  // still scrapes as 0 rather than being absent.
+  for (const outcome of ['accepted', 'duplicate', 'rejected_signature', 'rejected_app_identity']) {
+    expect(body).toMatch(
+      new RegExp(`slack_bridge_requests_total\\{outcome="${outcome}"\\} \\d+`),
+    );
+  }
+
+  // Earlier tests in this file drove signature and app-identity rejections.
+  const rejected = Number(
+    /slack_bridge_requests_total\{outcome="rejected_signature"\} (\d+)/.exec(body)?.[1] ?? '0',
+  );
+  expect(rejected).toBeGreaterThan(0);
+
+  // Metadata only: no Slack identifier, channel, or prompt text may be exposed.
+  expect(body).not.toContain(allowedChannelId);
+  expect(body).not.toContain(allowedTeamId);
+  expect(body).not.toContain(expectedAppId);
+  expect(body).not.toContain('DEN-1041');
+});

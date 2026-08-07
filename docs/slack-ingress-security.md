@@ -126,6 +126,62 @@ of the shared contract it applies:
 `/readyz` reports `dry_run` and `installed_app_identity_enforced` so a deployment
 gate can assert the boundary before activation.
 
+### Admission ordering
+
+Duplicate detection runs **before** the concurrency reservation:
+
+```text
+signature -> workspace/channel policy -> installed-app identity
+  -> duplicate check (read-only)      <- answers 200 duplicate at any load
+  -> capacity reservation             <- answers 503 only for genuinely new work
+  -> authoritative claim              <- admits exactly once
+```
+
+Slack retries on `503`. If a retry of an already-claimed delivery were answered
+`capacity_exceeded`, the response would invite another delivery of work that is
+already claimed — retry amplification exactly when the service is saturated. The
+duplicate check therefore commits nothing and reserves nothing, so idempotency
+holds at any ceiling, including one. The authoritative claim still happens under
+the permit, so a genuinely new delivery racing that read is admitted exactly
+once, and a shed delivery leaves no journal claim for work that never ran.
+
+### Read-only status lookups
+
+```text
+<prefix> status <event-id>
+```
+
+Resolves a prior delivery from the durable journal and returns its state,
+workflow ID, posted agents, and last update. It claims nothing, reserves no
+capacity, and starts no workflow, so it stays answerable while the service is at
+its ceiling. An unknown delivery reports `state: "unknown"` rather than failing;
+a target that is not a valid event identifier is rejected rather than looked up.
+`status` is matched only as the first token, so prose that merely mentions the
+word is still routed as work.
+
+### Operational metrics
+
+```text
+GET /metrics
+```
+
+Renders Prometheus text with one counter, `slack_bridge_requests_total`, labelled
+by terminal outcome. Every outcome is declared up front so an outcome that has
+not occurred yet still scrapes as `0` — a series that only appears after its
+first occurrence cannot be alerted on, because its absence is indistinguishable
+from the absence of scraping.
+
+`rejected_app_identity` is counted separately from `rejected_policy`: a non-zero
+rate means a foreign application is posting correctly signed events to this
+endpoint, which is a security signal rather than a malformed-payload signal, and
+is invisible when folded into a generic rejection counter.
+
+The label set is a closed list of internal outcome names. No Slack workspace,
+channel, user, application identifier, prompt text, or channel content appears
+in a scrape, and the Chromium lane asserts that. The endpoint is unauthenticated
+and intended for a private scrape path; it must not be exposed publicly
+alongside the signed Slack route.
+
 ### Request-URL handshake
 
 Slack's Events API request-URL handshake posts only `token`, `challenge`, and
@@ -152,7 +208,12 @@ dry-run configuration, then drives real Chromium requests against
 - bot-authored events are ignored so the adapter cannot loop;
 - hostile channel text is never reflected as executable markup;
 - a retried delivery is claimed exactly once;
-- malformed JSON carrying a valid signature returns `400`.
+- malformed JSON carrying a valid signature returns `400`;
+- a retry is still recognized as a duplicate with the concurrency ceiling at one;
+- a status lookup resolves a known delivery while the service is saturated,
+  reports `unknown` for an unseen one, and refuses an unusable identifier;
+- `/metrics` renders a zero series for every declared outcome and leaks no Slack
+  workspace, channel, application identifier, or prompt text.
 
 ## Production activation checklist
 
