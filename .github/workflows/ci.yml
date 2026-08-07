@@ -49,7 +49,6 @@ jobs:
             ./.github/workflows/ci.yml
             ./.github/workflows/slack-ingress-browser-security.yml
             ./.github/workflows/slack-bridge-events-browser-security.yml
-            ./.github/workflows/seaorm-branch.yml
       - name: Audit provider credential hygiene
         run: python3 scripts/audit-provider-secrets.py
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
