@@ -4,10 +4,13 @@ on:
   pull_request:
     paths:
       - ".github/workflows/alex-main-agent-registry-boundary.yml"
+      - ".gitmodules"
       - "Cargo.lock"
       - "Cargo.toml"
       - "config/alex-main-agent.channels.json"
       - "docs/alex-main-agent-browser-tests.md"
+      - "scripts/ci/prepare-credential-free-build.sh"
+      - "scripts/ci/fixtures/dd-pg-defs-sea-orm/**"
       - "src/bin/alex-main-agent-registry-browser.rs"
       - "src/slack_project_bindings.rs"
       - "tests/alex_main_agent_registry.rs"
@@ -18,10 +21,13 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/alex-main-agent-registry-boundary.yml"
+      - ".gitmodules"
       - "Cargo.lock"
       - "Cargo.toml"
       - "config/alex-main-agent.channels.json"
       - "docs/alex-main-agent-browser-tests.md"
+      - "scripts/ci/prepare-credential-free-build.sh"
+      - "scripts/ci/fixtures/dd-pg-defs-sea-orm/**"
       - "src/bin/alex-main-agent-registry-browser.rs"
       - "src/slack_project_bindings.rs"
       - "tests/alex_main_agent_registry.rs"
@@ -39,12 +45,13 @@ concurrency:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       ALEX_MAIN_AGENT_PROBE_ADDR: 127.0.0.1:8160
       ALEX_MAIN_AGENT_PROBE_URL: http://127.0.0.1:8160
       ALEX_MAIN_AGENT_REGISTRY_PATH: ${{ github.workspace }}/config/alex-main-agent.channels.json
+      EXPECTED_SHARED_COMMIT: e76b23cb2e23782438a3b03dacc26adfab1bb7fb
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -58,33 +65,12 @@ jobs:
           umask 077
           mkdir -p "${RUNNER_TEMP}/alex-main-agent-registry-boundary"
 
-      - name: Materialize pinned non-Postgres dependency metadata
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Cargo resolves optional path-package metadata even when the feature is
-          # disabled. This is the exact Cargo.toml from submodule commit
-          # 3c84cab532b27d328378f09fba5841f02644ae3b. The focused job never enables
-          # `postgres`; the full generated entities remain the shared-schema lane's
-          # responsibility.
-          rm -rf vendor/k8s-libs-and-shared-defs
-          mkdir -p vendor/k8s-libs-and-shared-defs/pg-defs/generated/rust/sea-orm/src
-          cat > vendor/k8s-libs-and-shared-defs/pg-defs/generated/rust/sea-orm/Cargo.toml <<'EOF'
-          [package]
-          name = "dd-pg-defs-sea-orm"
-          version = "0.1.0"
-          edition = "2021"
+      - name: Prepare credential-free build inputs
+        run: bash scripts/ci/prepare-credential-free-build.sh
 
-          [dependencies]
-          sea-orm = { version = "1", features = ["macros", "with-uuid", "with-json", "with-chrono"] }
-          serde = { version = "1", features = ["derive"] }
-          EOF
-          printf '%s\n' '#![forbid(unsafe_code)]' > \
-            vendor/k8s-libs-and-shared-defs/pg-defs/generated/rust/sea-orm/src/lib.rs
-
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b
         with:
-          toolchain: "1.95.0"
+          toolchain: "1.97.1"
           components: rustfmt, clippy
 
       - name: Validate focused Rust boundary
