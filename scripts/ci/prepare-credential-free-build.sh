@@ -8,7 +8,7 @@ flags_path="vendor/flags-2-env"
 schema_path="vendor/k8s-libs-and-shared-defs"
 schema_crate_path="${schema_path}/pg-defs/generated/rust/sea-orm"
 fixture_path="scripts/ci/fixtures/dd-pg-defs-sea-orm"
-expected_shared_commit="${EXPECTED_SHARED_COMMIT:-e76b23cb2e23782438a3b03dacc26adfab1bb7fb}"
+expected_shared_commit="${EXPECTED_SHARED_COMMIT:-c8bdc06d74746acc6439f9527ebd02697fdf028b}"
 
 # The public CLI generator is needed by ordinary CI. Fetch only that reviewed
 # submodule; never recursively request the private shared-schema repository.

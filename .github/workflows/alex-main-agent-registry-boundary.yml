@@ -1,0 +1,141 @@
+name: alex-main-agent registry boundary
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/alex-main-agent-registry-boundary.yml"
+      - ".gitmodules"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "config/alex-main-agent.channels.json"
+      - "docs/alex-main-agent-browser-tests.md"
+      - "scripts/ci/prepare-credential-free-build.sh"
+      - "scripts/ci/fixtures/dd-pg-defs-sea-orm/**"
+      - "src/bin/alex-main-agent-registry-browser.rs"
+      - "src/slack_project_bindings.rs"
+      - "tests/alex_main_agent_registry.rs"
+      - "tests/browser/package.json"
+      - "tests/browser/playwright.config.mjs"
+      - "tests/browser/specs/registry.spec.mjs"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/alex-main-agent-registry-boundary.yml"
+      - ".gitmodules"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "config/alex-main-agent.channels.json"
+      - "docs/alex-main-agent-browser-tests.md"
+      - "scripts/ci/prepare-credential-free-build.sh"
+      - "scripts/ci/fixtures/dd-pg-defs-sea-orm/**"
+      - "src/bin/alex-main-agent-registry-browser.rs"
+      - "src/slack_project_bindings.rs"
+      - "tests/alex_main_agent_registry.rs"
+      - "tests/browser/package.json"
+      - "tests/browser/playwright.config.mjs"
+      - "tests/browser/specs/registry.spec.mjs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      ALEX_MAIN_AGENT_PROBE_ADDR: 127.0.0.1:8160
+      ALEX_MAIN_AGENT_PROBE_URL: http://127.0.0.1:8160
+      ALEX_MAIN_AGENT_REGISTRY_PATH: ${{ github.workspace }}/config/alex-main-agent.channels.json
+      EXPECTED_SHARED_COMMIT: c8bdc06d74746acc6439f9527ebd02697fdf028b
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Prepare evidence directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "${RUNNER_TEMP}/alex-main-agent-registry-boundary"
+
+      - name: Prepare credential-free build inputs
+        run: bash scripts/ci/prepare-credential-free-build.sh
+
+      - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b
+        with:
+          toolchain: "1.97.1"
+          components: rustfmt, clippy
+
+      - name: Validate focused Rust boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Cargo.lock "${RUNNER_TEMP}/alex-main-agent-registry-boundary/Cargo.lock"
+          rustfmt --edition 2021 --check src/bin/alex-main-agent-registry-browser.rs
+          cargo clippy --locked --bin alex-main-agent-registry-browser -- -D warnings
+          cargo test --locked --bin alex-main-agent-registry-browser
+          cargo test --locked --test alex_main_agent_registry
+
+      - name: Install pinned browser dependency
+        working-directory: tests/browser
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Install Chromium
+        working-directory: tests/browser
+        run: npx --no-install playwright install --with-deps chromium
+
+      - name: Exercise the production registry resolver in Chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          evidence_dir="${RUNNER_TEMP}/alex-main-agent-registry-boundary"
+          probe_log="${evidence_dir}/probe.log"
+          health_json="${evidence_dir}/health.json"
+
+          target/debug/alex-main-agent-registry-browser >"${probe_log}" 2>&1 &
+          probe_pid=$!
+          cleanup() {
+            status=$?
+            kill "${probe_pid}" 2>/dev/null || true
+            wait "${probe_pid}" 2>/dev/null || true
+            if [ "${status}" -ne 0 ]; then
+              cat "${probe_log}"
+            fi
+            exit "${status}"
+          }
+          trap cleanup EXIT
+
+          ready=0
+          for _attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error \
+              "${ALEX_MAIN_AGENT_PROBE_URL}/healthz" >"${health_json}"; then
+              ready=1
+              break
+            fi
+            if ! kill -0 "${probe_pid}" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          test "${ready}" = "1"
+          jq -e '.status == "ok" and .bindings == 14' "${health_json}"
+          PLAYWRIGHT_OUTPUT_DIR="${evidence_dir}/playwright" \
+            npm --prefix tests/browser run test:registry
+
+      - name: Upload synthetic browser and lock evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: alex-main-agent-registry-boundary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/alex-main-agent-registry-boundary
+          if-no-files-found: error
+          retention-days: 14

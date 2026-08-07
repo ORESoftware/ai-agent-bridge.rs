@@ -7,6 +7,7 @@
 
 pub mod assignment_claims;
 pub mod blind_competition;
+mod bridge_origin_policy;
 pub mod compat;
 pub mod config;
 mod context_access;

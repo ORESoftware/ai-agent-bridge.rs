@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1.7
 
 # One reviewed source tree builds all runtime binaries. Final targets copy only
-# the selected executable into a non-root distroless image.
+# the selected executable and explicitly audited non-secret runtime data into a
+# non-root distroless image.
 #
 # Runtime images intentionally use the credential-free, in-memory feature set.
 # The optional Postgres adapter is private shared-schema material and is tested
@@ -81,10 +82,12 @@ LABEL org.opencontainers.image.source="https://github.com/ORESoftware/ai-agent-b
 
 COPY --from=builder /out/fiducia-slack-command /usr/local/bin/fiducia-slack-command
 COPY --from=builder --chown=nonroot:nonroot /out/slack-command-state/ /var/lib/slack-command/
+COPY --from=builder --chown=nonroot:nonroot /workspace/config/alex-main-agent.channels.json /etc/alex-main-agent/alex-main-agent.channels.json
 
 ENV SLACK_COMMAND_HOST=0.0.0.0 \
     SLACK_COMMAND_PORT=8151 \
     SLACK_COMMAND_STATE_DIR=/var/lib/slack-command/runs \
+    SLACK_PROJECT_REGISTRY_PATH=/etc/alex-main-agent/alex-main-agent.channels.json \
     SLACK_CONTEXT_MESSAGE_COUNT=5 \
     SLACK_COMMAND_DRY_RUN=true
 
