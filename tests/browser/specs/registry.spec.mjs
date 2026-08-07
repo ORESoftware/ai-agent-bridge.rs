@@ -24,18 +24,25 @@ async function submitRoute(page, overrides = {}) {
   return JSON.parse(await result.textContent());
 }
 
+function expectHardenedHeaders(headers) {
+  expect(headers['content-security-policy']).toContain("default-src 'self'");
+  expect(headers['content-security-policy']).toContain("frame-ancestors 'none'");
+  expect(headers['cross-origin-embedder-policy']).toBe('require-corp');
+  expect(headers['cross-origin-opener-policy']).toBe('same-origin');
+  expect(headers['cross-origin-resource-policy']).toBe('same-origin');
+  expect(headers['permissions-policy']).toContain('camera=()');
+  expect(headers['permissions-policy']).toContain('geolocation=()');
+  expect(headers['permissions-policy']).toContain('microphone=()');
+  expect(headers['referrer-policy']).toBe('no-referrer');
+  expect(headers['x-content-type-options']).toBe('nosniff');
+  expect(headers['x-frame-options']).toBe('DENY');
+  expect(headers['cache-control']).toBe('no-store');
+}
+
 test('serves restrictive browser security headers', async ({ page }) => {
   const response = await page.goto('/');
   expect(response).not.toBeNull();
-
-  const headers = response.headers();
-  expect(headers['content-security-policy']).toContain("default-src 'self'");
-  expect(headers['content-security-policy']).toContain("frame-ancestors 'none'");
-  expect(headers['cross-origin-opener-policy']).toBe('same-origin');
-  expect(headers['cross-origin-resource-policy']).toBe('same-origin');
-  expect(headers['referrer-policy']).toBe('no-referrer');
-  expect(headers['x-content-type-options']).toBe('nosniff');
-  expect(headers['cache-control']).toBe('no-store');
+  expectHardenedHeaders(response.headers());
 });
 
 test('resolves Hypesiege through the production Rust registry', async ({ page }) => {
@@ -104,7 +111,7 @@ test('rejects a Linear issue from another team', async ({ page }) => {
   });
 });
 
-test('rejects non-loopback Host headers', async ({ request }) => {
+test('rejects non-loopback Host headers with hardened responses', async ({ request }) => {
   const response = await request.get('/healthz', {
     headers: {
       host: 'attacker.example',
@@ -112,6 +119,50 @@ test('rejects non-loopback Host headers', async ({ request }) => {
   });
 
   expect(response.status()).toBe(421);
+  expectHardenedHeaders(response.headers());
+});
+
+test('rejects malformed loopback Host authorities', async ({ request }) => {
+  for (const host of [
+    'localhost:',
+    'localhost:not-a-port',
+    'localhost:65536',
+    '127.0.0.1:70000',
+    '[::1]:bogus',
+    '[::1]:65536',
+  ]) {
+    const response = await request.get('/healthz', { headers: { host } });
+    expect(response.status(), host).toBe(421);
+    expectHardenedHeaders(response.headers());
+  }
+});
+
+test('rejects cross-site and mismatched loopback origins', async ({ request }) => {
+  const payload = {
+    workspace_id: 'T01B3C83PMK',
+    channel_id: 'C0BMF6JDSHX',
+    user_id: 'U01AZNU2LJ2',
+  };
+
+  const crossSite = await request.post('/api/resolve', {
+    headers: {
+      origin: 'https://attacker.example',
+      'sec-fetch-site': 'cross-site',
+    },
+    data: payload,
+  });
+  expect(crossSite.status()).toBe(403);
+  expectHardenedHeaders(crossSite.headers());
+
+  const wrongPort = await request.post('/api/resolve', {
+    headers: {
+      origin: 'http://127.0.0.1:9999',
+      'sec-fetch-site': 'same-site',
+    },
+    data: payload,
+  });
+  expect(wrongPort.status()).toBe(403);
+  expectHardenedHeaders(wrongPort.headers());
 });
 
 test('rejects oversized JSON bodies before policy evaluation', async ({ request }) => {

@@ -16,10 +16,11 @@ This test surface proves that the reviewed Slack channel registry is enforced by
 The diagnostic server:
 
 - refuses non-loopback bind addresses;
-- rejects non-loopback `Host` headers;
+- rejects non-loopback and malformed loopback `Host` authorities, including empty, non-numeric, and out-of-range ports;
+- rejects cross-site `Sec-Fetch-Site` requests and any `Origin` that does not exactly match the request's loopback authority;
 - accepts at most 16 KiB request bodies;
-- accepts at most a 1 MiB regular-file registry;
-- emits restrictive Content Security Policy, COOP, CORP, referrer, MIME-sniffing, and cache headers;
+- accepts at most a 1 MiB regular-file registry and rejects symbolic-link registry paths;
+- emits restrictive Content Security Policy, COEP, COOP, CORP, Permissions Policy, referrer, framing, MIME-sniffing, and cache headers on successful and rejected responses;
 - stores no Slack signing secret, bot token, Linear key, GitHub token, or provider credential;
 - returns stable public error codes instead of internal policy details.
 
@@ -59,20 +60,25 @@ Chromium verifies:
 4. rejection of an unauthorized Slack principal;
 5. rejection of a repository escape attempt;
 6. rejection of a Linear issue from another team;
-7. rejection of a non-loopback Host header;
-8. rejection of an oversized JSON request body.
+7. rejection of a non-loopback Host header with hardened error headers;
+8. rejection of malformed loopback Host authorities and invalid ports;
+9. rejection of cross-site and mismatched-loopback-origin requests before policy evaluation;
+10. rejection of an oversized JSON request body.
+
+The Rust binary's focused unit tests additionally prove strict loopback authority parsing, same-origin matching, fetch-metadata admission, and symbolic-link registry rejection.
 
 ## GitHub Actions
 
-The `browser-registry` job in `.github/workflows/ci.yml`:
+The `alex-main-agent registry boundary` workflow:
 
 1. checks out without persisted credentials;
-2. builds the Rust diagnostic with the locked Cargo graph;
-3. installs the exact Playwright test version with lifecycle scripts disabled;
-4. installs Chromium;
-5. starts the probe on `127.0.0.1`;
-6. verifies that all 14 bindings loaded while the remote manifest audit remains scoped to the thirteen project-owned entries;
-7. runs the browser suite with one worker and retained failure traces;
-8. terminates the probe and prints its log on failure.
+2. materializes only the exact pinned optional dependency metadata required for non-Postgres resolution;
+3. validates the Rust diagnostic with formatting, warnings-denied Clippy, and focused tests;
+4. installs the exact Playwright test version with lifecycle scripts disabled;
+5. installs Chromium;
+6. starts the probe on `127.0.0.1`;
+7. verifies that all 14 bindings loaded while the remote manifest audit remains scoped to the thirteen project-owned entries;
+8. runs the browser suite with one worker and retained failure traces;
+9. terminates the probe and prints its log on failure.
 
-The existing `test` job continues to run actionlint, provider-secret auditing, rustfmt, clippy with warnings denied, all Rust tests, PostgreSQL restart durability, cargo-audit, and flags-2-env checks.
+The repository-wide workflows continue to own actionlint, provider-secret auditing, all-target Rust validation, PostgreSQL restart durability, cargo-audit, images, and flags-2-env checks. Their private shared-schema credential boundary is tracked separately in issue `#84`.
