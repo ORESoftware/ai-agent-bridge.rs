@@ -135,9 +135,9 @@ jobs:
         if: github.event_name == 'push'
         run: |
           {
-            echo '### ${{ matrix.image }}'
+            echo "### ${{ matrix.image }}"
             echo
-            echo '`${{ steps.publish.outputs.digest }}`'
+            echo "\`${{ steps.publish.outputs.digest }}\`"
             echo
             echo 'Deploy by digest only; tags are discovery aliases.'
           } >> "$GITHUB_STEP_SUMMARY"
