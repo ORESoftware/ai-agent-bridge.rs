@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      EXPECTED_SHARED_COMMIT: 3c84cab532b27d328378f09fba5841f02644ae3b
+      EXPECTED_SHARED_COMMIT: e76b23cb2e23782438a3b03dacc26adfab1bb7fb
       SLACK_BRIDGE_BASE_URL: http://127.0.0.1:8152
       SLACK_BRIDGE_HOST: 127.0.0.1
       SLACK_BRIDGE_PORT: "8152"
