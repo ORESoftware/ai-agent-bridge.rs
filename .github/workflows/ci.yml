@@ -172,5 +172,5 @@ jobs:
             cat "${probe_log}"
             exit 1
           fi
-          grep --fixed-strings '"bindings":13' "${health_json}"
+          grep --fixed-strings '"bindings":14' "${health_json}"
           npm --prefix tests/browser test
