@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      EXPECTED_SHARED_COMMIT: e76b23cb2e23782438a3b03dacc26adfab1bb7fb
+      EXPECTED_SHARED_COMMIT: c8bdc06d74746acc6439f9527ebd02697fdf028b
       SLACK_BRIDGE_BASE_URL: http://127.0.0.1:8152
       SLACK_BRIDGE_HOST: 127.0.0.1
       SLACK_BRIDGE_PORT: "8152"
@@ -51,7 +51,13 @@ jobs:
       SLACK_BOT_USER_ID: UBOTBROWSERTEST
       SLACK_COMMAND_PREFIX: "!ask-both"
       SLACK_BRIDGE_DRY_RUN: "true"
-      SLACK_MAX_CONCURRENT_WORKFLOWS: "1"
+      # Must stay above 1. The ingress acquires a concurrency permit *before*
+      # claiming the run ID, so at a ceiling of 1 a Slack retry can be answered
+      # 503 capacity_exceeded while the first delivery still holds the only
+      # permit, instead of the 200 duplicate the idempotency assertion expects.
+      # That ordering is worth revisiting in the service — Slack retries on 503
+      # — but this lane exercises idempotency, not capacity.
+      SLACK_MAX_CONCURRENT_WORKFLOWS: "4"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
