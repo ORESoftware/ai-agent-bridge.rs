@@ -163,3 +163,32 @@ jobs:
           fi
           grep --fixed-strings '"bindings":13' "${health_json}"
           npm --prefix tests/browser test
+
+  static-checks:
+    # Validations that need neither Cargo nor the private vendor/ submodules.
+    # The cargo jobs (test, browser-registry) structurally cannot run on PR branches
+    # until DEN-2802 is resolved, because Cargo requires the optional
+    # `dd-pg-defs-sea-orm` path dependency to exist even when its feature is off.
+    # This job keeps real PR signal for the checks that do not have that constraint.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Validate GitHub Actions
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+        with:
+          args: >-
+            ./.github/workflows/ci.yml
+            ./.github/workflows/slack-ingress-browser-security.yml
+      - name: Audit provider credential hygiene
+        run: python3 scripts/audit-provider-secrets.py
+      - name: Reject direct SQLx and boot-migration paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -RInE \
+            '(^|[^A-Za-z0-9_])sqlx::(query|query_as|query_scalar|raw_sql|migrate!)|\bPgPool(Options)?\b|^sqlx[[:space:]]*=' \
+            Cargo.toml src tests
