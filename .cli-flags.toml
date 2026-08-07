@@ -264,6 +264,12 @@ aliases = ["slack-allowed-channel-ids"]
 type = "string"
 help = "Comma-separated Slack channel allowlist."
 
+[flags.slack-expected-app-id]
+env = "SLACK_EXPECTED_APP_ID"
+aliases = ["slack-expected-app-id"]
+type = "string"
+help = "Immutable installed Slack app ID; required for non-loopback binds."
+
 [flags.slack-allowed-thread-ts]
 env = "SLACK_ALLOWED_THREAD_TS"
 aliases = ["slack-allowed-thread-ts"]
