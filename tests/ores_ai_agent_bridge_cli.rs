@@ -137,6 +137,62 @@ fn help_names_the_logical_service_without_offering_a_bearer_flag() {
     assert!(!stdout.contains("--bearer"));
 }
 
+#[test]
+fn command_line_bearers_are_rejected_without_echoing_the_secret() {
+    let secret = "cli-secret-that-must-not-appear";
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_ores-ai-agent-bridge"))
+        .args(["probe", "--bearer", secret])
+        .env_remove("ORES_AI_AGENT_BRIDGE_BEARER")
+        .env_remove("FIDUCIA_BRIDGE_PREFLIGHT_BEARER")
+        .env_remove("API_AUTH_BEARER")
+        .output()
+        .expect("run ORES bridge client with forbidden bearer flag");
+
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8 stdout");
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+    assert!(stdout.is_empty());
+    assert!(stderr.contains("unsupported argument"));
+    assert!(!stdout.contains(secret));
+    assert!(!stderr.contains(secret));
+}
+
+#[test]
+fn url_credentials_are_rejected_before_network_io_and_redacted() {
+    let secret = "url-secret-that-must-not-appear";
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_ores-ai-agent-bridge"))
+        .args([
+            "probe",
+            "--base-url",
+            &format!("http://operator:{secret}@127.0.0.1:9"),
+            "--tcp-port",
+            "9",
+            "--timeout-seconds",
+            "1",
+        ])
+        .env_remove("ORES_AI_AGENT_BRIDGE_BEARER")
+        .env_remove("FIDUCIA_BRIDGE_PREFLIGHT_BEARER")
+        .env_remove("API_AUTH_BEARER")
+        .output()
+        .expect("run ORES bridge client with URL credentials");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8 stdout");
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+    let report: Value = serde_json::from_str(&stdout).expect("JSON-only stdout");
+    assert_eq!(report["ok"].as_bool(), Some(false));
+    assert_eq!(report["service_id"], SERVICE_ID);
+    assert_eq!(report["diagnosis"], "connection_or_contract_failure");
+    assert!(
+        report["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("credentials must come from the bearer"))
+    );
+    assert!(!stdout.contains(secret));
+    assert!(!stderr.contains(secret));
+    assert!(stderr.is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_smoke_command_proves_connect_resolve_post_and_read_back() {
     let witness = WitnessState::default();
