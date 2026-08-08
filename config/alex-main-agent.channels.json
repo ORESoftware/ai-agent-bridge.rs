@@ -490,7 +490,7 @@
       "allowed_user_group_ids": [],
       "write_policy": "draft_pull_request",
       "budget_policy": {
-        "max_concurrent_runs": 2,
+        "max_concurrent_runs": 4,
         "max_runtime_secs": 900,
         "max_tokens": 250000,
         "max_spend_cents": 1000,
