@@ -175,6 +175,7 @@ jobs:
           assert binding["write_policy"] == "draft_pull_request"
           assert binding["allowed_user_ids"] == ["U01AZNU2LJ2"]
           PY
+          cargo fmt --all
           cargo fmt --all -- --check
 
       - name: Commit the validated binding and remove one-shot artifacts
