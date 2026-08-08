@@ -47,7 +47,7 @@ jobs:
           toolchain: "1.95.0"
           components: rustfmt, clippy
 
-      - name: Validate the exact shared-schema pin and policy parser
+      - name: Validate the exact shared-schema pin and policy parsers
         shell: bash
         run: |
           set -euo pipefail
@@ -71,7 +71,9 @@ jobs:
             echo "Update config/shared-schema-pin in the same PR as the gitlink bump." >&2
             exit 1
           fi
-          node --test scripts/seaorm-policy.test.mjs
+          node --test \
+            scripts/seaorm-policy.test.mjs \
+            scripts/container-images-policy.test.mjs
 
       - name: Format
         run: cargo fmt --all -- --check
