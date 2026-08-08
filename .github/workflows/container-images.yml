@@ -34,18 +34,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - target: ores-client
+            image: ores-ai-agent-bridge-client
+            entrypoint: /usr/local/bin/ores-ai-agent-bridge
+            help_contract: true
           - target: bridge
             image: fiducia-ai-agent-bridge
             entrypoint: /usr/local/bin/fiducia-ai-agent-bridge
+            help_contract: false
           - target: runner
             image: fiducia-ai-agent-runner
             entrypoint: /usr/local/bin/fiducia-ai-agent-runner
+            help_contract: false
           - target: slack
             image: fiducia-slack-bridge
             entrypoint: /usr/local/bin/fiducia-slack-bridge
+            help_contract: false
           - target: slack-command
             image: fiducia-slack-command
             entrypoint: /usr/local/bin/fiducia-slack-command
+            help_contract: false
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -94,6 +102,20 @@ jobs:
           test "$(docker image inspect --format '{{.Config.User}}' "$IMAGE")" = 'nonroot:nonroot'
           test "$(docker image inspect --format '{{index .Config.Entrypoint 0}}' "$IMAGE")" = "$EXPECTED_ENTRYPOINT"
           test -z "$(docker image inspect --format '{{join .Config.Cmd " "}}' "$IMAGE")"
+
+      - name: Verify local ORES client help contract
+        if: matrix.help_contract
+        env:
+          IMAGE: local/${{ matrix.image }}:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          output="$(docker run --rm "$IMAGE" --help)"
+          grep -F 'com.ores.ai-agent-bridge' <<<"$output"
+          grep -F 'ORES_AI_AGENT_BRIDGE_BEARER' <<<"$output"
+          if grep -F -- '--bearer' <<<"$output"; then
+            echo '::error::The ORES client must not accept bearer credentials on the command line' >&2
+            exit 1
+          fi
 
       - name: Scan local pull-request candidate
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
@@ -166,6 +188,20 @@ jobs:
           test "$(docker image inspect --format '{{index .Config.Entrypoint 0}}' "${PUBLISHED_IMAGE}")" = "${EXPECTED_ENTRYPOINT}"
           test -z "$(docker image inspect --format '{{join .Config.Cmd " "}}' "${PUBLISHED_IMAGE}")"
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "${PUBLISHED_IMAGE}")" = "${SOURCE_SHA}"
+
+      - name: Verify exact published ORES client help contract
+        if: github.event_name == 'push' && matrix.help_contract
+        env:
+          PUBLISHED_IMAGE: ${{ steps.exact.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          output="$(docker run --rm "${PUBLISHED_IMAGE}" --help)"
+          grep -F 'com.ores.ai-agent-bridge' <<<"$output"
+          grep -F 'ORES_AI_AGENT_BRIDGE_BEARER' <<<"$output"
+          if grep -F -- '--bearer' <<<"$output"; then
+            echo '::error::The published ORES client must not accept bearer credentials on the command line' >&2
+            exit 1
+          fi
 
       - name: Scan exact published digest
         if: github.event_name == 'push'
