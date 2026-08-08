@@ -318,13 +318,11 @@ async fn smoke(client: &Client, base: &Url, bearer: &HeaderValue) -> Result<Valu
         .get("messages")
         .and_then(Value::as_array)
         .is_some_and(|items| {
-            items.iter().any(
-                |item| {
-                    item.get("seq").and_then(Value::as_u64) == Some(sequence)
-                        && item.get("from").and_then(Value::as_str) == Some(agent_key.as_str())
-                        && item.get("content").and_then(Value::as_str) == Some(marker.as_str())
-                },
-            )
+            items.iter().any(|item| {
+                item.get("seq").and_then(Value::as_u64) == Some(sequence)
+                    && item.get("from").and_then(Value::as_str) == Some(agent_key.as_str())
+                    && item.get("content").and_then(Value::as_str) == Some(marker.as_str())
+            })
         });
     ensure!(
         read_back,
