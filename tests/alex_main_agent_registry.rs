@@ -24,7 +24,7 @@ fn request(channel_id: &str, user_id: &str) -> ResolveRequest {
 #[test]
 fn alex_main_agent_registry_parses_all_project_bindings() {
     let registry = SlackProjectRegistry::from_json(REGISTRY).expect("registry must be valid");
-    assert_eq!(registry.binding_count(), 14);
+    assert_eq!(registry.binding_count(), 15);
 }
 
 #[test]
@@ -82,6 +82,39 @@ fn misspelled_daedalus_channel_is_unmapped() {
     let result = registry.resolve(&request("C0BMB9GSSKY", ALEX_USER_ID));
 
     assert!(matches!(result, Err(RegistryError::UnmappedChannel)));
+}
+
+#[test]
+fn fanwaave_routes_only_reviewed_repositories_as_draft_pull_requests() {
+    let registry = SlackProjectRegistry::from_json(REGISTRY).expect("registry must be valid");
+    let mut request = request("C0BN3FMEJGL", ALEX_USER_ID);
+    request.linear_issue_identifier = Some("DEN-1874".to_string());
+
+    let default_context = registry
+        .resolve(&request)
+        .expect("Fanwaave route must resolve");
+    assert_eq!(default_context.linear_team_key, "DEN");
+    assert_eq!(
+        default_context.linear_project_id,
+        "d765e227-5726-42c8-8643-a8bd9e5a9a8c"
+    );
+    assert_eq!(
+        default_context.repository,
+        "fanwaave/push-notification-server.rs"
+    );
+    assert_eq!(default_context.write_policy, WritePolicy::DraftPullRequest);
+
+    request.requested_repository = Some("fanwaave/.github".to_string());
+    let governance_context = registry
+        .resolve(&request)
+        .expect("Fanwaave governance route must resolve");
+    assert_eq!(governance_context.repository, "fanwaave/.github");
+
+    request.requested_repository = Some("ORESoftware/k8s-cluster".to_string());
+    assert!(matches!(
+        registry.resolve(&request),
+        Err(RegistryError::RepositoryNotAllowed)
+    ));
 }
 
 #[test]
