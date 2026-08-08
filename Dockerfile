@@ -23,13 +23,25 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
       --bin fiducia-ai-agent-runner \
       --bin fiducia-slack-bridge \
       --bin fiducia-slack-command \
+      --bin ores-ai-agent-bridge \
     && install -D -m 0755 target/release/fiducia-ai-agent-bridge /out/fiducia-ai-agent-bridge \
     && install -D -m 0755 target/release/fiducia-ai-agent-runner /out/fiducia-ai-agent-runner \
     && install -D -m 0755 target/release/fiducia-slack-bridge /out/fiducia-slack-bridge \
     && install -D -m 0755 target/release/fiducia-slack-command /out/fiducia-slack-command \
+    && install -D -m 0755 target/release/ores-ai-agent-bridge /out/ores-ai-agent-bridge \
     && mkdir -p /out/runtime-state/claude-inbox \
     && mkdir -p /out/slack-state \
     && mkdir -p /out/slack-command-state/runs
+
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:fccdbb0a547c14e23fcf4ce8ad62ca5d43b4faae8d22cd292f490fef9946c96e AS ores-client
+
+LABEL org.opencontainers.image.source="https://github.com/ORESoftware/ai-agent-bridge.rs" \
+      org.opencontainers.image.description="Credential-safe ORES client for com.ores.ai-agent-bridge"
+
+COPY --from=builder /out/ores-ai-agent-bridge /usr/local/bin/ores-ai-agent-bridge
+
+USER nonroot:nonroot
+ENTRYPOINT ["/usr/local/bin/ores-ai-agent-bridge"]
 
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:fccdbb0a547c14e23fcf4ce8ad62ca5d43b4faae8d22cd292f490fef9946c96e AS bridge
 
