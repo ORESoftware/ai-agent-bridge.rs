@@ -4,9 +4,12 @@ The `#benefactor-cc` Slack binding is a project-scoped draft-PR gateway. It is
 not a general GitHub credential and does not bypass repository review policy.
 
 The default target remains `benefactor-cc/benefactor-cc-mcp-server.rs`. A user
-must name another repository explicitly, provide a valid `DEN-*` Linear issue,
-and request a repository-write capability before the registry will consider a
-different target.
+must name another repository explicitly and request a repository-write
+capability before the registry will consider a different target. Linear issue
+context is optional at the registry boundary; when supplied, it must be a valid
+`DEN-*` identifier and is preserved in the resolved project context. Operational
+agent workflows should attach the relevant Benefactor issue whenever work is
+issue-driven.
 
 ## Reviewed repositories
 
@@ -39,6 +42,6 @@ be changed through the canonical Astro source in `ORESoftware/benefactor.cc`.
 `benefactor-cc/benfactor-cc` is the preserved misspelled legacy site. Neither is
 an agent write target.
 
-Unknown repositories, URLs, `.git` suffixes, path traversal, subpaths, other
-projects' repositories, missing issue identifiers, and non-`DEN` issues fail
-closed in the routing registry.
+Unknown repositories, URLs, `.git` suffixes, path traversal, subpaths, and other
+projects' repositories fail closed. Supplied malformed issue identifiers or
+issue identifiers from a non-`DEN` team also fail closed.
