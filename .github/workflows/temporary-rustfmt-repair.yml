@@ -1,4 +1,4 @@
-name: Temporary rustfmt repair
+name: Temporary bridge source repair
 
 on:
   push:
@@ -9,26 +9,54 @@ permissions:
   contents: write
 
 jobs:
-  rustfmt:
+  repair-and-verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
+      - name: Prepare credential-free build inputs
+        run: bash scripts/ci/prepare-credential-free-build.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
-      - name: Apply and publish rustfmt
+          components: rustfmt, clippy
+      - name: Repair transport client source
         shell: bash
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/bin/ores-ai-agent-bridge.rs')
+          source = path.read_text()
+          replacements = {
+              'DEFAUL_LOCAL_HTTP_BASE_URL': 'DEFAULT_LOCAL_HTTP_BASE_URL',
+              'bridge HTTQ transport identity did not match': 'bridge HTTP transport identity did not match',
+              'agent_key.as_string()': 'agent_key.as_str()',
+          }
+          for old, new in replacements.items():
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one {old!r}, found {count}')
+              source = source.replace(old, new)
+          path.write_text(source)
+          PY
           cargo fmt --all
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --all-targets --locked
+          cargo check --all-targets --locked
+      - name: Publish verified repair
+        shell: bash
+        run: |
+          set -euo pipefail
           if git diff --quiet; then
             exit 0
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add src/bin/ores-ai-agent-bridge.rs tests/ores_ai_agent_bridge_cli.rs src/service_identity.rs src/lib.rs
-          git commit -m 'chore: apply rustfmt'
+          git commit -m 'fix: verify ORES bridge client'
           git push origin HEAD:${GITHUB_REF_NAME}
