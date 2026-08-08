@@ -30,6 +30,8 @@ mod registry_file_boundary_tests {
             chatgpt_agent: "gpt-5.6-sol".into(),
             linear_run_project_id: DEFAULT_LINEAR_RUN_PROJECT.into(),
             context_messages: 5,
+            socket_mode: false,
+            app_token: None,
             dry_run: true,
             max_concurrent_runs: 1,
         }
@@ -90,6 +92,8 @@ mod ingress_security_tests {
             chatgpt_agent: DEFAULT_CHATGPT_AGENT.to_string(),
             linear_run_project_id: DEFAULT_LINEAR_RUN_PROJECT.to_string(),
             context_messages: DEFAULT_CONTEXT_MESSAGES,
+            socket_mode: false,
+            app_token: None,
             dry_run: true,
             max_concurrent_runs: 1,
         }

@@ -26,6 +26,13 @@ pub async fn run() -> anyhow::Result<()> {
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let listener = TcpListener::bind(address).await?;
     info!(%address, dry_run = app.config.dry_run, "starting ORESoftware Slack commands");
+    // Socket Mode is additive: the HTTP listener still serves health and
+    // readiness for the orchestrator, and the Request URL routes stay mounted so
+    // a deployment can move between transports without a code change.
+    if app.config.socket_mode {
+        tokio::spawn(run_socket_mode(app.clone()));
+    }
+
     axum::serve(listener, router(app)).await?;
     Ok(())
 }

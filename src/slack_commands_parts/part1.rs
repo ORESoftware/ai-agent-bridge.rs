@@ -24,7 +24,7 @@ use reqwest::{redirect::Policy, Client, Response as HttpResponse, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::{net::TcpListener, sync::Semaphore};
+use tokio::{net::TcpListener, sync::Semaphore, time::sleep};
 use tower_http::{catch_panic::CatchPanicLayer, trace::TraceLayer};
 use tracing::{info, warn};
 
@@ -122,6 +122,10 @@ struct Config {
     chatgpt_agent: String,
     linear_run_project_id: String,
     context_messages: usize,
+    // Socket Mode ingress. Off by default: the reviewed production posture is
+    // the signed Request URL. See docs/slack-socket-mode.md.
+    socket_mode: bool,
+    app_token: Option<String>,
     dry_run: bool,
     max_concurrent_runs: usize,
 }
@@ -173,6 +177,9 @@ impl Config {
             0,
             MAX_CONTEXT_MESSAGES,
         )?;
+        let socket_mode = env_bool("SLACK_SOCKET_MODE", false)?;
+        let app_token = env_opt("SLACK_APP_TOKEN");
+        validate_app_token(socket_mode, app_token.as_deref())?;
         if ![0, 5, 10, 20].contains(&context_messages) {
             return Err(Error::Config(
                 "SLACK_CONTEXT_MESSAGE_COUNT must be 0, 5, 10, or 20".into(),
@@ -203,6 +210,8 @@ impl Config {
                 &env_or("SLACK_LINEAR_RUN_PROJECT_ID", DEFAULT_LINEAR_RUN_PROJECT),
             )?,
             context_messages,
+            socket_mode,
+            app_token,
             dry_run: env_bool("SLACK_COMMAND_DRY_RUN", true)?,
             max_concurrent_runs: env_usize("SLACK_COMMAND_MAX_CONCURRENT_RUNS", 8, 1, 128)?,
         })
