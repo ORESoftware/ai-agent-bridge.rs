@@ -4,6 +4,8 @@ mod claims;
 mod heartbeat;
 mod retry;
 mod retry_execution;
+#[cfg(test)]
+mod retry_execution_tests;
 mod work;
 
 use std::collections::HashSet;
