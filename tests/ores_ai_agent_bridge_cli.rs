@@ -183,11 +183,9 @@ fn url_credentials_are_rejected_before_network_io_and_redacted() {
     assert_eq!(report["ok"].as_bool(), Some(false));
     assert_eq!(report["service_id"], SERVICE_ID);
     assert_eq!(report["diagnosis"], "connection_or_contract_failure");
-    assert!(
-        report["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("credentials must come from the bearer"))
-    );
+    assert!(report["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("credentials must come from the bearer")));
     assert!(!stdout.contains(secret));
     assert!(!stderr.contains(secret));
     assert!(stderr.is_empty());
