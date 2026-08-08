@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -22,7 +22,17 @@ struct MockState {
     headers: Arc<Vec<(String, String)>>,
     body: Arc<MockBody>,
     delay: Duration,
+    /// Responses served (and consumed) before the base response, so one mock
+    /// server can express retry sequences such as "429 then success".
+    queued: Arc<Mutex<VecDeque<QueuedResponse>>>,
     seen: Arc<Mutex<Vec<CapturedRequest>>>,
+}
+
+#[derive(Clone)]
+struct QueuedResponse {
+    status: HttpStatusCode,
+    headers: Vec<(String, String)>,
+    body: MockBody,
 }
 
 #[derive(Clone)]
@@ -48,8 +58,28 @@ impl MockState {
             headers: Arc::new(Vec::new()),
             body: Arc::new(MockBody::Json(body)),
             delay: Duration::ZERO,
+            queued: Arc::new(Mutex::new(VecDeque::new())),
             seen: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Queue a response served before the base response; queued responses are
+    /// consumed in order, then every later request receives the base response.
+    fn with_first_response(
+        self,
+        status: HttpStatusCode,
+        headers: &[(&str, &str)],
+        body: MockBody,
+    ) -> Self {
+        self.queued.lock().unwrap().push_back(QueuedResponse {
+            status,
+            headers: headers
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
+            body,
+        });
+        self
     }
 
     fn with_status(mut self, status: HttpStatusCode) -> Self {
@@ -99,11 +129,19 @@ async fn mock_provider(State(state): State<MockState>, request: AxumRequest) -> 
         tokio::time::sleep(state.delay).await;
     }
 
-    let mut builder = Response::builder().status(state.status);
-    for (name, value) in state.headers.iter() {
+    let (status, headers, body) = match state.queued.lock().unwrap().pop_front() {
+        Some(queued) => (queued.status, queued.headers, queued.body),
+        None => (
+            state.status,
+            state.headers.as_ref().clone(),
+            state.body.as_ref().clone(),
+        ),
+    };
+    let mut builder = Response::builder().status(status);
+    for (name, value) in headers.iter() {
         builder = builder.header(name.as_str(), value.as_str());
     }
-    match state.body.as_ref() {
+    match &body {
         MockBody::Json(body) => builder
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_vec(body).unwrap()))
@@ -178,9 +216,8 @@ struct ContractCase {
     total_tokens: u64,
 }
 
-#[tokio::test]
-async fn executes_all_provider_wire_contracts_and_normalizes_usage() {
-    let cases = [
+fn contract_cases() -> [ContractCase; 5] {
+    [
         ContractCase {
             name: "codex",
             protocol: ProviderProtocol::OpenAiResponses,
@@ -270,9 +307,12 @@ async fn executes_all_provider_wire_contracts_and_normalizes_usage() {
             output_tokens: 9,
             total_tokens: 23,
         },
-    ];
+    ]
+}
 
-    for case in cases {
+#[tokio::test]
+async fn executes_all_provider_wire_contracts_and_normalizes_usage() {
+    for case in contract_cases() {
         let state = MockState::json(case.response.clone())
             .with_header(case.request_id_header, case.request_id);
         let (base, state) = spawn(state).await;
@@ -465,6 +505,126 @@ async fn retry_metadata_is_bounded_and_redacted() {
     assert!(!rendered.contains(TEST_SECRET));
     assert!(!rendered.contains("provider-controlled"));
     assert!(!rendered.contains("secret body"));
+}
+
+/// Per-protocol transient failure the retry engine is allowed to retry:
+/// status, optional bounded Retry-After seconds, vendor error body, and the
+/// stable category the failure parser must map it to.
+fn transient_failure_fixture(
+    case: &ContractCase,
+) -> (
+    HttpStatusCode,
+    Option<&'static str>,
+    Value,
+    ProviderFailureKind,
+) {
+    match case.name {
+        "codex" => (
+            HttpStatusCode::TOO_MANY_REQUESTS,
+            Some("2"),
+            json!({"error":{"code":"rate_limit_exceeded","message":"provider-controlled"}}),
+            ProviderFailureKind::RateLimited,
+        ),
+        "claude" => (
+            HttpStatusCode::from_u16(529).unwrap(),
+            None,
+            json!({"error":{"type":"overloaded_error","message":"provider-controlled"}}),
+            ProviderFailureKind::Overloaded,
+        ),
+        "gemini" => (
+            HttpStatusCode::SERVICE_UNAVAILABLE,
+            Some("1"),
+            json!({"error":{"status":"UNAVAILABLE","message":"provider-controlled"}}),
+            ProviderFailureKind::TemporarilyUnavailable,
+        ),
+        "kimi" => (
+            HttpStatusCode::TOO_MANY_REQUESTS,
+            None,
+            json!({"error":{"type":"rate_limit_reached_error","message":"provider-controlled"}}),
+            ProviderFailureKind::RateLimited,
+        ),
+        _ => (
+            HttpStatusCode::INTERNAL_SERVER_ERROR,
+            Some("4"),
+            json!({"error":{"code":"internal_server_error","message":"provider-controlled"}}),
+            ProviderFailureKind::ServerError,
+        ),
+    }
+}
+
+/// DEN-523 matrix extension: every provider protocol surfaces its transient
+/// failure as a redacted, classified, Retry-After-carrying error, and a second
+/// attempt against the same client sends a byte-identical request body before
+/// succeeding — retried requests must stay deterministic.
+#[tokio::test]
+async fn transient_failure_then_success_keeps_request_bodies_deterministic() {
+    for case in contract_cases() {
+        let (status, retry_after, error_body, expected_kind) = transient_failure_fixture(&case);
+        let mut failure_headers = Vec::new();
+        if let Some(retry_after) = retry_after {
+            failure_headers.push(("retry-after", retry_after));
+        }
+        let state = MockState::json(case.response.clone())
+            .with_header(case.request_id_header, case.request_id)
+            .with_first_response(status, &failure_headers, MockBody::Json(error_body));
+        let (base, state) = spawn(state).await;
+        let client = ProviderClient::with_api_key(
+            config(
+                case.name,
+                case.protocol,
+                format!("{base}{}", case.prefix),
+                case.model,
+                1024 * 1024,
+                5,
+            ),
+            TEST_SECRET,
+        )
+        .unwrap();
+
+        let error = client.execute(&request()).await.unwrap_err();
+        assert_eq!(
+            error.http_status().map(|status| status.as_u16()),
+            Some(status.as_u16()),
+            "transient status for {}",
+            case.name
+        );
+        assert_eq!(
+            error.failure_kind(),
+            Some(expected_kind),
+            "failure category for {}",
+            case.name
+        );
+        match retry_after {
+            Some(seconds) => assert_eq!(
+                error.retry_after(),
+                Some(Duration::from_secs(seconds.parse().unwrap())),
+                "retry-after for {}",
+                case.name
+            ),
+            None => assert_eq!(error.retry_after(), None, "retry-after for {}", case.name),
+        }
+        let rendered = error.to_string();
+        assert!(!rendered.contains(TEST_SECRET), "secret for {}", case.name);
+        assert!(
+            !rendered.contains("provider-controlled"),
+            "body leak for {}",
+            case.name
+        );
+
+        let response = client.execute(&request()).await.unwrap();
+        assert_eq!(response.text, case.expected_text, "text for {}", case.name);
+        assert_eq!(response.provider, case.name);
+
+        let seen = state.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2, "request count for {}", case.name);
+        assert_eq!(
+            seen[0].body, seen[1].body,
+            "retried request body must be deterministic for {}",
+            case.name
+        );
+        assert_eq!(seen[0].path, seen[1].path, "path for {}", case.name);
+        assert_eq!(seen[0].method, seen[1].method, "method for {}", case.name);
+    }
 }
 
 #[tokio::test]
