@@ -76,7 +76,7 @@ fn parse_args() -> Result<Option<Args>> {
     let mut mode = Mode::Probe;
     let mut mode_seen = false;
     let mut base_url = env_value(&[BASE_URL_ENV, "FIDUCIA_BRIDGE_BASE_URL"])
-        .unwrap_or_else(|| DEFAUL_LOCAL_HTTP_BASE_URL.to_string());
+        .unwrap_or_else(|| DEFAULT_LOCAL_HTTP_BASE_URL.to_string());
     let mut tcp_port = env_value(&[TCP_PORT_ENV, "FIDUCIA_BRIDGE_TCP_PORT"])
         .map(|value| parse_port(&value, TCP_PORT_ENV))
         .transpose()?
@@ -203,7 +203,7 @@ fn require_identity(value: &Value) -> Result<()> {
     );
     ensure!(
         value.pointer("/transports/http").and_then(Value::as_str) == Some(HTTP_TRANSPORT),
-        "bridge HTTQ transport identity did not match"
+        "bridge HTTP transport identity did not match"
     );
     ensure!(
         value.pointer("/transports/tcp").and_then(Value::as_str) == Some(TCP_TRANSPORT),
@@ -276,7 +276,7 @@ async fn smoke(client: &Client, base: &Url, bearer: &HeaderValue) -> Result<Valu
     .await
     .context("bridge smoke channel join failed")?;
     ensure!(
-        joined.pointer("/member/agent_key").and_then(Value::as_str) == Some(agent_key.as_string()),
+        joined.pointer("/member/agent_key").and_then(Value::as_str) == Some(agent_key.as_str()),
         "bridge smoke channel join contract failed"
     );
 
