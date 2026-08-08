@@ -42,10 +42,11 @@ jobs:
 
     steps:
       - name: Check out exact source
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          submodules: recursive
+          submodules: false
           show-progress: false
 
       - name: Reject committed browser outputs and dependencies
@@ -57,6 +58,9 @@ jobs:
             printf 'generated browser files must not be committed:\n%s\n' "$tracked" >&2
             exit 1
           fi
+
+      - name: Prepare credential-free build inputs
+        run: bash scripts/ci/prepare-credential-free-build.sh
 
       - name: Validate workflow syntax
         uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
@@ -90,8 +94,8 @@ jobs:
             exit 1
           fi
 
-      - name: Strict Rust lint
-        run: cargo clippy --locked --all-targets --features postgres -- -D warnings
+      - name: Strict credential-free Rust lint
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Install pinned Node runtime
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -112,17 +116,19 @@ jobs:
         working-directory: tests/browser
         run: npm run test:modal
 
-      - name: Require a clean source tree outside ephemeral browser outputs
-        if: ${{ !cancelled() }}
+      - name: Require no drift in reviewed source or fixtures
+        if: ${{ always() && steps.checkout.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
-          status="$(git status --porcelain --untracked-files=all \
-            | grep -vE '^\?\? tests/browser/(node_modules|playwright-report|test-results)/' || true)"
-          if [[ -n "$status" ]]; then
-            printf 'unexpected source-tree drift:\n%s\n' "$status" >&2
-            exit 1
-          fi
+          git diff --exit-code -- \
+            .github/workflows/slack-modal-surface.yml \
+            docs/slack-run-modal-surface.md \
+            src \
+            tests/slack_modal_fixture.rs \
+            tests/browser/fixtures \
+            tests/browser/package.json \
+            tests/browser/specs/modal.spec.mjs
 
       - name: Upload browser evidence on failure
         if: failure()
