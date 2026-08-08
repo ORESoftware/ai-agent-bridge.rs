@@ -1,7 +1,7 @@
 //! Fail-closed routing contract for the reviewed Benefactor repository family.
 //!
 //! The canonical Slack binding keeps the MCP server as its default target, but
-//! issue-bound draft-PR work may explicitly select another reviewed Benefactor
+//! project-scoped draft-PR work may explicitly select another reviewed Benefactor
 //! repository. Generated output and the misspelled legacy site remain excluded.
 
 use std::collections::BTreeSet;
@@ -102,17 +102,35 @@ fn generated_legacy_unknown_and_cross_project_targets_fail_closed() {
 }
 
 #[test]
-fn repository_write_still_requires_a_valid_denman_issue() {
+fn optional_issue_context_is_preserved_and_foreign_issues_fail_closed() {
     let registry = registry();
 
-    let mut missing = request(Some("benefactor-cc/backend.rs"));
-    missing.linear_issue_identifier = None;
-    assert!(registry.resolve(&missing).is_err());
+    let mut without_issue = request(Some("benefactor-cc/backend.rs"));
+    without_issue.linear_issue_identifier = None;
+    let resolved = registry
+        .resolve(&without_issue)
+        .expect("the registry permits an omitted issue context");
+    assert!(resolved.issue.is_none());
+
+    let resolved = registry
+        .resolve(&request(Some("benefactor-cc/backend.rs")))
+        .expect("a valid DEN issue context must resolve");
+    let issue = resolved.issue.expect("valid issue context");
+    assert_eq!(issue.identifier, "DEN-3009");
+    assert_eq!(issue.team_key, "DEN");
+    assert_eq!(issue.number, 3009);
 
     let mut foreign = request(Some("benefactor-cc/backend.rs"));
     foreign.linear_issue_identifier = Some("ENG-3009".to_string());
     assert!(matches!(
         registry.resolve(&foreign),
         Err(RegistryError::IssueTeamMismatch)
+    ));
+
+    let mut malformed = request(Some("benefactor-cc/backend.rs"));
+    malformed.linear_issue_identifier = Some("DEN-0".to_string());
+    assert!(matches!(
+        registry.resolve(&malformed),
+        Err(RegistryError::InvalidIssueIdentifier)
     ));
 }
