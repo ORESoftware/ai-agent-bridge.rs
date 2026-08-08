@@ -45,6 +45,23 @@ FANWAAVE_REPOSITORY_ALLOWLIST = (
     "fanwaave/push-notification-server.rs",
     "fanwaave/.github",
 )
+BENEFACTOR_CHANNEL = "C0BKP367N95"
+BENEFACTOR_REPOSITORY_ALLOWLIST = (
+    "benefactor-cc/benefactor-cc-mcp-server.rs",
+    "benefactor-cc/backend.rs",
+    "benefactor-cc/benefactor-sync",
+    "benefactor-cc/benefactor-interfaces",
+    "benefactor-cc/benefactor-e2e",
+    "benefactor-cc/benefactor-automations",
+    "benefactor-cc/benefactor-sendgrid-outreach",
+    "benefactor-cc/benefactor-monorepo",
+    "benefactor-cc/benefactor-lib",
+    "benefactor-cc/benefactor-clients",
+    "benefactor-cc/benefactor-cli",
+    "benefactor-cc/.github",
+    "ORESoftware/benefactor.cc",
+    "ORESoftware/k8s-cluster",
+)
 SHA1 = re.compile(r"[0-9a-f]{40}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 ISSUE = re.compile(r"DEN-[1-9][0-9]*")
@@ -350,6 +367,8 @@ def validate_registry(raw: Any, lock: Lock) -> None:
             expected_allowlist = list(PILOT_REPOSITORY_ALLOWLIST)
         elif channel == FANWAAVE_CHANNEL:
             expected_allowlist = list(FANWAAVE_REPOSITORY_ALLOWLIST)
+        elif channel == BENEFACTOR_CHANNEL:
+            expected_allowlist = list(BENEFACTOR_REPOSITORY_ALLOWLIST)
         else:
             expected_allowlist = [repo]
         eq(

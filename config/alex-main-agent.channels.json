@@ -75,7 +75,20 @@
       "linear_project_id": "e1db74d7-4fa3-4580-851d-ca8fc8145127",
       "default_repository": "benefactor-cc/benefactor-cc-mcp-server.rs",
       "repository_allowlist": [
-        "benefactor-cc/benefactor-cc-mcp-server.rs"
+        "benefactor-cc/benefactor-cc-mcp-server.rs",
+        "benefactor-cc/backend.rs",
+        "benefactor-cc/benefactor-sync",
+        "benefactor-cc/benefactor-interfaces",
+        "benefactor-cc/benefactor-e2e",
+        "benefactor-cc/benefactor-automations",
+        "benefactor-cc/benefactor-sendgrid-outreach",
+        "benefactor-cc/benefactor-monorepo",
+        "benefactor-cc/benefactor-lib",
+        "benefactor-cc/benefactor-clients",
+        "benefactor-cc/benefactor-cli",
+        "benefactor-cc/.github",
+        "ORESoftware/benefactor.cc",
+        "ORESoftware/k8s-cluster"
       ],
       "default_agent_mode": "both-parallel",
       "allowed_agent_modes": [
@@ -97,8 +110,8 @@
         "max_spend_cents": 1000,
         "max_retries": 2
       },
-      "updated_by": "DEN-1298",
-      "updated_at": "2026-08-01T19:12:00Z"
+      "updated_by": "DEN-3009",
+      "updated_at": "2026-08-08T16:50:26Z"
     },
     {
       "workspace_id": "T01B3C83PMK",
