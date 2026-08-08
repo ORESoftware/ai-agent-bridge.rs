@@ -383,6 +383,40 @@ test('records cancellation intent and reports terminal and unknown runs', async 
   expect(payload.state).toBe('completed');
 });
 
+test('accepts a single-provider request and refuses an unknown provider', async ({ page }) => {
+  // What is under test is whether the flag parses and routes as work, not
+  // whether capacity happens to be free. This lane runs at a ceiling of 1, so a
+  // genuinely new delivery may legitimately be shed with 503 while the previous
+  // one still holds the only permit. Both 200 and 503 mean the command was
+  // understood; only 400 means it was refused.
+  for (const model of ['claude', 'chatgpt', 'both']) {
+    const accepted = await postSigned(
+      page,
+      eventBody({ event: { text: `${commandPrefix} --model ${model} explain raft` } }),
+    );
+    expect([200, 503], `--model ${model} should be understood, not refused`).toContain(
+      accepted.status,
+    );
+    if (accepted.status === 200) {
+      expect(JSON.parse(accepted.body).accepted).toBe(true);
+    }
+  }
+
+  // An unknown provider is refused rather than silently defaulted to both.
+  const unknown = await postSigned(
+    page,
+    eventBody({ event: { text: `${commandPrefix} --model gemini explain raft` } }),
+  );
+  expect(unknown.status).toBe(400);
+
+  // A flag with no task is not a request.
+  const bare = await postSigned(
+    page,
+    eventBody({ event: { text: `${commandPrefix} --model claude` } }),
+  );
+  expect(bare.status).toBe(400);
+});
+
 test('rejects a cancel whose target is not a usable identifier', async ({ page }) => {
   const response = await postSigned(
     page,
