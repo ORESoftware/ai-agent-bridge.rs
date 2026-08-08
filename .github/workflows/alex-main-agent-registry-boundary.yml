@@ -126,7 +126,7 @@ jobs:
           done
 
           test "${ready}" = "1"
-          jq -e '.status == "ok" and .bindings == 14' "${health_json}"
+          jq -e '.status == "ok" and .bindings == 15' "${health_json}"
           PLAYWRIGHT_OUTPUT_DIR="${evidence_dir}/playwright" \
             npm --prefix tests/browser run test:registry
 
