@@ -159,6 +159,28 @@ a target that is not a valid event identifier is rejected rather than looked up.
 `status` is matched only as the first token, so prose that merely mentions the
 word is still routed as work.
 
+### Cancellation
+
+```text
+<prefix> cancel <event-id>
+```
+
+Records cancellation intent in the durable journal. The worker observes it at
+the next stage boundary and stops cooperatively — nothing is aborted mid-write,
+so the journal is never left describing a partially applied step. Like `status`,
+it reserves no capacity, so a run can be stopped precisely when the service is
+saturated and stopping it is most useful.
+
+Intent is journaled rather than held in memory, so it survives a restart: a
+worker resuming after a crash still sees that the run was canceled instead of
+quietly finishing it. `Canceled` is a terminal state distinct from `Completed`,
+so a stopped run is never mistaken for one that delivered its submissions.
+
+A cancel against an already-terminal run reports `already_terminal` with the
+state; an unknown run reports `unknown`. Neither invents a journal entry.
+Cancellation stops further work — it does not retract submissions already posted
+to the thread.
+
 ### Operational metrics
 
 ```text
@@ -181,6 +203,35 @@ channel, user, application identifier, prompt text, or channel content appears
 in a scrape, and the Chromium lane asserts that. The endpoint is unauthenticated
 and intended for a private scrape path; it must not be exposed publicly
 alongside the signed Slack route.
+
+### Deployment exposure contract
+
+`fiducia-slack-bridge` is a **third workload**, distinct from the two that are
+easy to confuse it with. All three build from this one source tree:
+
+| Binary | Port | `/metrics` |
+|---|---|---|
+| `fiducia-ai-agent-bridge` | `8142` | pre-existing, rendered from `crate::metrics` |
+| `fiducia-slack-command` | — | none |
+| `fiducia-slack-bridge` | `8150` | the outcome counters described above |
+
+A NetworkPolicy that scopes the bridge's metrics port therefore does **not**
+cover this service. Any manifest for the Events API ingress needs its own:
+
+- `/slack/events` is the only route that may be reachable externally;
+- `/metrics`, `/healthz`, and `/readyz` belong on a private path, with
+  `/metrics` scoped to the metrics scraper;
+- the service binds `127.0.0.1` by default, so serving in a pod requires
+  `SLACK_BRIDGE_HOST=0.0.0.0` — which is exactly the moment `/metrics` stops
+  being protected by loopback and the policy above starts carrying the weight;
+- `SLACK_EXPECTED_APP_ID` is **required** for any non-loopback bind and the
+  service refuses to start without it, so a pod-networked deployment cannot run
+  without the installed-application identity check.
+
+When pinning images by digest, read the `image-digest-<target>` evidence
+artifact from the `container images` run for the exact source SHA. This
+repository merges several times a day and every merge that touches `src/**`
+rebuilds all four images, so a digest copied by hand goes stale quickly.
 
 ### Request-URL handshake
 
@@ -212,6 +263,8 @@ dry-run configuration, then drives real Chromium requests against
 - a retry is still recognized as a duplicate with the concurrency ceiling at one;
 - a status lookup resolves a known delivery while the service is saturated,
   reports `unknown` for an unseen one, and refuses an unusable identifier;
+- a cancel reports `already_terminal` for a finished run and `unknown` for an
+  unseen one, invents no journal entry, and refuses an unusable identifier;
 - `/metrics` renders a zero series for every declared outcome and leaks no Slack
   workspace, channel, application identifier, or prompt text.
 
