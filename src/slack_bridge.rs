@@ -696,7 +696,17 @@ enum EventDecision {
     Challenge(String),
     Ignore,
     Accept(AcceptedEvent),
+    /// `<prefix> status <event-id>` — resolve a prior delivery from the durable
+    /// journal. Read-only: it claims nothing, reserves no capacity, and starts
+    /// no workflow, so it stays answerable while the service is saturated.
+    Status(String),
     Reject,
+    /// A correctly signed event from an application other than the reviewed
+    /// install. Distinguished from `Reject` because a non-zero rate here means
+    /// a foreign app is posting to this endpoint with a valid signature, which
+    /// is a security signal rather than a malformed-payload signal, and is
+    /// invisible if it is folded into the generic policy-rejection counter.
+    RejectForeignApp,
 }
 
 fn classify_event(config: &SlackConfig, envelope: SlackEnvelope) -> EventDecision {
@@ -739,10 +749,10 @@ fn classify_event(config: &SlackConfig, envelope: SlackEnvelope) -> EventDecisio
     // even when the payload carries an allowlisted workspace.
     if let Some(expected_app_id) = config.expected_app_id.as_deref() {
         let Some(api_app_id) = envelope.api_app_id.as_deref() else {
-            return EventDecision::Reject;
+            return EventDecision::RejectForeignApp;
         };
         if api_app_id != expected_app_id {
-            return EventDecision::Reject;
+            return EventDecision::RejectForeignApp;
         }
     }
 
@@ -809,6 +819,7 @@ fn classify_event(config: &SlackConfig, envelope: SlackEnvelope) -> EventDecisio
             user,
             prompt,
         }),
+        CommandParse::Status(target) => EventDecision::Status(target),
     }
 }
 
@@ -817,6 +828,8 @@ enum CommandParse {
     NotCommand,
     Invalid,
     Prompt(String),
+    /// `<prefix> status <event-id>` — read-only lookup of a prior delivery.
+    Status(String),
 }
 
 fn parse_command(text: &str, prefix: &str) -> CommandParse {
@@ -841,6 +854,24 @@ fn parse_command(text: &str, prefix: &str) -> CommandParse {
     {
         return CommandParse::Invalid;
     }
+
+    // `status <event-id>` is a read-only journal lookup rather than a prompt.
+    // Matched case-insensitively on the first token only, so a prompt that
+    // merely mentions the word status is still routed as work.
+    if let Some(argument) = prompt
+        .split_once(char::is_whitespace)
+        .filter(|(head, _)| head.eq_ignore_ascii_case("status"))
+        .map(|(_, tail)| tail.trim())
+    {
+        if !valid_event_id(argument) {
+            return CommandParse::Invalid;
+        }
+        return CommandParse::Status(argument.to_string());
+    }
+    if prompt.eq_ignore_ascii_case("status") {
+        return CommandParse::Invalid;
+    }
+
     CommandParse::Prompt(prompt.to_string())
 }
 
@@ -1204,6 +1235,7 @@ fn router(app: Arc<SlackApp>) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .route("/metrics", get(metrics))
         .route("/slack/events", post(slack_events))
         .layer(DefaultBodyLimit::max(app.config.max_body_bytes))
         .layer(TraceLayer::new_for_http())
@@ -1213,6 +1245,16 @@ fn router(app: Arc<SlackApp>) -> Router {
 
 async fn healthz() -> impl IntoResponse {
     Json(json!({ "ok": true }))
+}
+
+async fn metrics() -> impl IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        render_ingress_metrics(),
+    )
 }
 
 async fn readyz(State(app): State<Arc<SlackApp>>) -> impl IntoResponse {
@@ -1263,7 +1305,45 @@ async fn slack_events(
                 json!({ "ok": false, "error": "invalid_event" }),
             )
         }
+        EventDecision::Status(target) => {
+            emit_metric("status_query");
+            let body = match app.store.snapshot(&target) {
+                Some(record) => json!({
+                    "ok": true,
+                    "event_id": record.event_id,
+                    "state": record.state,
+                    "workflow_id": record.workflow_id,
+                    "posted_agents": record.posted_agents,
+                    "updated_at": record.updated_at,
+                }),
+                None => json!({ "ok": true, "event_id": target, "state": "unknown" }),
+            };
+            json_response(StatusCode::OK, body)
+        }
+        EventDecision::RejectForeignApp => {
+            emit_metric("rejected_app_identity");
+            warn!(
+                target: "fiducia.slack_bridge.security",
+                "rejected a signed event from an unexpected application identity"
+            );
+            json_response(
+                StatusCode::BAD_REQUEST,
+                json!({ "ok": false, "error": "invalid_event" }),
+            )
+        }
         EventDecision::Accept(event) => {
+            // Recognize an already-claimed delivery before reserving capacity.
+            // Slack retries on 503, so answering a duplicate with
+            // `capacity_exceeded` invites another delivery of work that is
+            // already claimed — retry amplification exactly when the service is
+            // saturated. This read does not commit anything; the authoritative
+            // claim still happens under the permit below, so a genuinely new
+            // event racing this check is still admitted exactly once.
+            if app.store.snapshot(&event.event_id).is_some() {
+                emit_metric("duplicate");
+                return json_response(StatusCode::OK, json!({ "ok": true, "duplicate": true }));
+            }
+
             let permit = match app.workflow_limit.clone().try_acquire_owned() {
                 Ok(permit) => permit,
                 Err(_) => {
@@ -1309,13 +1389,74 @@ fn json_response(status: StatusCode, body: Value) -> Response {
     (status, Json(body)).into_response()
 }
 
+/// Every outcome this adapter can record, declared up front so `/metrics`
+/// exposes a zero series for outcomes that have not happened yet. A counter
+/// that only appears after its first occurrence cannot be alerted on, because
+/// the absence of the series is indistinguishable from the absence of scraping.
+const METRIC_OUTCOMES: [&str; 16] = [
+    "accepted",
+    "dry_run",
+    "duplicate",
+    "failed",
+    "ignored",
+    "journal_failure",
+    "partial",
+    "rejected_capacity",
+    "rejected_malformed",
+    "rejected_policy",
+    "rejected_signature",
+    "reply_failed",
+    "succeeded",
+    "url_verification",
+    "rejected_app_identity",
+    "status_query",
+];
+
+/// Process-global outcome counters for the Slack ingress.
+///
+/// The bridge service renders its own counters through `crate::metrics`, but
+/// that registry is owned by the bridge's `AppState`, which this standalone
+/// adapter binary never constructs. Rather than build a second general-purpose
+/// metrics system, this keeps one fixed-cardinality counter vector for the
+/// outcomes above and renders it in the same Prometheus text format.
+static INGRESS_METRICS: std::sync::OnceLock<Mutex<BTreeMap<&'static str, u64>>> =
+    std::sync::OnceLock::new();
+
+fn ingress_metrics() -> &'static Mutex<BTreeMap<&'static str, u64>> {
+    INGRESS_METRICS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
 fn emit_metric(outcome: &'static str) {
+    debug_assert!(
+        METRIC_OUTCOMES.contains(&outcome),
+        "outcome {outcome} is missing from METRIC_OUTCOMES, so /metrics would omit its zero series"
+    );
+    *ingress_metrics().lock().entry(outcome).or_insert(0) += 1;
     info!(
         target: "fiducia.slack_bridge.metrics",
         metric = "slack_bridge_requests_total",
         outcome,
         value = 1_u64
     );
+}
+
+/// Renders the outcome counters in Prometheus text exposition format.
+///
+/// Metadata only: outcome labels are a closed set of internal identifiers, so
+/// no Slack identifier, prompt text, or channel content can reach a scrape.
+fn render_ingress_metrics() -> String {
+    let counts = ingress_metrics().lock().clone();
+    let mut out = String::from(
+        "# HELP slack_bridge_requests_total Slack ingress requests by terminal outcome.\n\
+         # TYPE slack_bridge_requests_total counter\n",
+    );
+    for outcome in METRIC_OUTCOMES {
+        let value = counts.get(outcome).copied().unwrap_or(0);
+        out.push_str(&format!(
+            "slack_bridge_requests_total{{outcome=\"{outcome}\"}} {value}\n"
+        ));
+    }
+    out
 }
 
 async fn process_event(app: Arc<SlackApp>, event: AcceptedEvent, _permit: OwnedSemaphorePermit) {
@@ -1730,12 +1871,199 @@ mod tests {
         );
     }
 
+    /// DEN-2863: idempotency must not be conditional on spare capacity. Slack
+    /// retries on 503, so answering an already-claimed delivery with
+    /// `capacity_exceeded` invites another delivery of work already claimed.
+    #[tokio::test]
+    async fn a_retry_is_recognized_as_duplicate_even_with_no_capacity_left() {
+        let path = temp_path("duplicate-at-capacity");
+        let mut config = test_config(path);
+        config.dry_run = true;
+        config.bot_token = None;
+        config.max_concurrent_workflows = 1;
+
+        let app = Arc::new(SlackApp::new(config.clone()).unwrap());
+        // The delivery has already been claimed by an earlier request.
+        assert!(matches!(
+            app.store.claim("Ev123").unwrap(),
+            ClaimOutcome::Claimed
+        ));
+        // Hold the only permit, so the service is genuinely at its ceiling.
+        let permit = app.workflow_limit.clone().try_acquire_owned().unwrap();
+
+        let (url, handle) = spawn_test_server(router(app.clone())).await;
+        let body = serde_json::to_vec(&event_envelope("!ask-both explain raft")).unwrap();
+        let response = send_signed_event(&url, &config, body).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response.json::<Value>().await.unwrap();
+        assert_eq!(payload["duplicate"], json!(true));
+
+        drop(permit);
+        handle.abort();
+    }
+
+    /// The complement: a genuinely new delivery at capacity must still be shed,
+    /// and must not leave a journal claim behind for work that never ran.
+    #[tokio::test]
+    async fn a_new_event_at_capacity_is_shed_without_claiming_it() {
+        let path = temp_path("new-at-capacity");
+        let mut config = test_config(path);
+        config.dry_run = true;
+        config.bot_token = None;
+        config.max_concurrent_workflows = 1;
+
+        let app = Arc::new(SlackApp::new(config.clone()).unwrap());
+        let permit = app.workflow_limit.clone().try_acquire_owned().unwrap();
+
+        let (url, handle) = spawn_test_server(router(app.clone())).await;
+        let body = serde_json::to_vec(&event_envelope("!ask-both explain raft")).unwrap();
+        let response = send_signed_event(&url, &config, body).await;
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            app.store.snapshot("Ev123").is_none(),
+            "a shed event must not leave a claim for work that never ran"
+        );
+
+        drop(permit);
+        handle.abort();
+    }
+
+    #[test]
+    fn status_command_is_parsed_as_a_lookup_rather_than_a_prompt() {
+        assert_eq!(
+            parse_command("!ask-both status Ev123", "!ask-both"),
+            CommandParse::Status("Ev123".to_string())
+        );
+        assert_eq!(
+            parse_command("!ask-both STATUS Ev123", "!ask-both"),
+            CommandParse::Status("Ev123".to_string())
+        );
+        // A bare `status` has no target.
+        assert_eq!(
+            parse_command("!ask-both status", "!ask-both"),
+            CommandParse::Invalid
+        );
+        // An unusable identifier is refused rather than looked up.
+        assert_eq!(
+            parse_command("!ask-both status not a valid id", "!ask-both"),
+            CommandParse::Invalid
+        );
+        // Prose that merely mentions the word is still work.
+        assert_eq!(
+            parse_command("!ask-both status of the raft leader election?", "!ask-both"),
+            CommandParse::Invalid
+        );
+        assert_eq!(
+            parse_command("!ask-both what is the status here", "!ask-both"),
+            CommandParse::Prompt("what is the status here".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn status_reports_journal_state_without_claiming_or_reserving_capacity() {
+        let path = temp_path("status-lookup");
+        let mut config = test_config(path);
+        config.dry_run = true;
+        config.bot_token = None;
+        config.max_concurrent_workflows = 1;
+
+        let app = Arc::new(SlackApp::new(config.clone()).unwrap());
+        app.store.claim("Ev900").unwrap();
+        app.store.set_workflow("Ev900", "wf-42").unwrap();
+        // Saturated: a status lookup must still be answerable.
+        let permit = app.workflow_limit.clone().try_acquire_owned().unwrap();
+
+        let (url, handle) = spawn_test_server(router(app.clone())).await;
+        let mut envelope = event_envelope("!ask-both status Ev900");
+        envelope.event_id = Some("EvStatusQuery".to_string());
+        let body = serde_json::to_vec(&envelope).unwrap();
+        let response = send_signed_event(&url, &config, body).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response.json::<Value>().await.unwrap();
+        assert_eq!(payload["event_id"], json!("Ev900"));
+        assert_eq!(payload["workflow_id"], json!("wf-42"));
+        // The lookup itself must not be journaled as work.
+        assert!(app.store.snapshot("EvStatusQuery").is_none());
+
+        drop(permit);
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn status_for_an_unknown_delivery_reports_unknown_rather_than_failing() {
+        let path = temp_path("status-unknown");
+        let mut config = test_config(path);
+        config.dry_run = true;
+        config.bot_token = None;
+
+        let app = Arc::new(SlackApp::new(config.clone()).unwrap());
+        let (url, handle) = spawn_test_server(router(app)).await;
+        let body = serde_json::to_vec(&event_envelope("!ask-both status EvNeverSeen")).unwrap();
+        let response = send_signed_event(&url, &config, body).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response.json::<Value>().await.unwrap();
+        assert_eq!(payload["state"], json!("unknown"));
+
+        handle.abort();
+    }
+
+    #[test]
+    fn every_emitted_outcome_has_a_declared_metric_series() {
+        // Guards the /metrics contract: an outcome that is emitted but missing
+        // from METRIC_OUTCOMES would never render, so its absence would be
+        // indistinguishable from "not scraped".
+        let source = include_str!("slack_bridge.rs");
+        for line in source.lines() {
+            let Some(rest) = line.trim().strip_prefix("emit_metric(\"") else {
+                continue;
+            };
+            let Some(outcome) = rest.split('"').next() else {
+                continue;
+            };
+            assert!(
+                METRIC_OUTCOMES.contains(&outcome),
+                "emit_metric(\"{outcome}\") has no entry in METRIC_OUTCOMES"
+            );
+        }
+    }
+
+    #[test]
+    fn rendered_metrics_expose_a_zero_series_for_every_outcome() {
+        let rendered = render_ingress_metrics();
+        assert!(rendered.contains("# TYPE slack_bridge_requests_total counter"));
+        for outcome in METRIC_OUTCOMES {
+            assert!(
+                rendered.contains(&format!(
+                    "slack_bridge_requests_total{{outcome=\"{outcome}\"}}"
+                )),
+                "missing series for {outcome}"
+            );
+        }
+        // Metadata only: the sole label is a closed set of internal outcome
+        // names, so no Slack identifier or message content can reach a scrape.
+        for line in rendered.lines().filter(|l| !l.starts_with('#')) {
+            let label = line
+                .split_once("outcome=\"")
+                .and_then(|(_, rest)| rest.split('"').next())
+                .expect("every series carries exactly one outcome label");
+            assert!(METRIC_OUTCOMES.contains(&label));
+            assert_eq!(line.matches("=\"").count(), 1, "unexpected extra label");
+        }
+    }
+
     #[test]
     fn events_from_another_installed_application_are_rejected() {
         let config = test_config(temp_path("foreign-app"));
         let mut envelope = event_envelope("!ask-both hello");
         envelope.api_app_id = Some("A0FOREIGNAPP".to_string());
-        assert_eq!(classify_event(&config, envelope), EventDecision::Reject);
+        assert_eq!(
+            classify_event(&config, envelope),
+            EventDecision::RejectForeignApp
+        );
     }
 
     #[test]
@@ -1743,7 +2071,10 @@ mod tests {
         let config = test_config(temp_path("missing-app"));
         let mut envelope = event_envelope("!ask-both hello");
         envelope.api_app_id = None;
-        assert_eq!(classify_event(&config, envelope), EventDecision::Reject);
+        assert_eq!(
+            classify_event(&config, envelope),
+            EventDecision::RejectForeignApp
+        );
     }
 
     /// A loopback sidecar may run without a configured install identity; the
