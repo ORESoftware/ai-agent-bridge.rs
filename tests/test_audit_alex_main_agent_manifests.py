@@ -90,15 +90,15 @@ class ManifestAuditTest(unittest.TestCase):
             lock_path = self._write(directory, "lock.json", lock_value)
             return manifest_audit.audit(registry_path, lock_path, fetcher)
 
-    def test_remote_audit_verifies_thirteen_project_heads_and_pilot_binding(self):
+    def test_remote_audit_verifies_thirteen_project_heads_and_two_reviewed_bindings(self):
         report = self._audit(fetcher=self._fetcher())
         self.assertEqual(report["status"], "pass")
         self.assertEqual(report["mode"], "remote")
-        self.assertEqual(report["central_registry"]["bindings"], 14)
+        self.assertEqual(report["central_registry"]["bindings"], 15)
         self.assertEqual(report["central_registry"]["manifest_bindings"], 13)
         self.assertEqual({item["status"] for item in report["manifests"]}, {"verified"})
 
-    def test_pilot_binding_is_excluded_from_project_manifest_digest(self):
+    def test_non_manifest_bindings_are_excluded_from_project_manifest_digest(self):
         project_channels = {
             entry["slack"]["channel_id"] for entry in self.lock["entries"]
         }
@@ -119,8 +119,31 @@ class ManifestAuditTest(unittest.TestCase):
             if binding["channel_id"] != manifest_audit.PILOT_CHANNEL
         ]
         with self.assertRaisesRegex(
-            manifest_audit.AuditError, "expected 14 central bindings"
+            manifest_audit.AuditError, "expected 15 central bindings"
         ):
+            self._audit(registry=registry)
+
+    def test_missing_fanwaave_binding_fails_closed(self):
+        registry = copy.deepcopy(self.registry)
+        registry["bindings"] = [
+            binding
+            for binding in registry["bindings"]
+            if binding["channel_id"] != manifest_audit.FANWAAVE_CHANNEL
+        ]
+        with self.assertRaisesRegex(
+            manifest_audit.AuditError, "expected 15 central bindings"
+        ):
+            self._audit(registry=registry)
+
+    def test_fanwaave_repository_allowlist_drift_fails_closed(self):
+        registry = copy.deepcopy(self.registry)
+        fanwaave = next(
+            binding
+            for binding in registry["bindings"]
+            if binding["channel_id"] == manifest_audit.FANWAAVE_CHANNEL
+        )
+        fanwaave["repository_allowlist"].append("ORESoftware/k8s-cluster")
+        with self.assertRaisesRegex(manifest_audit.AuditError, "contract_mismatch"):
             self._audit(registry=registry)
 
     def test_pilot_repository_allowlist_drift_fails_closed(self):
