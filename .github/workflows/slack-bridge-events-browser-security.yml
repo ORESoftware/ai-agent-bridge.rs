@@ -7,6 +7,7 @@ on:
       - .gitmodules
       - Cargo.lock
       - Cargo.toml
+      - config/shared-schema-pin
       - scripts/ci/prepare-credential-free-build.sh
       - scripts/ci/fixtures/dd-pg-defs-sea-orm/**
       - src/bin/fiducia-slack-bridge.rs
@@ -19,6 +20,7 @@ on:
       - .gitmodules
       - Cargo.lock
       - Cargo.toml
+      - config/shared-schema-pin
       - scripts/ci/prepare-credential-free-build.sh
       - scripts/ci/fixtures/dd-pg-defs-sea-orm/**
       - src/bin/fiducia-slack-bridge.rs
@@ -38,7 +40,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      EXPECTED_SHARED_COMMIT: c8bdc06d74746acc6439f9527ebd02697fdf028b
       SLACK_BRIDGE_BASE_URL: http://127.0.0.1:8152
       SLACK_BRIDGE_HOST: 127.0.0.1
       SLACK_BRIDGE_PORT: "8152"

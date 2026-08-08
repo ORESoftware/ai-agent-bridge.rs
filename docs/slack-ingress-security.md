@@ -257,6 +257,27 @@ artifact from the `container images` run for the exact source SHA. This
 repository merges several times a day and every merge that touches `src/**`
 rebuilds all four images, so a digest copied by hand goes stale quickly.
 
+### Bumping the shared-schema pin
+
+`config/shared-schema-pin` is the single source of truth for the reviewed
+`vendor/k8s-libs-and-shared-defs` commit. A vendor bump updates the gitlink and
+that one file, in the same pull request.
+
+The value is deliberately **not** derived from the gitlink. The guard exists to
+catch an unreviewed submodule move, and a value read from the thing it checks
+would compare the gitlink to itself and always pass.
+
+It was previously duplicated across seven workflow sites, and three separate
+bumps moved the gitlink without updating them, taking every credential-free lane
+down with `shared-schema gitlink mismatch` until someone re-baselined by hand.
+Two checks now prevent that recurring:
+
+- `scripts/ci/prepare-credential-free-build.sh` reads the file, rejects anything
+  that is not a single 40-character SHA, and publishes `EXPECTED_SHARED_COMMIT`
+  to `GITHUB_ENV`, so no workflow restates the value;
+- `ci.yml` fails if any workflow or script reintroduces a literal SHA, and
+  reports the exact mismatch when the gitlink and the pin file disagree.
+
 ### Request-URL handshake
 
 Slack's Events API request-URL handshake posts only `token`, `challenge`, and
