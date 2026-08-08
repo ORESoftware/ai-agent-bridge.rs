@@ -4,6 +4,7 @@ import test from "node:test";
 
 const workflowPath = ".github/workflows/container-images.yml";
 const workflow = readFileSync(workflowPath, "utf8");
+const dockerfile = readFileSync("Dockerfile", "utf8");
 
 function position(label) {
   const index = workflow.indexOf(label);
@@ -56,7 +57,10 @@ test("pull-request validation remains local while push-only steps are fail-close
   const publish = position("      - name: Publish digest-addressable image with SBOM and provenance\n");
 
   assert.ok(localBuild < localScan && localScan < login && login < publish);
-  assert.match(step("Scan local pull-request candidate"), /image-ref: local\/\$\{\{ matrix\.image \}\}:\$\{\{ github\.sha \}\}/u);
+  assert.match(
+    step("Scan local pull-request candidate"),
+    /image-ref: local\/\$\{\{ matrix\.image \}\}:\$\{\{ github\.sha \}\}/u,
+  );
 
   for (const name of [
     "Log in to GitHub Container Registry",
@@ -84,4 +88,35 @@ test("machine-readable evidence records exact-artifact verification, not tag inf
   const exactScan = step("Scan exact published digest");
   assert.doesNotMatch(exactScan, /:(?:main|latest|sha-\$\{\{ github\.sha \}\})\b/u);
   assert.match(exactScan, /@sha256|steps\.exact\.outputs\.image_ref/u);
+});
+
+test("the ORES service client is a distinct minimal non-root image", () => {
+  assert.match(
+    workflow,
+    /- target: ores-client\n\s+image: ores-ai-agent-bridge-client\n\s+entrypoint: \/usr\/local\/bin\/ores-ai-agent-bridge\n\s+help_contract: true/u,
+  );
+  assert.match(dockerfile, /AS ores-client/u);
+  assert.match(
+    dockerfile,
+    /COPY --from=builder \/out\/ores-ai-agent-bridge \/usr\/local\/bin\/ores-ai-agent-bridge/u,
+  );
+  assert.match(
+    dockerfile,
+    /AS ores-client[\s\S]*?USER nonroot:nonroot[\s\S]*?ENTRYPOINT \["\/usr\/local\/bin\/ores-ai-agent-bridge"\]/u,
+  );
+
+  const localHelp = step("Verify local ORES client help contract");
+  assert.match(localHelp, /if: matrix\.help_contract/u);
+  assert.match(localHelp, /com\.ores\.ai-agent-bridge/u);
+  assert.match(localHelp, /ORES_AI_AGENT_BRIDGE_BEARER/u);
+  assert.match(localHelp, /--bearer/u);
+
+  const publishedHelp = step("Verify exact published ORES client help contract");
+  assert.match(
+    publishedHelp,
+    /if: github\.event_name == 'push' && matrix\.help_contract/u,
+  );
+  assert.match(publishedHelp, /PUBLISHED_IMAGE/u);
+  assert.match(publishedHelp, /com\.ores\.ai-agent-bridge/u);
+  assert.match(publishedHelp, /--bearer/u);
 });

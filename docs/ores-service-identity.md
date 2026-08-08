@@ -48,6 +48,46 @@ The JSON report omits bearer values, request and response bodies, agent prompts,
 and topic text. Exit status is `0` for success, `1` for a connection, auth,
 identity, or smoke failure, and `2` for command-line parsing errors.
 
+## Immutable client image
+
+Trusted `main` builds a dedicated client-only target and publishes it as a
+digest-addressable image:
+
+```text
+ghcr.io/oresoftware/ores-ai-agent-bridge-client@sha256:<manifest-digest>
+```
+
+The final image is non-root and contains only the
+`/usr/local/bin/ores-ai-agent-bridge` executable from this repository's locked
+source graph. It does not contain the bridge server, provider runner, Slack
+ingress, project registry, shell, package manager, source tree, credentials, or
+persistent state.
+
+Pull-request validation builds and vulnerability-scans the local candidate. A
+trusted push additionally publishes SBOM/provenance, resolves and pulls the exact
+manifest digest, re-checks its source-revision label and non-root entrypoint,
+runs the credential-free `--help` contract, scans that exact digest, and uploads
+machine-readable digest evidence. The help check requires the logical service ID
+and environment credential variable while rejecting any `--bearer` interface.
+
+After an approved digest is recorded, an operator can use the image without a
+local Rust toolchain:
+
+```sh
+docker run --rm \
+  --network host \
+  -e ORES_AI_AGENT_BRIDGE_BASE_URL=http://127.0.0.1:8142 \
+  -e ORES_AI_AGENT_BRIDGE_TCP_PORT=8143 \
+  -e ORES_AI_AGENT_BRIDGE_BEARER \
+  ghcr.io/oresoftware/ores-ai-agent-bridge-client@sha256:<manifest-digest> \
+  probe
+```
+
+The example assumes the bearer is already present in the invoking environment.
+Do not put a credential in the image, command line, URL, Dockerfile, workflow,
+GitOps manifest, or shell history. An in-cluster Job should receive the value
+through the approved secret mechanism and use the cluster-local Service name.
+
 ## Kubernetes use
 
 From a workstation with reviewed cluster access, forward both bridge transports:
