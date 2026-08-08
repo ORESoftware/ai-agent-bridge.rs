@@ -432,12 +432,31 @@ fn default_idempotency_path() -> AdapterResult<PathBuf> {
         .join("slack-events.jsonl"))
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum EventState {
     Claimed,
     WorkflowCreated,
     Completed,
+    /// Terminal: an operator asked for the run to stop and the worker observed
+    /// the request at a stage boundary. Distinct from `Completed` so a canceled
+    /// run is never mistaken for one that delivered its submissions.
+    Canceled,
+}
+
+impl EventState {
+    /// Terminal states accept no further work, so a cancel request against one
+    /// is reported rather than silently recorded.
+    fn is_terminal(self) -> bool {
+        matches!(self, EventState::Completed | EventState::Canceled)
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum CancelOutcome {
+    Requested,
+    AlreadyTerminal(EventState),
+    Unknown,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -448,6 +467,11 @@ struct EventRecord {
     workflow_id: Option<String>,
     #[serde(default)]
     posted_agents: BTreeSet<String>,
+    /// Durable cancellation intent. Journaled rather than held in memory so a
+    /// request survives a restart: a worker resuming after a crash still sees
+    /// that the run was canceled instead of quietly finishing it.
+    #[serde(default)]
+    cancel_requested: bool,
     updated_at: String,
 }
 
@@ -499,6 +523,7 @@ impl EventStore {
             state: EventState::Claimed,
             workflow_id: None,
             posted_agents: BTreeSet::new(),
+            cancel_requested: false,
             updated_at: Utc::now().to_rfc3339(),
         };
         self.append(&record)?;
@@ -523,6 +548,36 @@ impl EventStore {
         self.update(event_id, |record| {
             record.state = EventState::Completed;
         })
+    }
+
+    /// Records cancellation intent. The worker observes it at the next stage
+    /// boundary and stops cooperatively; nothing is aborted mid-write, so the
+    /// journal is never left describing a partially applied step.
+    fn request_cancel(&self, event_id: &str) -> AdapterResult<CancelOutcome> {
+        let existing = match self.snapshot(event_id) {
+            Some(record) => record,
+            None => return Ok(CancelOutcome::Unknown),
+        };
+        let state = existing.state;
+        if state.is_terminal() {
+            return Ok(CancelOutcome::AlreadyTerminal(state));
+        }
+        self.update(event_id, |record| {
+            record.cancel_requested = true;
+        })?;
+        Ok(CancelOutcome::Requested)
+    }
+
+    /// Marks a run as stopped after the worker observed the request.
+    fn mark_canceled(&self, event_id: &str) -> AdapterResult<()> {
+        self.update(event_id, |record| {
+            record.state = EventState::Canceled;
+        })
+    }
+
+    fn cancel_requested(&self, event_id: &str) -> bool {
+        self.snapshot(event_id)
+            .is_some_and(|record| record.cancel_requested)
     }
 
     fn snapshot(&self, event_id: &str) -> Option<EventRecord> {
@@ -700,6 +755,10 @@ enum EventDecision {
     /// journal. Read-only: it claims nothing, reserves no capacity, and starts
     /// no workflow, so it stays answerable while the service is saturated.
     Status(String),
+    /// `<prefix> cancel <event-id>` — record cancellation intent for a run. Also
+    /// reserves no capacity, so a run can be stopped precisely when the service
+    /// is saturated and stopping it is most useful.
+    Cancel(String),
     Reject,
     /// A correctly signed event from an application other than the reviewed
     /// install. Distinguished from `Reject` because a non-zero rate here means
@@ -820,6 +879,7 @@ fn classify_event(config: &SlackConfig, envelope: SlackEnvelope) -> EventDecisio
             prompt,
         }),
         CommandParse::Status(target) => EventDecision::Status(target),
+        CommandParse::Cancel(target) => EventDecision::Cancel(target),
     }
 }
 
@@ -830,6 +890,8 @@ enum CommandParse {
     Prompt(String),
     /// `<prefix> status <event-id>` — read-only lookup of a prior delivery.
     Status(String),
+    /// `<prefix> cancel <event-id>` — record cancellation intent for a run.
+    Cancel(String),
 }
 
 fn parse_command(text: &str, prefix: &str) -> CommandParse {
@@ -855,20 +917,33 @@ fn parse_command(text: &str, prefix: &str) -> CommandParse {
         return CommandParse::Invalid;
     }
 
-    // `status <event-id>` is a read-only journal lookup rather than a prompt.
-    // Matched case-insensitively on the first token only, so a prompt that
-    // merely mentions the word status is still routed as work.
-    if let Some(argument) = prompt
+    // `status` and `cancel` are control verbs, not work. Both are matched
+    // case-insensitively on the first token only, so a prompt that merely
+    // mentions either word is still routed as work.
+    const CONTROL_VERBS: [&str; 2] = ["status", "cancel"];
+    if let Some((verb, argument)) = prompt
         .split_once(char::is_whitespace)
-        .filter(|(head, _)| head.eq_ignore_ascii_case("status"))
-        .map(|(_, tail)| tail.trim())
+        .map(|(head, tail)| (head, tail.trim()))
+        .filter(|(head, _)| {
+            CONTROL_VERBS
+                .iter()
+                .any(|verb| head.eq_ignore_ascii_case(verb))
+        })
     {
         if !valid_event_id(argument) {
             return CommandParse::Invalid;
         }
-        return CommandParse::Status(argument.to_string());
+        return if verb.eq_ignore_ascii_case("status") {
+            CommandParse::Status(argument.to_string())
+        } else {
+            CommandParse::Cancel(argument.to_string())
+        };
     }
-    if prompt.eq_ignore_ascii_case("status") {
+    // A bare control verb names no target.
+    if CONTROL_VERBS
+        .iter()
+        .any(|verb| prompt.eq_ignore_ascii_case(verb))
+    {
         return CommandParse::Invalid;
     }
 
@@ -1320,6 +1395,30 @@ async fn slack_events(
             };
             json_response(StatusCode::OK, body)
         }
+        EventDecision::Cancel(target) => {
+            emit_metric("cancel_requested");
+            match app.store.request_cancel(&target) {
+                Ok(CancelOutcome::Requested) => json_response(
+                    StatusCode::OK,
+                    json!({ "ok": true, "event_id": target, "cancel": "requested" }),
+                ),
+                Ok(CancelOutcome::AlreadyTerminal(state)) => json_response(
+                    StatusCode::OK,
+                    json!({ "ok": true, "event_id": target, "cancel": "already_terminal", "state": state }),
+                ),
+                Ok(CancelOutcome::Unknown) => json_response(
+                    StatusCode::OK,
+                    json!({ "ok": true, "event_id": target, "cancel": "unknown" }),
+                ),
+                Err(_) => {
+                    emit_metric("journal_failure");
+                    json_response(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        json!({ "ok": false, "error": "temporarily_unavailable" }),
+                    )
+                }
+            }
+        }
         EventDecision::RejectForeignApp => {
             emit_metric("rejected_app_identity");
             warn!(
@@ -1393,7 +1492,7 @@ fn json_response(status: StatusCode, body: Value) -> Response {
 /// exposes a zero series for outcomes that have not happened yet. A counter
 /// that only appears after its first occurrence cannot be alerted on, because
 /// the absence of the series is indistinguishable from the absence of scraping.
-const METRIC_OUTCOMES: [&str; 16] = [
+const METRIC_OUTCOMES: [&str; 18] = [
     "accepted",
     "dry_run",
     "duplicate",
@@ -1410,6 +1509,8 @@ const METRIC_OUTCOMES: [&str; 16] = [
     "url_verification",
     "rejected_app_identity",
     "status_query",
+    "cancel_requested",
+    "canceled",
 ];
 
 /// Process-global outcome counters for the Slack ingress.
@@ -1498,6 +1599,19 @@ async fn process_event(app: Arc<SlackApp>, event: AcceptedEvent, _permit: OwnedS
     let mut terminal = false;
 
     while Instant::now() < deadline {
+        // Stage boundary: stop cooperatively rather than aborting mid-write, so
+        // the journal never describes a partially applied step. Submissions
+        // already posted stay posted; cancellation stops further work, it does
+        // not retract what the models already delivered to the thread.
+        if app.store.cancel_requested(&event.event_id) {
+            if app.store.mark_canceled(&event.event_id).is_err() {
+                warn!("failed to persist cancellation");
+                emit_metric("journal_failure");
+            }
+            emit_metric("canceled");
+            return;
+        }
+
         if let Ok(workflow) = app.get_workflow(&workflow_id).await {
             terminal = workflow.status.stage == "completed";
             for model in app.config.models() {
@@ -2008,6 +2122,125 @@ mod tests {
         let payload = response.json::<Value>().await.unwrap();
         assert_eq!(payload["state"], json!("unknown"));
 
+        handle.abort();
+    }
+
+    #[test]
+    fn control_verbs_are_parsed_as_commands_rather_than_prompts() {
+        assert_eq!(
+            parse_command("!ask-both cancel Ev123", "!ask-both"),
+            CommandParse::Cancel("Ev123".to_string())
+        );
+        assert_eq!(
+            parse_command("!ask-both CANCEL Ev123", "!ask-both"),
+            CommandParse::Cancel("Ev123".to_string())
+        );
+        assert_eq!(
+            parse_command("!ask-both cancel", "!ask-both"),
+            CommandParse::Invalid
+        );
+        assert_eq!(
+            parse_command("!ask-both cancel ../../etc/passwd", "!ask-both"),
+            CommandParse::Invalid
+        );
+        // Prose that merely mentions the verb is still work.
+        assert_eq!(
+            parse_command("!ask-both should we cancel the rollout", "!ask-both"),
+            CommandParse::Prompt("should we cancel the rollout".to_string())
+        );
+    }
+
+    #[test]
+    fn cancel_records_durable_intent_and_reports_terminal_and_unknown_runs() {
+        let store = EventStore::open(temp_path("cancel-intent")).unwrap();
+
+        // Unknown run: reported, not invented.
+        assert_eq!(
+            store.request_cancel("EvMissing").unwrap(),
+            CancelOutcome::Unknown
+        );
+        assert!(store.snapshot("EvMissing").is_none());
+
+        // In-flight run: intent recorded durably.
+        store.claim("EvLive").unwrap();
+        assert_eq!(
+            store.request_cancel("EvLive").unwrap(),
+            CancelOutcome::Requested
+        );
+        assert!(store.cancel_requested("EvLive"));
+
+        // Terminal run: reported rather than silently recorded.
+        store.claim("EvDone").unwrap();
+        store.complete("EvDone").unwrap();
+        assert_eq!(
+            store.request_cancel("EvDone").unwrap(),
+            CancelOutcome::AlreadyTerminal(EventState::Completed)
+        );
+        assert!(!store.cancel_requested("EvDone"));
+    }
+
+    /// Cancellation intent must outlive the process; a worker resuming after a
+    /// restart has to see it rather than quietly finishing the run.
+    #[test]
+    fn cancellation_intent_survives_restart() {
+        let path = temp_path("cancel-restart");
+        let store = EventStore::open(path.clone()).unwrap();
+        store.claim("EvLive").unwrap();
+        store.request_cancel("EvLive").unwrap();
+        drop(store);
+
+        let reopened = EventStore::open(path).unwrap();
+        assert!(reopened.cancel_requested("EvLive"));
+        reopened.mark_canceled("EvLive").unwrap();
+        assert_eq!(
+            reopened.snapshot("EvLive").unwrap().state,
+            EventState::Canceled
+        );
+    }
+
+    #[test]
+    fn a_canceled_run_is_terminal_and_distinct_from_completed() {
+        let store = EventStore::open(temp_path("cancel-terminal")).unwrap();
+        store.claim("EvStopped").unwrap();
+        store.mark_canceled("EvStopped").unwrap();
+
+        let record = store.snapshot("EvStopped").unwrap();
+        assert_eq!(record.state, EventState::Canceled);
+        assert!(record.state.is_terminal());
+        // A canceled run must never be mistaken for one that delivered.
+        assert_ne!(record.state, EventState::Completed);
+        assert_eq!(
+            store.request_cancel("EvStopped").unwrap(),
+            CancelOutcome::AlreadyTerminal(EventState::Canceled)
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_is_answerable_while_the_service_is_saturated() {
+        let path = temp_path("cancel-at-capacity");
+        let mut config = test_config(path);
+        config.dry_run = true;
+        config.bot_token = None;
+        config.max_concurrent_workflows = 1;
+
+        let app = Arc::new(SlackApp::new(config.clone()).unwrap());
+        app.store.claim("Ev900").unwrap();
+        let permit = app.workflow_limit.clone().try_acquire_owned().unwrap();
+
+        let (url, handle) = spawn_test_server(router(app.clone())).await;
+        let mut envelope = event_envelope("!ask-both cancel Ev900");
+        envelope.event_id = Some("EvCancelRequest".to_string());
+        let response =
+            send_signed_event(&url, &config, serde_json::to_vec(&envelope).unwrap()).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response.json::<Value>().await.unwrap();
+        assert_eq!(payload["cancel"], json!("requested"));
+        assert!(app.store.cancel_requested("Ev900"));
+        // The control request itself is not journaled as work.
+        assert!(app.store.snapshot("EvCancelRequest").is_none());
+
+        drop(permit);
         handle.abort();
     }
 

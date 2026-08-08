@@ -349,6 +349,49 @@ test('rejects a status lookup whose target is not a usable identifier', async ({
   expect(lookup.status).toBe(400);
 });
 
+test('records cancellation intent and reports terminal and unknown runs', async ({ page }) => {
+  // Unknown run: reported, never invented.
+  const unknown = await postSigned(
+    page,
+    eventBody({ event: { text: `${commandPrefix} cancel EvNeverDelivered` } }),
+  );
+  expect(unknown.status).toBe(200);
+  expect(JSON.parse(unknown.body).cancel).toBe('unknown');
+
+  // A delivery that already finished is reported, not silently re-marked.
+  const body = eventBody();
+  const deliveredId = JSON.parse(body).event_id;
+  expect(JSON.parse((await postSigned(page, body)).body).accepted).toBe(true);
+
+  await expect
+    .poll(async () => {
+      const lookup = await postSigned(
+        page,
+        eventBody({ event: { text: `${commandPrefix} status ${deliveredId}` } }),
+      );
+      return JSON.parse(lookup.body).state;
+    })
+    .toBe('completed');
+
+  const terminal = await postSigned(
+    page,
+    eventBody({ event: { text: `${commandPrefix} cancel ${deliveredId}` } }),
+  );
+  expect(terminal.status).toBe(200);
+  const payload = JSON.parse(terminal.body);
+  expect(payload.cancel).toBe('already_terminal');
+  expect(payload.state).toBe('completed');
+});
+
+test('rejects a cancel whose target is not a usable identifier', async ({ page }) => {
+  const response = await postSigned(
+    page,
+    eventBody({ event: { text: `${commandPrefix} cancel ../../etc/passwd` } }),
+  );
+
+  expect(response.status).toBe(400);
+});
+
 test('exposes scrapeable outcome counters carrying no Slack content', async ({ page }) => {
   const response = await page.goto('/metrics');
   expect(response).not.toBeNull();
