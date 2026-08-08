@@ -1,0 +1,53 @@
+name: DEN-1874 repair Fanwaave routing migration
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/den-1874-format-fix.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-1874-fanwaave-routing-format-fix
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'agent/DEN-1874-fanwaave-slack-routing'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: agent/DEN-1874-fanwaave-slack-routing
+
+      - name: Make the one-shot migration produce rustfmt output
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/den-1874-fanwaave-slack-routing.yml')
+          text = path.read_text(encoding='utf-8')
+          old = '          cargo fmt --all -- --check\n'
+          new = '          cargo fmt --all\n          cargo fmt --all -- --check\n'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one formatting gate, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
+      - name: Commit the repair and remove this helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/den-1874-format-fix.yml
+          git add .github/workflows/den-1874-fanwaave-slack-routing.yml
+          git diff --cached --check
+          git commit -m 'DEN-1874 format the Fanwaave routing migration'
+          git push origin HEAD:agent/DEN-1874-fanwaave-slack-routing
