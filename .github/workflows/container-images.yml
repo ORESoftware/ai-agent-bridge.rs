@@ -12,6 +12,7 @@ on:
       - config/shared-schema-pin
       - scripts/ci/prepare-credential-free-build.sh
       - scripts/ci/fixtures/dd-pg-defs-sea-orm/**
+      - scripts/container-images-policy.test.mjs
       - .github/workflows/container-images.yml
   push:
     branches: [main]
@@ -72,7 +73,7 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
-      - name: Build local image for contract tests
+      - name: Build local image for pull-request contract tests
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
@@ -84,7 +85,7 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=${{ matrix.target }}
 
-      - name: Verify non-root immutable runtime contract
+      - name: Verify local non-root runtime contract
         env:
           IMAGE: local/${{ matrix.image }}:${{ github.sha }}
           EXPECTED_ENTRYPOINT: ${{ matrix.entrypoint }}
@@ -94,7 +95,7 @@ jobs:
           test "$(docker image inspect --format '{{index .Config.Entrypoint 0}}' "$IMAGE")" = "$EXPECTED_ENTRYPOINT"
           test -z "$(docker image inspect --format '{{join .Config.Cmd " "}}' "$IMAGE")"
 
-      - name: Scan image for high and critical vulnerabilities
+      - name: Scan local pull-request candidate
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
         with:
           image-ref: local/${{ matrix.image }}:${{ github.sha }}
@@ -130,11 +131,59 @@ jobs:
           sbom: true
           provenance: mode=max
 
+      - name: Resolve exact published image
+        id: exact
+        if: github.event_name == 'push'
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          IMAGE: ghcr.io/oresoftware/${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          if ! [[ "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Buildx returned an invalid manifest digest" >&2
+            exit 1
+          fi
+          image_ref="${IMAGE}@${DIGEST}"
+          echo "image_ref=${image_ref}" >> "${GITHUB_OUTPUT}"
+
+      - name: Pull exact published digest
+        if: github.event_name == 'push'
+        env:
+          PUBLISHED_IMAGE: ${{ steps.exact.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          docker pull "${PUBLISHED_IMAGE}"
+
+      - name: Verify exact published runtime contract
+        if: github.event_name == 'push'
+        env:
+          EXPECTED_ENTRYPOINT: ${{ matrix.entrypoint }}
+          PUBLISHED_IMAGE: ${{ steps.exact.outputs.image_ref }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect --format '{{.Config.User}}' "${PUBLISHED_IMAGE}")" = 'nonroot:nonroot'
+          test "$(docker image inspect --format '{{index .Config.Entrypoint 0}}' "${PUBLISHED_IMAGE}")" = "${EXPECTED_ENTRYPOINT}"
+          test -z "$(docker image inspect --format '{{join .Config.Cmd " "}}' "${PUBLISHED_IMAGE}")"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "${PUBLISHED_IMAGE}")" = "${SOURCE_SHA}"
+
+      - name: Scan exact published digest
+        if: github.event_name == 'push'
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: ${{ steps.exact.outputs.image_ref }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+
       - name: Write machine-readable digest evidence
         if: github.event_name == 'push'
         env:
           DIGEST: ${{ steps.publish.outputs.digest }}
           IMAGE: ghcr.io/oresoftware/${{ matrix.image }}
+          IMAGE_REF: ${{ steps.exact.outputs.image_ref }}
           SOURCE_SHA: ${{ github.sha }}
           TARGET: ${{ matrix.target }}
         run: |
@@ -144,13 +193,14 @@ jobs:
           jq -n \
             --arg digest "${DIGEST}" \
             --arg image "${IMAGE}" \
+            --arg image_ref "${IMAGE_REF}" \
             --arg repository "${GITHUB_REPOSITORY}" \
             --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
             --arg run_id "${GITHUB_RUN_ID}" \
             --arg source_sha "${SOURCE_SHA}" \
             --arg target "${TARGET}" \
             '{
-              schema_version: 1,
+              schema_version: 2,
               repository: $repository,
               source_sha: $source_sha,
               workflow_run_id: ($run_id | tonumber),
@@ -158,18 +208,24 @@ jobs:
               target: $target,
               image: $image,
               digest: $digest,
-              image_ref: ($image + "@" + $digest)
+              image_ref: $image_ref,
+              exact_digest_pulled: true,
+              exact_runtime_contract_verified: true,
+              exact_digest_vulnerability_scan: "passed"
             }' >"${evidence_dir}/${TARGET}.json"
           jq -e '
-            .schema_version == 1 and
+            .schema_version == 2 and
             (.source_sha | test("^[0-9a-f]{40}$")) and
             (.digest | test("^sha256:[0-9a-f]{64}$")) and
-            (.image_ref | contains("@sha256:"))
+            .image_ref == (.image + "@" + .digest) and
+            .exact_digest_pulled == true and
+            .exact_runtime_contract_verified == true and
+            .exact_digest_vulnerability_scan == "passed"
           ' "${evidence_dir}/${TARGET}.json"
 
       - name: Upload machine-readable digest evidence
         if: github.event_name == 'push'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: image-digest-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/image-digest-evidence/${{ matrix.target }}.json
@@ -182,9 +238,9 @@ jobs:
           {
             echo "### ${{ matrix.image }}"
             echo
-            echo "\`${{ steps.publish.outputs.digest }}\`"
+            echo "\`${{ steps.exact.outputs.image_ref }}\`"
             echo
             echo "Evidence artifact: \`image-digest-${{ matrix.target }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\`"
             echo
-            echo 'Deploy by digest only; tags are discovery aliases.'
+            echo 'The exact published digest was pulled, runtime-inspected, and vulnerability-scanned before evidence publication.'
           } >> "$GITHUB_STEP_SUMMARY"
