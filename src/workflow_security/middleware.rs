@@ -63,6 +63,9 @@ pub async fn enforce(
     }
 
     request.extensions_mut().insert(identity);
+    // The scoped credential is only for this middleware boundary. Never let its
+    // raw bearer material reach inner handlers, traces, logs, or downstream calls.
+    request.headers_mut().remove(header::AUTHORIZATION);
     if let Some(global) = &security.global_bearer {
         let Ok(value) = HeaderValue::from_str(&format!("Bearer {global}")) else {
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, "auth_configuration_error");
