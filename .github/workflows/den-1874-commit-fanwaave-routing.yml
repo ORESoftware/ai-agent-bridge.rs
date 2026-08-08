@@ -1,0 +1,72 @@
+name: DEN-1874 commit validated Fanwaave routing
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/den-1874-commit-fanwaave-routing.yml
+      - .github/den-1874-commit-fanwaave-routing-trigger
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-1874-commit-fanwaave-routing
+  cancel-in-progress: false
+
+jobs:
+  commit:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'agent/DEN-1874-fanwaave-slack-routing'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: agent/DEN-1874-fanwaave-slack-routing
+
+      - name: Reuse the reviewed structural migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          migration_script="${RUNNER_TEMP}/den-1874-finalize.py"
+          awk '
+            $0 == "          python3 <<\047PY\047" { capture=1; next }
+            capture && $0 == "          PY" { exit }
+            capture { print substr($0, 11) }
+          ' .github/workflows/den-1874-finalize-fanwaave-routing.yml > "$migration_script"
+          test -s "$migration_script"
+          python3 "$migration_script"
+
+      - name: Validate without requiring the intentionally absent private submodule
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m json.tool config/alex-main-agent.channels.json >/dev/null
+          python3 -m py_compile \
+            scripts/audit_alex_main_agent_manifests.py \
+            tests/test_audit_alex_main_agent_manifests.py
+          python3 -m unittest -v tests/test_audit_alex_main_agent_manifests.py
+          cargo fmt --all -- --check
+
+      - name: Commit final files and remove all one-shot artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm \
+            .github/workflows/den-1874-commit-fanwaave-routing.yml \
+            .github/den-1874-commit-fanwaave-routing-trigger \
+            .github/workflows/den-1874-finalize-fanwaave-routing.yml \
+            .github/den-1874-finalize-fanwaave-routing-trigger \
+            .github/workflows/den-1874-manifest-audit-update.yml \
+            .github/den-1874-manifest-audit-trigger
+          git add \
+            config/alex-main-agent.channels.json \
+            scripts/audit_alex_main_agent_manifests.py \
+            tests/alex_main_agent_registry.rs \
+            tests/test_audit_alex_main_agent_manifests.py
+          git diff --cached --check
+          git commit -m "DEN-1874 audit the Fanwaave bridge route"
+          git push origin HEAD:agent/DEN-1874-fanwaave-slack-routing
