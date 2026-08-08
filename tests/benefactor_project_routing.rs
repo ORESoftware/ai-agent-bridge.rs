@@ -33,10 +33,8 @@ const REVIEWED_REPOSITORIES: [&str; 14] = [
 ];
 
 fn registry() -> SlackProjectRegistry {
-    SlackProjectRegistry::from_json(include_bytes!(
-        "../config/alex-main-agent.channels.json"
-    ))
-    .expect("canonical alex-main-agent registry must load")
+    SlackProjectRegistry::from_json(include_bytes!("../config/alex-main-agent.channels.json"))
+        .expect("canonical alex-main-agent registry must load")
 }
 
 fn request(repository: Option<&str>) -> ResolveRequest {
@@ -67,9 +65,15 @@ fn default_and_every_reviewed_repository_resolve_to_draft_pr_policy() {
         let resolved = registry
             .resolve(&request(Some(repository)))
             .unwrap_or_else(|error| panic!("{repository} must resolve: {error}"));
-        assert_eq!(resolved.repository.to_ascii_lowercase(), repository.to_ascii_lowercase());
+        assert_eq!(
+            resolved.repository.to_ascii_lowercase(),
+            repository.to_ascii_lowercase()
+        );
         assert_eq!(resolved.write_policy, WritePolicy::DraftPullRequest);
-        assert_eq!(resolved.linear_project_id, "e1db74d7-4fa3-4580-851d-ca8fc8145127");
+        assert_eq!(
+            resolved.linear_project_id,
+            "e1db74d7-4fa3-4580-851d-ca8fc8145127"
+        );
     }
 }
 
