@@ -21,8 +21,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    env:
-      EXPECTED_SHARED_COMMIT: c8bdc06d74746acc6439f9527ebd02697fdf028b
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -53,8 +51,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          # config/shared-schema-pin is the single source of truth. It used to be
+          # duplicated across seven workflow sites, and three separate vendor
+          # bumps moved the gitlink without updating them, taking every
+          # credential-free lane down until someone re-baselined by hand. Fail
+          # here if a literal is reintroduced anywhere, so the duplication cannot
+          # come back quietly.
+          if grep -rnE 'EXPECTED_SHARED_COMMIT[=:][[:space:]]*[0-9a-f]{40}' \
+            .github/workflows scripts; then
+            echo "Hardcoded shared-schema pin found; use config/shared-schema-pin" >&2
+            exit 1
+          fi
+
           pinned_shared_commit="$(git ls-tree HEAD -- vendor/k8s-libs-and-shared-defs | awk '$2 == "commit" { print $3 }')"
-          test "${pinned_shared_commit}" = "${EXPECTED_SHARED_COMMIT}"
+          if [ "${pinned_shared_commit}" != "${EXPECTED_SHARED_COMMIT}" ]; then
+            echo "vendor/k8s-libs-and-shared-defs is pinned at ${pinned_shared_commit}," >&2
+            echo "but config/shared-schema-pin expects ${EXPECTED_SHARED_COMMIT}." >&2
+            echo "Update config/shared-schema-pin in the same PR as the gitlink bump." >&2
+            exit 1
+          fi
           node --test scripts/seaorm-policy.test.mjs
 
       - name: Format
@@ -101,8 +117,6 @@ jobs:
   browser-registry:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      EXPECTED_SHARED_COMMIT: c8bdc06d74746acc6439f9527ebd02697fdf028b
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
