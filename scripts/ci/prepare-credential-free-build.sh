@@ -8,7 +8,35 @@ flags_path="vendor/flags-2-env"
 schema_path="vendor/k8s-libs-and-shared-defs"
 schema_crate_path="${schema_path}/pg-defs/generated/rust/sea-orm"
 fixture_path="scripts/ci/fixtures/dd-pg-defs-sea-orm"
-expected_shared_commit="${EXPECTED_SHARED_COMMIT:-c8bdc06d74746acc6439f9527ebd02697fdf028b}"
+
+# Single source of truth for the reviewed shared-schema pin.
+#
+# This value used to be duplicated across seven workflow sites. Every vendor
+# bump then had to update all of them, and three times it did not: the pin moved
+# while the guards kept the old value, so every credential-free lane fail-closed
+# on "shared-schema gitlink mismatch" until someone re-baselined by hand. The
+# value now lives in one file, and `ci.yml` fails if a workflow reintroduces a
+# literal.
+#
+# It is deliberately NOT derived from the gitlink. The guard exists to catch an
+# unreviewed submodule move, and a value read from the thing it is checking
+# would compare the gitlink to itself and always pass.
+pin_file="config/shared-schema-pin"
+if [ ! -r "${pin_file}" ]; then
+  echo "missing shared-schema pin file ${pin_file}" >&2
+  exit 1
+fi
+expected_shared_commit="$(tr -d '[:space:]' <"${pin_file}")"
+if ! printf '%s' "${expected_shared_commit}" | grep -Eq '^[0-9a-f]{40}$'; then
+  echo "${pin_file} must contain exactly one 40-character commit SHA" >&2
+  exit 1
+fi
+
+# Publish it to later steps so no workflow has to restate the value. Absent
+# outside Actions, where the local run needs nothing further.
+if [ -n "${GITHUB_ENV:-}" ]; then
+  printf 'EXPECTED_SHARED_COMMIT=%s\n' "${expected_shared_commit}" >>"${GITHUB_ENV}"
+fi
 
 # The public CLI generator is needed by ordinary CI. Fetch only that reviewed
 # submodule; never recursively request the private shared-schema repository.

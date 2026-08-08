@@ -176,6 +176,42 @@ impl AdmissionControl {
         })
     }
 
+    /// Test-only constructor pointing at a scripted loopback bridge. Client
+    /// timeouts are deliberately huge so scripted long-delay scenarios can
+    /// prove engine-side cancellation without racing a client timeout.
+    #[cfg(test)]
+    pub(crate) fn for_test(base_url: &str, provider_agent_key: &str) -> Self {
+        let mut base_url = Url::parse(base_url).expect("test bridge URL is valid");
+        if !base_url.path().ends_with('/') {
+            base_url.set_path(&format!("{}/", base_url.path()));
+        }
+        let mut pricing = HashMap::new();
+        pricing.insert(
+            provider_agent_key.to_string(),
+            ProviderPricing {
+                input_micro_usd_per_million: 1_000,
+                output_micro_usd_per_million: 2_000,
+                fixed_call_reserve_micro_usd: 5,
+                max_context_tokens: 100_000,
+            },
+        );
+        Self {
+            base_url,
+            bearer: None,
+            http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(Duration::from_secs(3_600))
+                .connect_timeout(Duration::from_secs(3_600))
+                .user_agent("fiducia-ai-agent-runner-admission/0.1")
+                .build()
+                .expect("test admission HTTP client builds"),
+            actor: "retry-engine-tests".into(),
+            approved_by: None,
+            pricing,
+            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+        }
+    }
+
     pub(crate) fn actor(&self) -> &str {
         &self.actor
     }

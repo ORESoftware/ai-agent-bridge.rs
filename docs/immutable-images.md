@@ -25,17 +25,30 @@ present in a runtime image.
    submodule;
 2. materializes the reviewed credential-free build inputs and verifies the exact
    shared-schema gitlink;
-3. builds a local `linux/amd64` image from the repository-root Docker context;
-4. verifies `nonroot:nonroot`, the expected fixed entrypoint, and an empty command;
-5. scans OS and language packages for high and critical vulnerabilities with a
-   SHA-pinned Trivy action;
-6. on trusted pushes to `main` or a version tag, authenticates only to GHCR;
-7. publishes a full-commit SHA tag plus branch/tag discovery aliases;
-8. attaches BuildKit SBOM and maximum-mode provenance attestations;
-9. validates the returned `sha256` manifest digest; and
-10. uploads one machine-readable JSON evidence artifact per target.
+3. builds a local `linux/amd64` candidate from the repository-root Docker context;
+4. verifies that local candidate uses `nonroot:nonroot`, the expected fixed
+   entrypoint, and an empty command;
+5. scans the local pull-request candidate for high and critical OS/library
+   vulnerabilities with a SHA-pinned Trivy action;
+6. on trusted pushes to `main` or a version tag, authenticates only to GHCR and
+   publishes the target with full-commit and branch/tag discovery aliases;
+7. validates the returned manifest digest and constructs the exact
+   `image@sha256:...` reference;
+8. pulls that exact published digest back from GHCR;
+9. inspects the exact digest for the non-root runtime contract, fixed entrypoint,
+   empty command, and source-revision label;
+10. scans the exact published digest for high and critical vulnerabilities;
+11. attaches BuildKit SBOM and maximum-mode provenance attestations during the
+    trusted publication; and
+12. only after the exact-digest pull, inspection, and scan succeed, uploads one
+    machine-readable JSON evidence artifact per target.
 
-Pull requests build and scan but never authenticate to or push into the registry.
+Pull requests build and scan local candidates but never authenticate to or push
+into the registry. That lane proves source and Dockerfile behavior before merge;
+it is not trusted publication evidence. A trusted push performs a second build,
+so the workflow must re-pull, inspect, and scan the exact digest returned by that
+publication before recording it as deployable.
+
 The `main`, version, and full-commit tags are discovery aids only. Kubernetes and
 rollback records must use the manifest digest:
 
@@ -57,39 +70,49 @@ image-digest-slack-<run-id>-<attempt>
 image-digest-slack-command-<run-id>-<attempt>
 ```
 
-Each artifact contains one JSON document with the repository, exact 40-character
-source SHA, workflow run ID and attempt, Docker target, image name, manifest
-digest, and complete `image@sha256:...` reference. The workflow validates both the
-source SHA and digest formats before upload. GitOps automation and operators must
-consume this JSON rather than scrape logs or trust a tag.
+Each schema-v2 artifact contains the repository, exact 40-character source SHA,
+workflow run ID and attempt, Docker target, image name, manifest digest, complete
+`image@sha256:...` reference, and explicit evidence that the exact digest was
+pulled, runtime-inspected, and vulnerability-scanned successfully. The workflow
+requires `image_ref == image + "@" + digest` and validates the source SHA and
+digest formats before upload.
+
+GitOps automation and operators must consume this JSON rather than scrape logs
+or trust a tag. A digest copied from the publish step before the exact-digest
+verification steps finish is not an approved deployment input.
 
 Digest evidence is retained for 90 days in GitHub Actions. The deployment PR must
-also copy the selected source SHA, run ID, and exact image references into its
-reviewed rollout record so deployment provenance remains durable after artifact
-expiration.
+also copy the selected source SHA, run ID, exact image references, and exact-digest
+verification result into its reviewed rollout record so deployment provenance
+remains durable after artifact expiration.
 
 ## Kubernetes rollout sequence
 
-1. Merge the source PR only after Rust, browser-security, and container CI are
-   green.
-2. Download all required digest-evidence artifacts from the trusted `main` run.
-3. Verify every JSON document names the same source SHA and workflow run.
-4. Open a separate `ORESoftware/k8s-cluster` PR that replaces runtime Git
+1. Merge the source PR only after Rust, browser-security, and container candidate
+   CI are green.
+2. Wait for the trusted `main` publication to pull, inspect, and scan every exact
+   published digest successfully.
+3. Download all required schema-v2 digest-evidence artifacts from that trusted
+   `main` run.
+4. Verify every JSON document names the same source SHA and workflow run, and
+   records successful exact-digest pull, runtime inspection, and vulnerability
+   scan.
+5. Open a separate `ORESoftware/k8s-cluster` PR that replaces runtime Git
    clone/build and mutable refs with those exact image digests.
-5. Remove `GH_PAT`, source `hostPath`, Cargo build/init containers, and writable
+6. Remove `GH_PAT`, source `hostPath`, Cargo build/init containers, and writable
    source volumes from runtime pods.
-6. Keep bridge, provider runner, Slack Events ingress, and Slack slash-command
+7. Keep bridge, provider runner, Slack Events ingress, and Slack slash-command
    ingress as independently probed workloads with scoped service accounts,
    resources, NetworkPolicies, and secrets.
-7. Render, policy-check, and server-side dry-run every affected overlay.
-8. Roll out the bridge first, then a single provider runner, then dry-run Slack
+8. Render, policy-check, and server-side dry-run every affected overlay.
+9. Roll out the bridge first, then a single provider runner, then dry-run Slack
    ingress, and only then enable bounded live Slack dispatch.
-9. Record previous digests and prove rollback by digest before scaling.
+10. Record previous digests and prove rollback by digest before scaling.
 
 A source merge does not authorize an automatic cluster rollout. The deployment PR
 must contain the reviewed source SHA, workflow run ID, exact image digests,
-vulnerability result, SBOM/provenance evidence, probe evidence, and rollback
-digests.
+exact-digest vulnerability result, SBOM/provenance evidence, probe evidence, and
+rollback digests.
 
 ## Secret boundary
 

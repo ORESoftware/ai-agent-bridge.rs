@@ -31,6 +31,10 @@ path = "src/bin/fiducia-slack-bridge.rs"
 name = "fiducia-slack-command"
 path = "src/bin/fiducia-slack-command.rs"
 
+[[bin]]
+name = "ores-ai-agent-bridge"
+path = "src/bin/ores-ai-agent-bridge.rs"
+
 [lib]
 name = "ai_agent_bridge"
 path = "src/lib.rs"

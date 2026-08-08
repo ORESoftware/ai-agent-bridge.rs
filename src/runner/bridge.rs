@@ -122,6 +122,29 @@ impl BridgeClient {
         })
     }
 
+    /// Test-only constructor pointing at a scripted loopback bridge. Client
+    /// timeouts are deliberately huge so scripted long-delay scenarios can
+    /// prove engine-side cancellation without racing a client timeout.
+    #[cfg(test)]
+    pub(crate) fn for_test(base_url: &str) -> Self {
+        let mut base_url = Url::parse(base_url).expect("test bridge URL is valid");
+        if !base_url.path().ends_with('/') {
+            base_url.set_path(&format!("{}/", base_url.path()));
+        }
+        Self {
+            base_url,
+            bearer: None,
+            http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(Duration::from_secs(3_600))
+                .connect_timeout(Duration::from_secs(3_600))
+                .user_agent("fiducia-ai-agent-runner/0.1")
+                .build()
+                .expect("test bridge HTTP client builds"),
+            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+        }
+    }
+
     pub(crate) async fn register_agent(
         &self,
         agent_key: &str,

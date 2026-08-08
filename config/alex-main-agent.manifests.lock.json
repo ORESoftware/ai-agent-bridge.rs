@@ -5,7 +5,7 @@
   "linear_team": "Denman",
   "central_registry": {
     "path": "config/alex-main-agent.channels.json",
-    "canonical_sha256": "a0721832d08125efa888ed37ee990f746cac97e46676f2468c2f75411e6f163a"
+    "canonical_sha256": "b42c917608c3aafb32b1b3374db5e6130b1a9e81f1ce5d6b8e944f6516c19991"
   },
   "central_policy": {
     "linear_team_id": "eb8ab169-5afe-4b6f-9cab-3f2aa3e887dc",
