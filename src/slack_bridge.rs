@@ -255,12 +255,63 @@ impl SlackConfig {
             },
         ]
     }
+
+    /// The routes a given request actually addresses. Every count downstream —
+    /// requested agents, expected submissions, startup-failure replies — is
+    /// derived from this, so nothing keeps assuming a pair.
+    fn selected_models(&self, selection: ModelSelection) -> Vec<ModelRoute<'_>> {
+        let [claude, openai] = self.models();
+        match selection {
+            ModelSelection::Claude => vec![claude],
+            ModelSelection::Chatgpt => vec![openai],
+            ModelSelection::Both => vec![claude, openai],
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
 struct ModelRoute<'a> {
     agent_key: &'a str,
     label: &'static str,
+}
+
+/// Which providers a request addresses. `Both` stays the default so an
+/// unqualified command behaves exactly as it did before this flag existed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum ModelSelection {
+    Claude,
+    Chatgpt,
+    #[default]
+    Both,
+}
+
+impl ModelSelection {
+    fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "claude" => Some(Self::Claude),
+            "chatgpt" | "openai" | "gpt" => Some(Self::Chatgpt),
+            "both" => Some(Self::Both),
+            _ => None,
+        }
+    }
+
+    /// The bridge's competitive mode compares submissions against each other,
+    /// which is meaningless with one participant. A single-provider request is
+    /// therefore a `single` workflow, not a competition of one.
+    fn workflow_mode(self) -> &'static str {
+        match self {
+            Self::Both => "competitive",
+            Self::Claude | Self::Chatgpt => "single",
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Chatgpt => "chatgpt",
+            Self::Both => "both",
+        }
+    }
 }
 
 fn env_opt(key: &str) -> Option<String> {
@@ -744,6 +795,7 @@ struct AcceptedEvent {
     thread_ts: String,
     user: String,
     prompt: String,
+    selection: ModelSelection,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -870,13 +922,14 @@ fn classify_event(config: &SlackConfig, envelope: SlackEnvelope) -> EventDecisio
     match parse_command(&text, &config.command_prefix) {
         CommandParse::NotCommand => EventDecision::Ignore,
         CommandParse::Invalid => EventDecision::Reject,
-        CommandParse::Prompt(prompt) => EventDecision::Accept(AcceptedEvent {
+        CommandParse::Prompt { prompt, selection } => EventDecision::Accept(AcceptedEvent {
             event_id,
             team_id,
             channel,
             thread_ts,
             user,
             prompt,
+            selection,
         }),
         CommandParse::Status(target) => EventDecision::Status(target),
         CommandParse::Cancel(target) => EventDecision::Cancel(target),
@@ -887,7 +940,10 @@ fn classify_event(config: &SlackConfig, envelope: SlackEnvelope) -> EventDecisio
 enum CommandParse {
     NotCommand,
     Invalid,
-    Prompt(String),
+    Prompt {
+        prompt: String,
+        selection: ModelSelection,
+    },
     /// `<prefix> status <event-id>` — read-only lookup of a prior delivery.
     Status(String),
     /// `<prefix> cancel <event-id>` — record cancellation intent for a run.
@@ -947,7 +1003,29 @@ fn parse_command(text: &str, prefix: &str) -> CommandParse {
         return CommandParse::Invalid;
     }
 
-    CommandParse::Prompt(prompt.to_string())
+    // An optional leading `--model <claude|chatgpt|both>` selects providers.
+    // Only recognized at the front, so the flag cannot be smuggled in from
+    // untrusted channel text quoted later in a prompt.
+    let (selection, prompt) = match prompt.strip_prefix("--model") {
+        Some(rest) => {
+            let rest = rest.trim_start();
+            let (value, remainder) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            let Some(selection) = ModelSelection::parse(value) else {
+                return CommandParse::Invalid;
+            };
+            let remainder = remainder.trim();
+            if remainder.is_empty() {
+                return CommandParse::Invalid;
+            }
+            (selection, remainder)
+        }
+        None => (ModelSelection::default(), prompt),
+    };
+
+    CommandParse::Prompt {
+        prompt: prompt.to_string(),
+        selection,
+    }
 }
 
 fn strip_leading_mention(text: &str) -> &str {
@@ -1182,16 +1260,20 @@ impl SlackApp {
 }
 
 fn workflow_create_payload(config: &SlackConfig, event: &AcceptedEvent) -> Value {
+    let selected = config.selected_models(event.selection);
+    let agent_keys = selected
+        .iter()
+        .map(|model| model.agent_key)
+        .collect::<Vec<_>>();
     json!({
-        "title": format!("Slack dual-model request {}", event.event_id),
+        "title": format!("Slack {} request {}", event.selection.as_str(), event.event_id),
         "prompt": event.prompt.as_str(),
-        "created_by": config.claude_agent_key.as_str(),
-        "mode": "competitive",
-        "agent_keys": [
-            config.claude_agent_key.as_str(),
-            config.openai_agent_key.as_str()
-        ],
-        "worker_count": 2,
+        // The creator must be a participant; addressing only ChatGPT would
+        // otherwise attribute the workflow to an agent that is not running.
+        "created_by": agent_keys[0],
+        "mode": event.selection.workflow_mode(),
+        "agent_keys": agent_keys,
+        "worker_count": agent_keys.len(),
         "meta": {
             "source": "slack",
             "slack_event_id": event.event_id.as_str(),
@@ -1199,7 +1281,8 @@ fn workflow_create_payload(config: &SlackConfig, event: &AcceptedEvent) -> Value
             "slack_channel_id": event.channel.as_str(),
             "slack_thread_ts": event.thread_ts.as_str(),
             "slack_user_id": event.user.as_str(),
-            "requested_agent_count": 2
+            "requested_agent_count": agent_keys.len(),
+            "model_selection": event.selection.as_str()
         }
     })
 }
@@ -1590,6 +1673,9 @@ async fn process_event(app: Arc<SlackApp>, event: AcceptedEvent, _permit: OwnedS
         }
     };
 
+    // Completion is "every addressed provider replied", which is one for a
+    // single-provider request and two for a paired one.
+    let expected_submissions = app.config.selected_models(event.selection).len();
     let deadline = Instant::now() + app.config.workflow_timeout;
     let mut posted = app
         .store
@@ -1614,7 +1700,7 @@ async fn process_event(app: Arc<SlackApp>, event: AcceptedEvent, _permit: OwnedS
 
         if let Ok(workflow) = app.get_workflow(&workflow_id).await {
             terminal = workflow.status.stage == "completed";
-            for model in app.config.models() {
+            for model in app.config.selected_models(event.selection) {
                 if posted.contains(model.agent_key) {
                     continue;
                 }
@@ -1642,7 +1728,7 @@ async fn process_event(app: Arc<SlackApp>, event: AcceptedEvent, _permit: OwnedS
                     }
                 }
             }
-            if posted.len() == 2 {
+            if posted.len() == expected_submissions {
                 if app.store.complete(&event.event_id).is_err() {
                     warn!("failed to persist workflow completion");
                 }
@@ -1656,7 +1742,7 @@ async fn process_event(app: Arc<SlackApp>, event: AcceptedEvent, _permit: OwnedS
         sleep(app.config.poll_interval).await;
     }
 
-    for model in app.config.models() {
+    for model in app.config.selected_models(event.selection) {
         if posted.contains(model.agent_key) {
             continue;
         }
@@ -1702,8 +1788,9 @@ async fn process_event(app: Arc<SlackApp>, event: AcceptedEvent, _permit: OwnedS
 }
 
 async fn post_start_failure_pair(app: &SlackApp, event: &AcceptedEvent) {
+    let expected = app.config.selected_models(event.selection).len();
     let mut posted = 0usize;
-    for model in app.config.models() {
+    for model in app.config.selected_models(event.selection) {
         let text = labeled_failure(
             model,
             "The bounded bridge workflow could not be started safely.",
@@ -1724,7 +1811,7 @@ async fn post_start_failure_pair(app: &SlackApp, event: &AcceptedEvent) {
             }
         }
     }
-    if posted == 2 && app.store.complete(&event.event_id).is_err() {
+    if posted == expected && app.store.complete(&event.event_id).is_err() {
         warn!("failed to persist startup-failure completion");
     }
 }
@@ -1773,6 +1860,26 @@ mod tests {
 
     /// Immutable identifier of the reviewed Slack application install.
     const TEST_APP_ID: &str = "A0BMBAMM5NJ";
+
+    fn accepted_event() -> AcceptedEvent {
+        AcceptedEvent {
+            event_id: "Ev123".to_string(),
+            team_id: "T1".to_string(),
+            channel: "C1".to_string(),
+            thread_ts: "1.1".to_string(),
+            user: "U1".to_string(),
+            prompt: "explain raft".to_string(),
+            selection: ModelSelection::Both,
+        }
+    }
+
+    /// An unqualified prompt: no `--model` flag, so both providers are used.
+    fn both(prompt: &str) -> CommandParse {
+        CommandParse::Prompt {
+            prompt: prompt.to_string(),
+            selection: ModelSelection::Both,
+        }
+    }
 
     fn test_config(path: PathBuf) -> SlackConfig {
         SlackConfig {
@@ -2071,7 +2178,7 @@ mod tests {
         );
         assert_eq!(
             parse_command("!ask-both what is the status here", "!ask-both"),
-            CommandParse::Prompt("what is the status here".to_string())
+            both("what is the status here")
         );
     }
 
@@ -2146,7 +2253,7 @@ mod tests {
         // Prose that merely mentions the verb is still work.
         assert_eq!(
             parse_command("!ask-both should we cancel the rollout", "!ask-both"),
-            CommandParse::Prompt("should we cancel the rollout".to_string())
+            both("should we cancel the rollout")
         );
     }
 
@@ -2242,6 +2349,89 @@ mod tests {
 
         drop(permit);
         handle.abort();
+    }
+
+    #[test]
+    fn model_selection_is_parsed_only_as_a_leading_flag() {
+        assert_eq!(
+            parse_command("!ask-both --model claude explain raft", "!ask-both"),
+            CommandParse::Prompt {
+                prompt: "explain raft".to_string(),
+                selection: ModelSelection::Claude,
+            }
+        );
+        assert_eq!(
+            parse_command("!ask-both --model CHATGPT explain raft", "!ask-both"),
+            CommandParse::Prompt {
+                prompt: "explain raft".to_string(),
+                selection: ModelSelection::Chatgpt,
+            }
+        );
+        // Unqualified requests keep the pre-existing dual-model behaviour.
+        assert_eq!(
+            parse_command("!ask-both explain raft", "!ask-both"),
+            both("explain raft")
+        );
+        // An unknown provider is refused rather than silently defaulted.
+        assert_eq!(
+            parse_command("!ask-both --model gemini explain raft", "!ask-both"),
+            CommandParse::Invalid
+        );
+        // A flag with no task is not a request.
+        assert_eq!(
+            parse_command("!ask-both --model claude", "!ask-both"),
+            CommandParse::Invalid
+        );
+        // Untrusted channel text quoted mid-prompt cannot smuggle the flag in.
+        assert_eq!(
+            parse_command("!ask-both summarize this: --model claude", "!ask-both"),
+            both("summarize this: --model claude")
+        );
+    }
+
+    #[test]
+    fn a_single_provider_request_is_not_a_competition_of_one() {
+        let config = test_config(temp_path("single-mode"));
+        let mut event = accepted_event();
+
+        event.selection = ModelSelection::Claude;
+        let payload = workflow_create_payload(&config, &event);
+        assert_eq!(payload["mode"], json!("single"));
+        assert_eq!(payload["worker_count"], json!(1));
+        assert_eq!(
+            payload["agent_keys"],
+            json!([DEFAULT_CLAUDE_AGENT_KEY]),
+            "a Claude-only request must not enlist the OpenAI agent"
+        );
+        // The creator must participate, or the run is attributed to an agent
+        // that is not running.
+        assert_eq!(payload["created_by"], json!(DEFAULT_CLAUDE_AGENT_KEY));
+
+        event.selection = ModelSelection::Chatgpt;
+        let payload = workflow_create_payload(&config, &event);
+        assert_eq!(payload["agent_keys"], json!([DEFAULT_OPENAI_AGENT_KEY]));
+        assert_eq!(payload["created_by"], json!(DEFAULT_OPENAI_AGENT_KEY));
+
+        event.selection = ModelSelection::Both;
+        let payload = workflow_create_payload(&config, &event);
+        assert_eq!(payload["mode"], json!("competitive"));
+        assert_eq!(payload["worker_count"], json!(2));
+        assert_eq!(
+            payload["agent_keys"],
+            json!([DEFAULT_CLAUDE_AGENT_KEY, DEFAULT_OPENAI_AGENT_KEY])
+        );
+    }
+
+    #[test]
+    fn selected_routes_drive_every_downstream_count() {
+        let config = test_config(temp_path("selected-routes"));
+        assert_eq!(config.selected_models(ModelSelection::Claude).len(), 1);
+        assert_eq!(config.selected_models(ModelSelection::Chatgpt).len(), 1);
+        assert_eq!(config.selected_models(ModelSelection::Both).len(), 2);
+        assert_eq!(
+            config.selected_models(ModelSelection::Chatgpt)[0].agent_key,
+            DEFAULT_OPENAI_AGENT_KEY
+        );
     }
 
     #[test]
@@ -2377,7 +2567,7 @@ mod tests {
     fn leading_app_mention_is_removed_before_command_parsing() {
         assert_eq!(
             parse_command("<@UBOT> !ask-both explain raft", "!ask-both"),
-            CommandParse::Prompt("explain raft".to_string())
+            both("explain raft")
         );
     }
 
@@ -2437,12 +2627,8 @@ mod tests {
     fn workflow_title_does_not_copy_the_prompt() {
         let config = test_config(temp_path("payload-title"));
         let event = AcceptedEvent {
-            event_id: "Ev123".to_string(),
-            team_id: "T1".to_string(),
-            channel: "C1".to_string(),
-            thread_ts: "1.1".to_string(),
-            user: "U1".to_string(),
             prompt: "sensitive prompt".to_string(),
+            ..accepted_event()
         };
         let payload = workflow_create_payload(&config, &event);
         assert!(!payload["title"].as_str().unwrap().contains("sensitive"));

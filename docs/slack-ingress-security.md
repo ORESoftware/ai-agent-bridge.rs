@@ -159,6 +159,30 @@ a target that is not a valid event identifier is rejected rather than looked up.
 `status` is matched only as the first token, so prose that merely mentions the
 word is still routed as work.
 
+### Provider selection
+
+```text
+<prefix> --model <claude|chatgpt|both> <task>
+```
+
+Optional and defaulting to `both`, so an unqualified command behaves exactly as
+it did before the flag existed. `chatgpt` also accepts `openai` and `gpt`. An
+unrecognized provider is refused rather than silently defaulted, and a flag with
+no task is not a request.
+
+The flag is recognized **only at the front of the command**, so it cannot be
+smuggled in from untrusted channel text quoted later in a prompt.
+
+Selection drives every downstream count — requested agent keys, expected
+submissions, and startup-failure replies — rather than each site assuming a
+pair. Two consequences worth stating:
+
+- a single-provider request is dispatched as a `single` workflow, not a
+  `competitive` one, because competitive mode compares submissions against each
+  other and that is meaningless with one participant;
+- the workflow creator is drawn from the selected agents, so a ChatGPT-only
+  request is not attributed to a Claude agent that is not running.
+
 ### Cancellation
 
 ```text
@@ -265,6 +289,8 @@ dry-run configuration, then drives real Chromium requests against
   reports `unknown` for an unseen one, and refuses an unusable identifier;
 - a cancel reports `already_terminal` for a finished run and `unknown` for an
   unseen one, invents no journal entry, and refuses an unusable identifier;
+- each `--model` value is accepted, an unknown provider and a flag with no task
+  are refused, and the flag is not honoured mid-prompt;
 - `/metrics` renders a zero series for every declared outcome and leaks no Slack
   workspace, channel, application identifier, or prompt text.
 
