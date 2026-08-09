@@ -27,7 +27,7 @@ use axum::{
 };
 use chrono::Utc;
 use futures::StreamExt;
-use hmac::{Hmac, Mac};
+use hmac::{digest::KeyInit, Hmac, Mac};
 use parking_lot::Mutex;
 use reqwest::{redirect::Policy, Client, Response as HttpResponse, Url};
 use serde::{Deserialize, Serialize};
