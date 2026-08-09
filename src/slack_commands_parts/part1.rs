@@ -19,7 +19,7 @@ use axum::{
 };
 use chrono::Utc;
 use futures::StreamExt;
-use hmac::{Hmac, Mac};
+use hmac::{digest::KeyInit, Hmac, Mac};
 use reqwest::{redirect::Policy, Client, Response as HttpResponse, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
