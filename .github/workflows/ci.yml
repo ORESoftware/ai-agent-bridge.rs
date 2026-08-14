@@ -108,7 +108,7 @@ jobs:
             '(^|[^A-Za-z0-9_])sqlx::(query|query_as|query_scalar|raw_sql|migrate!)|\bPgPool(Options)?\b|^sqlx[[:space:]]*=' \
             Cargo.toml src tests
 
-      - uses: taiki-e/install-action@cb33e69fad06166ca28a42b2575e4dadabf62ee8 # v2.85.8
+      - uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
         with:
           tool: cargo-audit@0.22.2
 
