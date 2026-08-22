@@ -1,7 +1,7 @@
 //! Freeze the reviewed run modal so the Chromium spec asserts a real payload.
 //!
 //! `tests/browser/specs/modal.spec.mjs` renders these fixtures and checks what an
-//! operator sees when `/x-claude` or `/x-chatgpt` is run bare. That is only
+//! operator sees when `/x-ores-claude` or `/x-ores-chatgpt` is run bare. That is only
 //! meaningful while the fixtures match what `views.open` actually sends, so this
 //! test regenerates them and fails on drift.
 //!
@@ -49,6 +49,7 @@ fn binding(write_policy: WritePolicy, repositories: &[&str]) -> ChannelProjectBi
         write_policy,
         budget_policy: BudgetPolicy {
             max_concurrent_runs: 2,
+            allow_unpinned_identity: true,
             max_runtime_secs: 900,
             max_tokens: 200_000,
             max_spend_cents: 500,
@@ -65,7 +66,7 @@ fn cases() -> Vec<(&'static str, &'static str, ChannelProjectBinding, usize)> {
     vec![
         (
             "modal.claude.draft-pull-request.json",
-            "/x-claude",
+            "/x-ores-claude",
             binding(
                 WritePolicy::DraftPullRequest,
                 &["oresoftware/k8s-cluster", "oresoftware/ai-agent-bridge.rs"],
@@ -74,7 +75,7 @@ fn cases() -> Vec<(&'static str, &'static str, ChannelProjectBinding, usize)> {
         ),
         (
             "modal.chatgpt.read-only.json",
-            "/x-chatgpt",
+            "/x-ores-chatgpt",
             binding(WritePolicy::ReadOnly, &["oresoftware/k8s-cluster"]),
             5,
         ),
@@ -116,7 +117,7 @@ fn the_browser_fixtures_match_the_modal_builder() {
 #[test]
 fn the_default_context_depth_is_five_channel_messages() {
     let binding = binding(WritePolicy::DraftPullRequest, &["oresoftware/k8s-cluster"]);
-    let view = preview_run_modal("/x-claude", &binding, PREVIEW_METADATA, 5).unwrap();
+    let view = preview_run_modal("/x-ores-claude", &binding, PREVIEW_METADATA, 5).unwrap();
     let block = view["blocks"]
         .as_array()
         .unwrap()
@@ -133,7 +134,7 @@ fn the_default_context_depth_is_five_channel_messages() {
 #[test]
 fn only_the_linear_issue_field_is_optional() {
     let binding = binding(WritePolicy::DraftPullRequest, &["oresoftware/k8s-cluster"]);
-    let view = preview_run_modal("/x-claude", &binding, PREVIEW_METADATA, 5).unwrap();
+    let view = preview_run_modal("/x-ores-claude", &binding, PREVIEW_METADATA, 5).unwrap();
     for block in view["blocks"].as_array().unwrap() {
         let optional = block["optional"].as_bool().unwrap_or(false);
         let expected = block["block_id"] == "issue";
@@ -151,7 +152,7 @@ fn the_repository_menu_never_offers_a_repository_outside_the_allowlist() {
         WritePolicy::DraftPullRequest,
         &["oresoftware/k8s-cluster", "oresoftware/ai-agent-bridge.rs"],
     );
-    let view = preview_run_modal("/x-claude", &binding, PREVIEW_METADATA, 5).unwrap();
+    let view = preview_run_modal("/x-ores-claude", &binding, PREVIEW_METADATA, 5).unwrap();
     let block = view["blocks"]
         .as_array()
         .unwrap()

@@ -275,7 +275,7 @@ mod socket_mode_tests {
     #[test]
     fn payload_is_reencoded_into_the_form_the_http_path_validates() {
         let payload = json!({
-            "command": "/ores-claude",
+            "command": "/x-ores-claude",
             "team_id": "T1",
             "channel_id": "C1",
             "user_id": "U1",
@@ -286,7 +286,7 @@ mod socket_mode_tests {
         let form = socket_payload_to_form(&payload).expect("form");
         let parsed = parse_form(&form).expect("parses with the shared decoder");
 
-        assert_eq!(parsed.get("command").map(String::as_str), Some("/ores-claude"));
+        assert_eq!(parsed.get("command").map(String::as_str), Some("/x-ores-claude"));
         assert_eq!(parsed.get("team_id").map(String::as_str), Some("T1"));
         // Spaces survive the round trip through the hand-rolled decoder.
         assert_eq!(
@@ -299,7 +299,7 @@ mod socket_mode_tests {
     fn reencoding_escapes_separators_rather_than_splitting_a_field() {
         // A task containing & or = must not become extra form fields.
         let payload = json!({
-            "command": "/ores-claude",
+            "command": "/x-ores-claude",
             "text": "fix a=b & c=d",
             "team_id": "T1"
         });
@@ -315,7 +315,7 @@ mod socket_mode_tests {
         // Slack sends scalars as strings. Stringifying a nested object would let
         // it past the identifier character checks downstream.
         let payload = json!({
-            "command": "/ores-claude",
+            "command": "/x-ores-claude",
             "team_id": "T1",
             "enterprise": Value::Null,
             "is_enterprise_install": false,
@@ -340,12 +340,12 @@ mod socket_mode_tests {
     #[test]
     fn the_provider_comes_from_the_reviewed_command_field() {
         assert_eq!(
-            socket_expected_provider(&json!({"command": "/ores-claude"})).unwrap(),
+            socket_expected_provider(&json!({"command": "/x-ores-claude"})).unwrap(),
             Provider::Claude
         );
-        // Aliases resolve exactly as they do on the HTTP routes.
+        // The socket transport resolves the same namespace the HTTP routes do.
         assert_eq!(
-            socket_expected_provider(&json!({"command": "/my-chatgpt"})).unwrap(),
+            socket_expected_provider(&json!({"command": "/x-ores-chatgpt"})).unwrap(),
             Provider::Chatgpt
         );
         assert!(socket_expected_provider(&json!({"command": "/unknown"})).is_err());
@@ -398,10 +398,10 @@ mod socket_mode_tests {
         assert!(hello.envelope_id.is_none());
 
         let envelope = serde_json::from_str::<SocketModeEnvelope>(
-            r#"{"type":"slash_commands","envelope_id":"e1","payload":{"command":"/ores-claude"}}"#,
+            r#"{"type":"slash_commands","envelope_id":"e1","payload":{"command":"/x-ores-claude"}}"#,
         )
         .expect("envelope");
         assert_eq!(envelope.envelope_id.as_deref(), Some("e1"));
-        assert_eq!(envelope.payload["command"], "/ores-claude");
+        assert_eq!(envelope.payload["command"], "/x-ores-claude");
     }
 }

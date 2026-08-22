@@ -2,7 +2,7 @@
 //
 // The other specs drive the running ingress service and assert its security
 // boundary. This one asserts the surface an authorized operator actually sees
-// after `/x-claude` or `/x-chatgpt`: that every sub-selection renders, that the
+// after `/x-ores-claude` or `/x-ores-chatgpt`: that every sub-selection renders, that the
 // safe defaults are preselected, and that write scope never offers more than the
 // channel policy allows.
 //

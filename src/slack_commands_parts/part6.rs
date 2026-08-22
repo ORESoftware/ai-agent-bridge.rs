@@ -41,8 +41,8 @@ fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/readyz", get(ready))
-        .route("/slack/commands/ores-claude", post(command))
-        .route("/slack/commands/ores-chatgpt", post(command))
+        .route("/slack/commands/x-ores-claude", post(command))
+        .route("/slack/commands/x-ores-chatgpt", post(command))
         .route("/slack/interactions", post(interaction))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(TraceLayer::new_for_http())
@@ -85,8 +85,8 @@ async fn command(
         return ephemeral(StatusCode::UNAUTHORIZED, "Request authentication failed.");
     }
     let expected_provider = match uri.path() {
-        "/slack/commands/ores-claude" => Provider::Claude,
-        "/slack/commands/ores-chatgpt" => Provider::Chatgpt,
+        "/slack/commands/x-ores-claude" => Provider::Claude,
+        "/slack/commands/x-ores-chatgpt" => Provider::Chatgpt,
         _ => return ephemeral(StatusCode::NOT_FOUND, "Unknown Slack command endpoint."),
     };
     match validate_slash_envelope(&app.config, &body, expected_provider) {
@@ -152,7 +152,7 @@ async fn handle_command(app: Arc<App>, command: SlashCommand) -> Response {
         }
     };
     match app.resolve(&request).await {
-        Ok(_) => accept(app, request),
+        Ok(_) => accept(app, request).await,
         Err(Error::Policy) => ephemeral(
             StatusCode::FORBIDDEN,
             "This channel, user, repository, or write scope is not authorized.",
@@ -183,18 +183,24 @@ async fn interaction(State(app): State<Arc<App>>, headers: HeaderMap, body: Byte
         Ok(request) => request,
         Err(_) => return json_response(StatusCode::BAD_REQUEST, json!({})),
     };
-    let authorized = match tokio::time::timeout(SLACK_ACK_DEADLINE, app.resolve(&request)).await {
-        Ok(result) => result,
+    // The deadline must cover the run claim too, not just the policy resolve:
+    // the claim writes and fsyncs a journal entry, and an unbounded tail here
+    // is what actually blows Slack's 3s acknowledgement window.
+    let accepted = match tokio::time::timeout(SLACK_ACK_DEADLINE, async {
+        match app.resolve(&request).await {
+            Ok(_) => accept(app, request).await,
+            Err(_) => ephemeral(StatusCode::FORBIDDEN, "The submitted scope is not authorized."),
+        }
+    })
+    .await
+    {
+        Ok(response) => response,
         Err(_) => {
             return json_response(
                 StatusCode::OK,
                 json!({"response_action": "errors", "errors": {"task": "Authorization did not finish before Slack's acknowledgement deadline."}}),
             )
         }
-    };
-    let accepted = match authorized {
-        Ok(_) => accept(app, request),
-        Err(_) => ephemeral(StatusCode::FORBIDDEN, "The submitted scope is not authorized."),
     };
     if accepted.status() == StatusCode::OK {
         json_response(StatusCode::OK, json!({}))
@@ -206,7 +212,28 @@ async fn interaction(State(app): State<Arc<App>>, headers: HeaderMap, body: Byte
     }
 }
 
-fn accept(app: Arc<App>, request: RunRequest) -> Response {
+async fn accept(app: Arc<App>, request: RunRequest) -> Response {
+    // Answer a duplicate truthfully *before* reserving capacity. Replying
+    // "queue is at capacity" to an already-claimed delivery invites another
+    // delivery of work that is already running — retry amplification exactly
+    // when the service is saturated.
+    match journal({
+        let app = app.clone();
+        let run_id = request.run_id.clone();
+        move || Ok(app.claimed(&run_id))
+    })
+    .await
+    {
+        Ok(true) => {
+            return ephemeral(
+                StatusCode::OK,
+                &format!("Run `{}` was already accepted.", request.run_id),
+            )
+        }
+        Ok(false) => {}
+        Err(response) => return response,
+    }
+
     let permit = match app.capacity.clone().try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => {
@@ -216,15 +243,20 @@ fn accept(app: Arc<App>, request: RunRequest) -> Response {
             )
         }
     };
-    match app.claim(&request) {
+
+    let claimed = journal({
+        let app = app.clone();
+        let request = request.clone();
+        move || app.claim(&request)
+    })
+    .await;
+
+    match claimed {
         Ok(false) => ephemeral(
             StatusCode::OK,
             &format!("Run `{}` was already accepted.", request.run_id),
         ),
-        Err(_) => ephemeral(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "The durable run journal is unavailable.",
-        ),
+        Err(response) => response,
         Ok(true) => {
             let run_id = request.run_id.clone();
             let provider = request.provider.label();
@@ -239,6 +271,23 @@ fn accept(app: Arc<App>, request: RunRequest) -> Response {
                 &format!("Accepted {provider} run `{run_id}`. IDs and progress will be posted in-channel."),
             )
         }
+    }
+}
+
+/// Run a blocking run-journal operation off the async runtime. `claim` opens a
+/// file and fsyncs; `tokio::time::timeout` cannot preempt a blocking syscall,
+/// so doing this inline would let a slow disk blow Slack's 3s deadline and
+/// stall unrelated requests sharing the worker thread.
+async fn journal<F>(operation: F) -> std::result::Result<bool, Response>
+where
+    F: FnOnce() -> Result<bool> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(operation).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(_)) | Err(_) => Err(ephemeral(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The durable run journal is unavailable.",
+        )),
     }
 }
 
@@ -283,6 +332,24 @@ fn ephemeral(status: StatusCode, text: &str) -> Response {
     json_response(status, json!({"response_type": "ephemeral", "text": text}))
 }
 
+/// Render a remote-controlled string safe for a structured log line: no
+/// newlines or control characters that could forge a log record, and bounded
+/// so a misbehaving downstream cannot flood the log pipeline.
+fn log_safe(value: &str) -> String {
+    let cleaned = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | ':' | ' ')
+            {
+                character
+            } else {
+                '?'
+            }
+        })
+        .collect::<String>();
+    truncate(&cleaned, 64)
+}
+
 fn truncate(value: &str, maximum_bytes: usize) -> String {
     if value.len() <= maximum_bytes {
         return value.to_string();
@@ -301,7 +368,7 @@ mod tests {
     #[test]
     fn parses_exact_commands() {
         let command = SlashCommand::parse(
-            b"command=%2Fores-claude&team_id=T1&channel_id=C1&user_id=U1&text=fix+DEN-1041&trigger_id=1.2",
+            b"command=%2Fx-ores-claude&team_id=T1&channel_id=C1&user_id=U1&text=fix+DEN-1041&trigger_id=1.2",
         )
         .expect("valid command");
         assert_eq!(command.provider(), Provider::Claude);
@@ -336,5 +403,28 @@ mod tests {
         );
         assert!(slack_api_base_url("https://attacker.example/api").is_err());
         assert!(slack_api_base_url("http://slack.com/api").is_err());
+    }
+}
+
+#[cfg(test)]
+mod log_safety_tests {
+    use super::*;
+
+    #[test]
+    fn a_downstream_cannot_forge_log_records_or_flood_the_pipeline() {
+        let forged = "not_authed\n2026-08-22 ERROR fabricated line";
+        let rendered = log_safe(forged);
+        assert!(!rendered.contains('\n'));
+        assert!(rendered.starts_with("not_authed"));
+
+        let flood = "a".repeat(4_096);
+        assert!(log_safe(&flood).len() <= 64);
+    }
+
+    #[test]
+    fn ordinary_slack_error_codes_survive_unchanged() {
+        for code in ["not_authed", "channel_not_found", "ratelimited", "invalid_auth"] {
+            assert_eq!(log_safe(code), code);
+        }
     }
 }

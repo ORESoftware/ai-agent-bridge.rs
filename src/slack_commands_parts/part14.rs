@@ -48,6 +48,7 @@ mod preview_run_modal_tests {
             write_policy,
             budget_policy: BudgetPolicy {
                 max_concurrent_runs: 2,
+                allow_unpinned_identity: true,
                 max_runtime_secs: 600,
                 max_tokens: 100_000,
                 max_spend_cents: 500,
@@ -59,15 +60,8 @@ mod preview_run_modal_tests {
     }
 
     #[test]
-    fn every_reviewed_command_alias_resolves_to_a_modal() {
-        for command in [
-            "/ores-claude",
-            "/x-claude",
-            "/my-claude",
-            "/ores-chatgpt",
-            "/x-chatgpt",
-            "/my-chatgpt",
-        ] {
+    fn every_reviewed_command_resolves_to_a_modal() {
+        for command in ["/x-ores-claude", "/x-ores-chatgpt"] {
             assert!(
                 preview_run_modal(
                     command,
@@ -79,23 +73,25 @@ mod preview_run_modal_tests {
                 "{command} must open the reviewed modal"
             );
         }
-        assert!(
-            preview_run_modal(
-                "/x-gemini",
-                &binding(WritePolicy::DraftPullRequest),
-                "m",
-                5,
-            )
-            .is_none(),
-            "an unreviewed command must not open the modal"
-        );
+        for command in ["/x-ores-gemini", "/ores-claude", "/x-claude", "/my-chatgpt"] {
+            assert!(
+                preview_run_modal(
+                    command,
+                    &binding(WritePolicy::DraftPullRequest),
+                    "m",
+                    5,
+                )
+                .is_none(),
+                "{command} is outside the reviewed namespace and must not open the modal"
+            );
+        }
     }
 
     #[test]
     fn the_preview_is_the_same_payload_the_ingress_opens() {
         let binding = binding(WritePolicy::DraftPullRequest);
         assert_eq!(
-            preview_run_modal("/x-claude", &binding, "meta", 5).unwrap(),
+            preview_run_modal("/x-ores-claude", &binding, "meta", 5).unwrap(),
             modal(Provider::Claude, &binding, "meta", 5),
             "the preview must not drift from the builder used by views.open"
         );
@@ -103,13 +99,13 @@ mod preview_run_modal_tests {
 
     #[test]
     fn write_scope_options_never_exceed_the_channel_policy() {
-        let read_only = preview_run_modal("/x-claude", &binding(WritePolicy::ReadOnly), "m", 5)
+        let read_only = preview_run_modal("/x-ores-claude", &binding(WritePolicy::ReadOnly), "m", 5)
             .unwrap()
             .to_string();
         assert!(!read_only.contains("draft_pull_request"));
         assert!(!read_only.contains("linear_write"));
 
-        let linear_only = preview_run_modal("/x-claude", &binding(WritePolicy::LinearOnly), "m", 5)
+        let linear_only = preview_run_modal("/x-ores-claude", &binding(WritePolicy::LinearOnly), "m", 5)
             .unwrap()
             .to_string();
         assert!(linear_only.contains("linear_write"));
@@ -163,6 +159,7 @@ mod block_kit_limit_tests {
             write_policy,
             budget_policy: BudgetPolicy {
                 max_concurrent_runs: 2,
+                allow_unpinned_identity: true,
                 max_runtime_secs: 600,
                 max_tokens: 100_000,
                 max_spend_cents: 500,

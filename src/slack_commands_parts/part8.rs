@@ -174,6 +174,7 @@ mod command_integration_tests {
             app_token: None,
             dry_run: false,
             max_concurrent_runs: 4,
+            allow_unpinned_identity: true,
         };
         let app = Arc::new(App::new(config).unwrap());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -229,11 +230,11 @@ mod command_integration_tests {
         let (mock_base, mock) = spawn_mock().await;
         let (service_base, _) = spawn_command_service(&mock_base).await;
         let client = reqwest::Client::new();
-        let body = "command=%2Fores-chatgpt&team_id=T1&channel_id=C1&user_id=U1&text=Implement+DEN-1041&trigger_id=trigger-1";
+        let body = "command=%2Fx-ores-chatgpt&team_id=T1&channel_id=C1&user_id=U1&text=Implement+DEN-1041&trigger_id=trigger-1";
         let timestamp = Utc::now().timestamp();
 
         let response = client
-            .post(format!("{service_base}/slack/commands/ores-chatgpt"))
+            .post(format!("{service_base}/slack/commands/x-ores-chatgpt"))
             .headers(signed_headers(body, timestamp))
             .body(body)
             .send()
@@ -260,7 +261,7 @@ mod command_integration_tests {
         drop(jobs);
 
         let duplicate = client
-            .post(format!("{service_base}/slack/commands/ores-chatgpt"))
+            .post(format!("{service_base}/slack/commands/x-ores-chatgpt"))
             .headers(signed_headers(body, timestamp))
             .body(body)
             .send()
@@ -280,9 +281,9 @@ mod command_integration_tests {
         let (mock_base, mock) = spawn_mock().await;
         let (service_base, _) = spawn_command_service(&mock_base).await;
         let client = reqwest::Client::new();
-        let body = "command=%2Fores-claude&team_id=T1&channel_id=C1&user_id=U1&text=&trigger_id=trigger-modal";
+        let body = "command=%2Fx-ores-claude&team_id=T1&channel_id=C1&user_id=U1&text=&trigger_id=trigger-modal";
         let response = client
-            .post(format!("{service_base}/slack/commands/ores-claude"))
+            .post(format!("{service_base}/slack/commands/x-ores-claude"))
             .headers(signed_headers(body, Utc::now().timestamp()))
             .body(body)
             .send()
@@ -314,9 +315,9 @@ mod command_integration_tests {
         let (mock_base, mock) = spawn_mock().await;
         let (service_base, state_dir) = spawn_command_service(&mock_base).await;
         let client = reqwest::Client::new();
-        let body = "command=%2Fores-chatgpt&team_id=T1&channel_id=C2&user_id=U1&text=Implement+DEN-1041&trigger_id=trigger-denied";
+        let body = "command=%2Fx-ores-chatgpt&team_id=T1&channel_id=C2&user_id=U1&text=Implement+DEN-1041&trigger_id=trigger-denied";
         let response = client
-            .post(format!("{service_base}/slack/commands/ores-chatgpt"))
+            .post(format!("{service_base}/slack/commands/x-ores-chatgpt"))
             .headers(signed_headers(body, Utc::now().timestamp()))
             .body(body)
             .send()
@@ -334,10 +335,10 @@ mod command_integration_tests {
         let (mock_base, mock) = spawn_mock().await;
         let (service_base, state_dir) = spawn_command_service(&mock_base).await;
         let client = reqwest::Client::new();
-        let body = "command=%2Fores-chatgpt&team_id=T1&channel_id=C1&user_id=U1&text=Implement+DEN-1041&trigger_id=trigger-auth";
+        let body = "command=%2Fx-ores-chatgpt&team_id=T1&channel_id=C1&user_id=U1&text=Implement+DEN-1041&trigger_id=trigger-auth";
         let stale = Utc::now().timestamp() - 600;
         let response = client
-            .post(format!("{service_base}/slack/commands/ores-chatgpt"))
+            .post(format!("{service_base}/slack/commands/x-ores-chatgpt"))
             .headers(signed_headers(body, stale))
             .body(body)
             .send()
@@ -346,7 +347,7 @@ mod command_integration_tests {
         assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
 
         let response = client
-            .post(format!("{service_base}/slack/commands/ores-chatgpt"))
+            .post(format!("{service_base}/slack/commands/x-ores-chatgpt"))
             .headers(signed_headers(body, Utc::now().timestamp()))
             .body(format!("{body}+tampered"))
             .send()

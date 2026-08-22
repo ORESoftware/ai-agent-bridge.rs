@@ -8,34 +8,14 @@ features:
     display_name: alex-main-agent
     always_online: false
   slash_commands:
-    - command: /ores-claude
-      url: https://api.fiducia.cloud/slack/commands/ores-claude
+    - command: /x-ores-claude
+      url: https://api.fiducia.cloud/slack/commands/x-ores-claude
       description: Submit a scoped ORESoftware task to Claude.
       usage_hint: "[task] or leave empty to open the scoped task menu"
       should_escape: true
-    - command: /ores-chatgpt
-      url: https://api.fiducia.cloud/slack/commands/ores-chatgpt
+    - command: /x-ores-chatgpt
+      url: https://api.fiducia.cloud/slack/commands/x-ores-chatgpt
       description: Submit a scoped ORESoftware task to ChatGPT.
-      usage_hint: "[task] or leave empty to open the scoped task menu"
-      should_escape: true
-    - command: /x-claude
-      url: https://api.fiducia.cloud/slack/commands/ores-claude
-      description: Convenience alias for /ores-claude.
-      usage_hint: "[task] or leave empty to open the scoped task menu"
-      should_escape: true
-    - command: /x-chatgpt
-      url: https://api.fiducia.cloud/slack/commands/ores-chatgpt
-      description: Convenience alias for /ores-chatgpt.
-      usage_hint: "[task] or leave empty to open the scoped task menu"
-      should_escape: true
-    - command: /my-claude
-      url: https://api.fiducia.cloud/slack/commands/ores-claude
-      description: Convenience alias for /ores-claude.
-      usage_hint: "[task] or leave empty to open the scoped task menu"
-      should_escape: true
-    - command: /my-chatgpt
-      url: https://api.fiducia.cloud/slack/commands/ores-chatgpt
-      description: Convenience alias for /ores-chatgpt.
       usage_hint: "[task] or leave empty to open the scoped task menu"
       should_escape: true
 

@@ -1,7 +1,16 @@
+/// Slack sends roughly a dozen fields. A ceiling keeps a 1 MiB body of empty
+/// pairs from turning into hundreds of thousands of map entries — the body is
+/// signed, so this is only reachable by the installed app, but the parse runs
+/// twice per request and there is no reason to leave the amplification there.
+const MAX_FORM_FIELDS: usize = 64;
+
 fn parse_form(body: &[u8]) -> Result<BTreeMap<String, String>> {
     let body = std::str::from_utf8(body).map_err(|_| Error::Request)?;
     let mut output = BTreeMap::new();
     for pair in body.split('&').filter(|pair| !pair.is_empty()) {
+        if output.len() >= MAX_FORM_FIELDS {
+            return Err(Error::Request);
+        }
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
         if output
             .insert(percent_decode(key)?, percent_decode(value)?)
@@ -149,3 +158,46 @@ struct App {
     capacity: Arc<Semaphore>,
 }
 
+
+#[cfg(test)]
+mod form_parser_hardening_tests {
+    use super::*;
+
+    #[test]
+    fn a_flood_of_empty_pairs_is_refused_rather_than_allocated() {
+        let distinct = (0..=MAX_FORM_FIELDS)
+            .map(|index| format!("k{index}=v"))
+            .collect::<Vec<_>>()
+            .join("&");
+        assert!(
+            parse_form(distinct.as_bytes()).is_err(),
+            "more than {MAX_FORM_FIELDS} fields must be refused"
+        );
+    }
+
+    #[test]
+    fn a_realistic_slack_envelope_still_parses() {
+        let body = concat!(
+            "token=x&team_id=T01B3C83PMK&team_domain=oresoftware-workspace",
+            "&channel_id=C1&channel_name=ores&user_id=U1&user_name=alex",
+            "&command=%2Fx-ores-claude&text=fix+DEN-1041&api_app_id=A0BMBAMM5NJ",
+            "&response_url=https%3A%2F%2Fhooks.slack.com%2Fx&trigger_id=t1"
+        );
+        let form = parse_form(body.as_bytes()).expect("a real envelope must parse");
+        assert_eq!(form.get("command").map(String::as_str), Some("/x-ores-claude"));
+        assert_eq!(form.get("api_app_id").map(String::as_str), Some("A0BMBAMM5NJ"));
+        assert!(form.len() < MAX_FORM_FIELDS);
+    }
+
+    #[test]
+    fn a_truncated_escape_is_rejected_not_silently_kept() {
+        assert!(parse_form(b"command=%2").is_err());
+        assert!(parse_form(b"command=%").is_err());
+        assert!(parse_form(b"command=%zz").is_err());
+    }
+
+    #[test]
+    fn decoded_key_collisions_cannot_smuggle_a_second_team_id() {
+        assert!(parse_form(b"team_id=T1&team%5Fid=T2").is_err());
+    }
+}

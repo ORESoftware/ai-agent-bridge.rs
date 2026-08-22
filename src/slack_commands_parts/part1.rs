@@ -84,8 +84,8 @@ enum Provider {
 impl Provider {
     fn from_command(command: &str) -> Option<Self> {
         match command.trim() {
-            "/ores-claude" | "/x-claude" | "/my-claude" => Some(Self::Claude),
-            "/ores-chatgpt" | "/x-chatgpt" | "/my-chatgpt" => Some(Self::Chatgpt),
+            "/x-ores-claude" => Some(Self::Claude),
+            "/x-ores-chatgpt" => Some(Self::Chatgpt),
             _ => None,
         }
     }
@@ -128,6 +128,11 @@ struct Config {
     app_token: Option<String>,
     dry_run: bool,
     max_concurrent_runs: usize,
+    // Whether the installed app/team identifiers may be omitted. Exposure is
+    // NOT inferable from the bind address: the reviewed production shape
+    // terminates TLS in a same-host proxy and forwards to 127.0.0.1, so an
+    // internet-facing deployment binds loopback. Operators opt out explicitly.
+    allow_unpinned_identity: bool,
 }
 
 impl Config {
@@ -214,6 +219,7 @@ impl Config {
             app_token,
             dry_run: env_bool("SLACK_COMMAND_DRY_RUN", true)?,
             max_concurrent_runs: env_usize("SLACK_COMMAND_MAX_CONCURRENT_RUNS", 8, 1, 128)?,
+            allow_unpinned_identity: env_bool(ALLOW_UNPINNED_IDENTITY_ENV, false)?,
         })
     }
 
@@ -280,16 +286,38 @@ fn absolute_path(key: &str) -> Result<PathBuf> {
 }
 
 #[cfg(test)]
-mod provider_command_alias_tests {
+mod provider_command_namespace_tests {
     use super::*;
 
     #[test]
-    fn reviewed_aliases_map_to_the_expected_provider() {
-        for command in ["/ores-claude", "/x-claude", "/my-claude"] {
-            assert_eq!(Provider::from_command(command), Some(Provider::Claude));
-        }
-        for command in ["/ores-chatgpt", "/x-chatgpt", "/my-chatgpt"] {
-            assert_eq!(Provider::from_command(command), Some(Provider::Chatgpt));
+    fn the_reviewed_namespace_maps_to_the_expected_provider() {
+        assert_eq!(
+            Provider::from_command("/x-ores-claude"),
+            Some(Provider::Claude)
+        );
+        assert_eq!(
+            Provider::from_command("/x-ores-chatgpt"),
+            Some(Provider::Chatgpt)
+        );
+    }
+
+    #[test]
+    fn retired_pre_namespace_commands_are_rejected() {
+        // Every name the workspace used before the /x-ores-* namespace. A stale
+        // manifest must fail closed rather than silently route to a provider.
+        for command in [
+            "/ores-claude",
+            "/ores-chatgpt",
+            "/x-claude",
+            "/x-chatgpt",
+            "/my-claude",
+            "/my-chatgpt",
+        ] {
+            assert_eq!(
+                Provider::from_command(command),
+                None,
+                "{command} was retired and must not resolve"
+            );
         }
     }
 
@@ -298,10 +326,12 @@ mod provider_command_alias_tests {
         for command in [
             "/claude",
             "/chatgpt",
-            "/ores-claude-extra",
-            "/ores-chatgpt-extra",
-            "/x_claude",
-            "/my_chatgpt",
+            "/x-ores-claude-extra",
+            "/x-ores-chatgpt-extra",
+            "/x_ores_claude",
+            "/x-ores_chatgpt",
+            "/xores-claude",
+            "/x-ores-gemini",
         ] {
             assert_eq!(Provider::from_command(command), None);
         }
