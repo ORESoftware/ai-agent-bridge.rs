@@ -352,6 +352,141 @@ mod socket_mode_tests {
         assert!(socket_expected_provider(&json!({})).is_err());
     }
 
+    /// Both transports must accept and refuse exactly the same commands.
+    ///
+    /// The asymmetry that makes this worth pinning: on HTTP the provider comes
+    /// from the route path and is then cross-checked against the signed
+    /// `command` field, so a stale mapping still routes. A socket frame has no
+    /// path, so `Provider::from_command` is the sole authority — a stale
+    /// mapping drops the frame with no ack, which looks like a dead connection
+    /// rather than a routing bug.
+    #[test]
+    fn both_transports_resolve_the_same_namespace() {
+        for (command, expected) in [
+            ("/x-ores-claude", Provider::Claude),
+            ("/x-ores-chatgpt", Provider::Chatgpt),
+        ] {
+            let over_socket = socket_expected_provider(&json!({ "command": command }))
+                .expect("the socket transport must accept a reviewed command");
+            let over_http = Provider::from_command(command)
+                .expect("the HTTP transport must accept a reviewed command");
+            assert_eq!(over_socket, expected);
+            assert_eq!(over_socket, over_http, "{command} must mean one provider");
+        }
+
+        for command in [
+            "/ores-claude",
+            "/ores-chatgpt",
+            "/x-claude",
+            "/x-chatgpt",
+            "/my-claude",
+            "/my-chatgpt",
+            "/x-ores-gemini",
+        ] {
+            assert!(
+                socket_expected_provider(&json!({ "command": command })).is_err(),
+                "{command} must be refused over the socket"
+            );
+            assert!(
+                Provider::from_command(command).is_none(),
+                "{command} must be refused over HTTP"
+            );
+        }
+    }
+
+    /// A socket frame carries no signature, so app/team pinning is a larger
+    /// share of what stands between the handler and an unintended payload.
+    /// `socket_payload_to_form` must carry those fields through to the shared
+    /// envelope validation rather than dropping them on the floor.
+    #[test]
+    fn identity_fields_survive_the_socket_to_form_conversion() {
+        let payload = json!({
+            "command": "/x-ores-claude",
+            "api_app_id": "A0BMBAMM5NJ",
+            "team_id": "T01B3C83PMK",
+            "channel_id": "C1",
+            "user_id": "U1",
+            "text": "fix DEN-1041",
+            "trigger_id": "t1",
+        });
+        let body = socket_payload_to_form(&payload).expect("a real payload must convert");
+        let form = parse_form(&body).expect("the converted body must parse");
+        for (field, value) in [
+            ("api_app_id", "A0BMBAMM5NJ"),
+            ("team_id", "T01B3C83PMK"),
+            ("command", "/x-ores-claude"),
+            ("trigger_id", "t1"),
+        ] {
+            assert_eq!(
+                form.get(field).map(String::as_str),
+                Some(value),
+                "{field} must reach the shared envelope validation"
+            );
+        }
+    }
+
+    /// The pinning decision itself is transport-independent: it runs on the
+    /// form bytes, which is exactly what the socket path hands it.
+    #[test]
+    fn a_pinned_deployment_refuses_a_foreign_workspace_over_the_socket() {
+        let pinned = configured_slack_identity_from_values(
+            &Config {
+                allow_unpinned_identity: false,
+                ..socket_test_config()
+            },
+            Some("A0BMBAMM5NJ".into()),
+            Some("T01B3C83PMK".into()),
+        )
+        .expect("a paired identity is valid")
+        .expect("a paired identity is present");
+
+        let ours = socket_payload_to_form(&json!({
+            "command": "/x-ores-claude",
+            "api_app_id": "A0BMBAMM5NJ",
+            "team_id": "T01B3C83PMK",
+        }))
+        .unwrap();
+        let theirs = socket_payload_to_form(&json!({
+            "command": "/x-ores-claude",
+            "api_app_id": "A0BMBAMM5NJ",
+            "team_id": "T09999999",
+        }))
+        .unwrap();
+
+        let team_of = |body: &[u8]| {
+            parse_form(body)
+                .ok()
+                .and_then(|form| form.get("team_id").cloned())
+        };
+        assert_eq!(team_of(&ours).as_deref(), Some(pinned.1.as_str()));
+        assert_ne!(team_of(&theirs).as_deref(), Some(pinned.1.as_str()));
+    }
+
+    fn socket_test_config() -> Config {
+        Config {
+            host: "127.0.0.1".parse().unwrap(),
+            port: 8151,
+            signing_secret: "test-signing-secret".into(),
+            bot_token: "test-bot-token".into(),
+            registry_path: PathBuf::from("/tmp/registry.json"),
+            state_dir: PathBuf::from("/tmp/slack-command-state"),
+            bridge_url: "http://127.0.0.1:8142/".into(),
+            bridge_bearer: None,
+            coordinator_url: "http://127.0.0.1:8160/".into(),
+            coordinator_bearer: None,
+            slack_api_base_url: "http://127.0.0.1:8170/api/".into(),
+            claude_agent: "claude-fable-5".into(),
+            chatgpt_agent: "gpt-5.6-sol".into(),
+            linear_run_project_id: DEFAULT_LINEAR_RUN_PROJECT.into(),
+            context_messages: 5,
+            socket_mode: true,
+            app_token: Some("xapp-1-test-token".into()),
+            dry_run: true,
+            max_concurrent_runs: 1,
+            allow_unpinned_identity: true,
+        }
+    }
+
     #[test]
     fn acks_carry_the_envelope_id_and_omit_an_empty_body() {
         let bare = socket_ack("env-1", None);
