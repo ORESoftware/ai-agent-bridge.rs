@@ -82,39 +82,32 @@ async fn command(
     body: Bytes,
 ) -> Response {
     if !verify_signature(&app.config, &headers, &body, Utc::now().timestamp()) {
-        return ephemeral(StatusCode::UNAUTHORIZED, "Request authentication failed.");
+        return reject(StatusCode::UNAUTHORIZED);
     }
     let expected_provider = match uri.path() {
         "/slack/commands/x-ores-claude" => Provider::Claude,
         "/slack/commands/x-ores-chatgpt" => Provider::Chatgpt,
-        _ => return ephemeral(StatusCode::NOT_FOUND, "Unknown Slack command endpoint."),
+        _ => return reject(StatusCode::NOT_FOUND),
     };
     match validate_slash_envelope(&app.config, &body, expected_provider) {
         Ok(()) => {}
         Err(Error::Config(_)) => {
-            return ephemeral(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "The installed Slack app identity is not configured safely.",
-            )
+            return ephemeral("The installed Slack app identity is not configured safely.")
         }
         Err(Error::Policy) => {
             return ephemeral(
-                StatusCode::FORBIDDEN,
                 "This request did not originate from the installed Slack app and workspace.",
             )
         }
-        Err(_) => return ephemeral(StatusCode::BAD_REQUEST, "Invalid slash command payload."),
+        Err(_) => return ephemeral("Invalid slash command payload."),
     }
     let command = match SlashCommand::parse(&body) {
         Ok(command) => command,
-        Err(_) => return ephemeral(StatusCode::BAD_REQUEST, "Invalid slash command payload."),
+        Err(_) => return ephemeral("Invalid slash command payload."),
     };
     match tokio::time::timeout(SLACK_ACK_DEADLINE, handle_command(app, command)).await {
         Ok(response) => response,
-        Err(_) => ephemeral(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "The command could not be acknowledged safely before Slack's deadline.",
-        ),
+        Err(_) => ephemeral("The command could not be acknowledged safely before Slack's deadline."),
     }
 }
 
@@ -123,96 +116,172 @@ async fn handle_command(app: Arc<App>, command: SlashCommand) -> Response {
         return match app.command_binding(&command).await {
             Ok(binding) => match app.open_modal(&command, &binding).await {
                 Ok(()) => json_response(StatusCode::OK, json!({})),
-                Err(Error::Policy) => ephemeral(
-                    StatusCode::FORBIDDEN,
-                    "This channel or user is not authorized.",
-                ),
-                Err(_) => ephemeral(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "The agent menu could not be opened safely.",
-                ),
+                Err(Error::Policy) => ephemeral("This channel or user is not authorized."),
+                Err(_) => ephemeral("The agent menu could not be opened safely."),
             },
-            Err(Error::Policy) => ephemeral(
-                StatusCode::FORBIDDEN,
-                "This channel or user is not authorized.",
-            ),
-            Err(_) => ephemeral(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "The agent menu could not be opened safely.",
-            ),
+            Err(Error::Policy) => ephemeral("This channel or user is not authorized."),
+            Err(_) => ephemeral("The agent menu could not be opened safely."),
         };
     }
     let request = match RunRequest::direct(&command, app.config.context_messages) {
         Ok(request) => request,
-        Err(_) => {
-            return ephemeral(
-                StatusCode::BAD_REQUEST,
-                "Provide a bounded task after the command.",
-            )
-        }
+        Err(_) => return ephemeral("Provide a bounded task after the command."),
     };
-    match app.resolve(&request).await {
-        Ok(_) => accept(app, request).await,
-        Err(Error::Policy) => ephemeral(
-            StatusCode::FORBIDDEN,
-            "This channel, user, repository, or write scope is not authorized.",
-        ),
-        Err(_) => ephemeral(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "The task could not be authorized safely.",
-        ),
+    // Bind before matching. Temporaries in a match scrutinee live until the end
+    // of the match, so the future returned by `resolve` would still borrow
+    // `*app` inside the arms -- and an arm moves `app` into `accept`.
+    let authorized = app.resolve(&request).await;
+    match authorized {
+        Ok(_) => ephemeral(&accept(app, request).await.message()),
+        Err(Error::Policy) => {
+            ephemeral("This channel, user, repository, or write scope is not authorized.")
+        }
+        Err(_) => ephemeral("The task could not be authorized safely."),
     }
 }
 
 async fn interaction(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> Response {
     if !verify_signature(&app.config, &headers, &body, Utc::now().timestamp()) {
-        return json_response(StatusCode::UNAUTHORIZED, json!({}));
+        return reject(StatusCode::UNAUTHORIZED);
     }
     let payload = match parse_interaction_envelope(&app.config, &body) {
         Ok(payload) => payload,
-        Err(Error::Config(_)) => {
-            return json_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                json!({"error": "installed_slack_app_identity_not_configured"}),
-            )
-        }
-        Err(Error::Policy) => return json_response(StatusCode::FORBIDDEN, json!({})),
-        Err(_) => return json_response(StatusCode::BAD_REQUEST, json!({})),
+        Err(error) => return interaction_envelope_error(&error),
     };
+    handle_interaction(app, payload).await
+}
+
+/// A `view_submission` reply is always HTTP 200 -- Slack reads `response_action`
+/// from the body, and a non-200 leaves the modal open with a generic failure.
+fn interaction_envelope_error(error: &Error) -> Response {
+    let text = match error {
+        Error::Config(_) => "The installed Slack app identity is not configured safely.",
+        Error::Policy => "This request did not originate from the installed Slack app and workspace.",
+        _ => "The submitted form could not be read.",
+    };
+    view_error("task", text)
+}
+
+fn view_error(block: &str, text: &str) -> Response {
+    json_response(
+        StatusCode::OK,
+        json!({"response_action": "errors", "errors": {block: text}}),
+    )
+}
+
+/// The whole modal-submission path, shared by both transports.
+///
+/// This used to live inline in the HTTP handler, which is why Socket Mode --
+/// the transport actually running in production -- silently dropped every
+/// submission: its `"interactive"` arm had nothing to call.
+async fn handle_interaction(app: Arc<App>, payload: InteractionPayload) -> Response {
     let request = match RunRequest::interaction(payload) {
         Ok(request) => request,
-        Err(_) => return json_response(StatusCode::BAD_REQUEST, json!({})),
+        Err(_) => return view_error("task", "The submitted form could not be read."),
     };
     // The deadline must cover the run claim too, not just the policy resolve:
     // the claim writes and fsyncs a journal entry, and an unbounded tail here
     // is what actually blows Slack's 3s acknowledgement window.
-    let accepted = match tokio::time::timeout(SLACK_ACK_DEADLINE, async {
-        match app.resolve(&request).await {
-            Ok(_) => accept(app, request).await,
-            Err(_) => ephemeral(StatusCode::FORBIDDEN, "The submitted scope is not authorized."),
+    let outcome = tokio::time::timeout(SLACK_ACK_DEADLINE, async {
+        let authorized = app.resolve(&request).await;
+        match authorized {
+            Ok(_) => Ok(accept(app, request).await),
+            Err(error) => Err(error),
         }
     })
-    .await
-    {
-        Ok(response) => response,
-        Err(_) => {
-            return json_response(
-                StatusCode::OK,
-                json!({"response_action": "errors", "errors": {"task": "Authorization did not finish before Slack's acknowledgement deadline."}}),
-            )
+    .await;
+
+    match outcome {
+        Err(_) => view_error(
+            "task",
+            "Authorization did not finish before Slack's acknowledgement deadline.",
+        ),
+        Ok(Err(Error::Policy)) => view_error(
+            "write_scope",
+            "This channel, user, repository, or write scope is not authorized.",
+        ),
+        Ok(Err(_)) => view_error("task", "The task could not be authorized safely."),
+        // Slack gives a successful submission no signal beyond the modal
+        // closing, which is indistinguishable from the submission being
+        // dropped. The in-channel dispatch post is currently the only
+        // confirmation; a chat.postEphemeral to the submitter is still owed.
+        Ok(Ok(accepted)) if accepted.is_started() => {
+            json_response(StatusCode::OK, json!({}))
         }
-    };
-    if accepted.status() == StatusCode::OK {
-        json_response(StatusCode::OK, json!({}))
-    } else {
-        json_response(
-            StatusCode::OK,
-            json!({"response_action": "errors", "errors": {"task": "The run could not be accepted safely."}}),
-        )
+        Ok(Ok(accepted)) => view_error(accepted.modal_block(), &accepted.message()),
     }
 }
 
-async fn accept(app: Arc<App>, request: RunRequest) -> Response {
+/// What `accept` decided. Deliberately not a `Response`.
+///
+/// Slack renders a slash command body only on HTTP 200, so the outcome cannot
+/// be carried in the status code. It also has to be rendered two different ways
+/// -- as an ephemeral message for a slash command, and as a `view_submission`
+/// reply for a modal -- so the decision and its presentation are separated.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Accepted {
+    Started {
+        run_id: String,
+        provider: &'static str,
+        dry_run: bool,
+    },
+    Duplicate {
+        run_id: String,
+    },
+    AtCapacity,
+    JournalUnavailable,
+}
+
+impl Accepted {
+    fn is_started(&self) -> bool {
+        matches!(self, Self::Started { .. })
+    }
+
+    /// The text a person sees. Every one of these is delivered with HTTP 200,
+    /// because Slack discards the body of anything else.
+    fn message(&self) -> String {
+        match self {
+            Self::Started {
+                run_id,
+                provider,
+                dry_run: false,
+            } => format!(
+                "Accepted {provider} run `{run_id}`. IDs and progress will be posted in-channel."
+            ),
+            // The dry-run marker belongs in the acknowledgement the user
+            // actually reads. It used to appear only in a separate in-channel
+            // post, so a failure to post left them holding an "Accepted" that
+            // read as real work.
+            Self::Started {
+                run_id,
+                provider,
+                dry_run: true,
+            } => format!(
+                "Accepted {provider} run `{run_id}` — dry run, no external writes will be performed."
+            ),
+            Self::Duplicate { run_id } => {
+                format!("Run `{run_id}` was already accepted.")
+            }
+            Self::AtCapacity => "The agent queue is at capacity. Try again shortly.".into(),
+            Self::JournalUnavailable => {
+                "The durable run journal is unavailable, so the run was not started.".into()
+            }
+        }
+    }
+
+    /// Which modal input to attach a failure to. Attaching everything to the
+    /// task field puts the red note under the textarea while the offending
+    /// control sits further down, unmarked.
+    fn modal_block(&self) -> &'static str {
+        // Every current outcome is about the run as a whole rather than about
+        // one input, so they all attach to the task field. Scope-specific
+        // denials should attach to `write_scope` or `repository` once the
+        // registry's reason survives that far -- see DEN-3898.
+        "task"
+    }
+}
+
+async fn accept(app: Arc<App>, request: RunRequest) -> Accepted {
     // Answer a duplicate truthfully *before* reserving capacity. Replying
     // "queue is at capacity" to an already-claimed delivery invites another
     // delivery of work that is already running — retry amplification exactly
@@ -225,23 +294,17 @@ async fn accept(app: Arc<App>, request: RunRequest) -> Response {
     .await
     {
         Ok(true) => {
-            return ephemeral(
-                StatusCode::OK,
-                &format!("Run `{}` was already accepted.", request.run_id),
-            )
+            return Accepted::Duplicate {
+                run_id: request.run_id,
+            }
         }
         Ok(false) => {}
-        Err(response) => return response,
+        Err(()) => return Accepted::JournalUnavailable,
     }
 
     let permit = match app.capacity.clone().try_acquire_owned() {
         Ok(permit) => permit,
-        Err(_) => {
-            return ephemeral(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "The agent queue is at capacity.",
-            )
-        }
+        Err(_) => return Accepted::AtCapacity,
     };
 
     let claimed = journal({
@@ -252,24 +315,32 @@ async fn accept(app: Arc<App>, request: RunRequest) -> Response {
     .await;
 
     match claimed {
-        Ok(false) => ephemeral(
-            StatusCode::OK,
-            &format!("Run `{}` was already accepted.", request.run_id),
-        ),
-        Err(response) => response,
+        Ok(false) => Accepted::Duplicate {
+            run_id: request.run_id,
+        },
+        Err(()) => Accepted::JournalUnavailable,
         Ok(true) => {
             let run_id = request.run_id.clone();
             let provider = request.provider.label();
+            let dry_run = app.config.dry_run;
             tokio::spawn(async move {
                 let _permit = permit;
                 if let Err(error) = dispatch(&app, &request).await {
-                    warn!(run_id = %request.run_id, error = %error, "Slack agent dispatch failed");
+                    warn!(
+                        run_id = %request.run_id,
+                        team_id = %request.team_id,
+                        channel_id = %request.channel_id,
+                        user_id = %request.user_id,
+                        error = %error,
+                        "Slack agent dispatch failed",
+                    );
                 }
             });
-            ephemeral(
-                StatusCode::OK,
-                &format!("Accepted {provider} run `{run_id}`. IDs and progress will be posted in-channel."),
-            )
+            Accepted::Started {
+                run_id,
+                provider,
+                dry_run,
+            }
         }
     }
 }
@@ -278,16 +349,13 @@ async fn accept(app: Arc<App>, request: RunRequest) -> Response {
 /// file and fsyncs; `tokio::time::timeout` cannot preempt a blocking syscall,
 /// so doing this inline would let a slow disk blow Slack's 3s deadline and
 /// stall unrelated requests sharing the worker thread.
-async fn journal<F>(operation: F) -> std::result::Result<bool, Response>
+async fn journal<F>(operation: F) -> std::result::Result<bool, ()>
 where
     F: FnOnce() -> Result<bool> + Send + 'static,
 {
     match tokio::task::spawn_blocking(operation).await {
         Ok(Ok(value)) => Ok(value),
-        Ok(Err(_)) | Err(_) => Err(ephemeral(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "The durable run journal is unavailable.",
-        )),
+        Ok(Err(_)) | Err(_) => Err(()),
     }
 }
 
@@ -328,8 +396,22 @@ fn json_response(status: StatusCode, body: Value) -> Response {
     (status, Json(body)).into_response()
 }
 
-fn ephemeral(status: StatusCode, text: &str) -> Response {
-    json_response(status, json!({"response_type": "ephemeral", "text": text}))
+/// A reply meant for a person.
+///
+/// Always HTTP 200. Slack renders a slash command's response body *only* on
+/// 200 -- "Any other flavor of response will result in a user-facing error" --
+/// so a carefully worded 403 reaches the user as `http_status_code_403` and the
+/// text is discarded. Every diagnostic here was invisible for exactly that
+/// reason. The outcome travels in the body.
+fn ephemeral(text: &str) -> Response {
+    json_response(StatusCode::OK, json!({"response_type": "ephemeral", "text": text}))
+}
+
+/// A refusal aimed at Slack rather than at a person. No body is rendered, so
+/// nothing is lost by using a real status code -- and an unauthenticated caller
+/// should not be told why it failed.
+fn reject(status: StatusCode) -> Response {
+    json_response(status, json!({}))
 }
 
 /// Render a remote-controlled string safe for a structured log line: no
@@ -426,5 +508,85 @@ mod log_safety_tests {
         for code in ["not_authed", "channel_not_found", "ratelimited", "invalid_auth"] {
             assert_eq!(log_safe(code), code);
         }
+    }
+}
+
+#[cfg(test)]
+mod reply_contract_tests {
+    use super::*;
+
+    /// Slack renders a slash command's response body only on HTTP 200 --
+    /// "Any other flavor of response will result in a user-facing error". A
+    /// reply carrying text on any other status is text no one will ever read.
+    #[test]
+    fn every_reply_meant_for_a_person_is_two_hundred() {
+        for text in [
+            "This channel or user is not authorized.",
+            "The agent queue is at capacity. Try again shortly.",
+            "Provide a bounded task after the command.",
+            "Invalid slash command payload.",
+        ] {
+            let response = ephemeral(text);
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "{text:?} would be discarded by Slack on a non-200",
+            );
+        }
+    }
+
+    /// The converse: a refusal aimed at Slack carries no body, so a real status
+    /// code costs nothing and an unauthenticated caller learns nothing.
+    #[test]
+    fn refusals_aimed_at_slack_keep_their_status_and_say_nothing() {
+        for status in [StatusCode::UNAUTHORIZED, StatusCode::NOT_FOUND] {
+            assert_eq!(reject(status).status(), status);
+        }
+    }
+
+    #[test]
+    fn the_dry_run_marker_is_in_the_acknowledgement_itself() {
+        let live = Accepted::Started {
+            run_id: "ores-abc".into(),
+            provider: "Claude",
+            dry_run: false,
+        };
+        let dry = Accepted::Started {
+            run_id: "ores-abc".into(),
+            provider: "Claude",
+            dry_run: true,
+        };
+        assert!(!live.message().contains("dry run"));
+        // The only disclosure used to be a separate in-channel post. If that
+        // post failed, the user was left holding an "Accepted" that read as
+        // real work.
+        assert!(dry.message().contains("dry run"));
+        assert!(dry.message().contains("no external writes"));
+        assert!(live.is_started() && dry.is_started());
+    }
+
+    #[test]
+    fn a_duplicate_is_reported_as_a_duplicate_not_as_capacity() {
+        let duplicate = Accepted::Duplicate {
+            run_id: "ores-abc".into(),
+        };
+        assert!(duplicate.message().contains("already accepted"));
+        assert!(!duplicate.message().contains("capacity"));
+        assert!(!duplicate.is_started());
+
+        assert!(Accepted::AtCapacity.message().contains("capacity"));
+        assert!(!Accepted::AtCapacity.is_started());
+        assert!(Accepted::JournalUnavailable
+            .message()
+            .contains("not started"));
+        assert!(!Accepted::JournalUnavailable.is_started());
+    }
+
+    #[test]
+    fn a_view_submission_error_is_two_hundred_and_names_a_block() {
+        let response = view_error("write_scope", "nope");
+        // Slack reads response_action from the body; a non-200 leaves the modal
+        // open with a generic failure instead.
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

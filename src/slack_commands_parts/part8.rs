@@ -323,7 +323,16 @@ mod command_integration_tests {
             .send()
             .await
             .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+        // 200 with the reason in the body. Slack renders a slash command body
+        // only on 200, so a 403 here reached the user as
+        // `http_status_code_403` and the text was thrown away.
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let denied = response.json::<Value>().await.unwrap();
+        assert_eq!(denied["response_type"], "ephemeral");
+        assert!(denied["text"]
+            .as_str()
+            .unwrap()
+            .contains("not authorized"));
         assert!(fs::read_dir(state_dir).unwrap().next().is_none());
         assert!(mock.workflows.lock().await.is_empty());
         assert!(mock.jobs.lock().await.is_empty());

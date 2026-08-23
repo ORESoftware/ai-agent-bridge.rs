@@ -58,6 +58,16 @@ fn parse_interaction_envelope(config: &Config, body: &[u8]) -> Result<Interactio
     let form = parse_form(body)?;
     let payload = field(&form, "payload")?;
     let value = serde_json::from_str::<Value>(&payload).map_err(|_| Error::Request)?;
+    interaction_payload(config, value)
+}
+
+/// Identity-pin and decode one interaction payload.
+///
+/// Split out of `parse_interaction_envelope` because a Socket Mode frame
+/// carries the payload as JSON directly rather than form-wrapped under
+/// `payload=`. Re-encoding it to a form just to parse it back would be a second
+/// path through the decoder; both transports share this one instead.
+fn interaction_payload(config: &Config, value: Value) -> Result<InteractionPayload> {
     if let Some((expected_app_id, expected_team_id)) = configured_slack_identity(config)? {
         let app_matches = value
             .get("api_app_id")

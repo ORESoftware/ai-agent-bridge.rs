@@ -20,6 +20,13 @@ const SOCKET_MODE_OPEN_METHOD: &str = "apps.connections.open";
 const SOCKET_MODE_MAX_FRAME_BYTES: usize = 262_144;
 const SOCKET_MODE_RECONNECT_MIN: Duration = Duration::from_secs(1);
 const SOCKET_MODE_RECONNECT_MAX: Duration = Duration::from_secs(30);
+/// Longest silence tolerated on an established socket before it is treated as
+/// dead. Slack pings roughly every five seconds.
+const SOCKET_MODE_READ_IDLE: Duration = Duration::from_secs(45);
+/// How long a connection must survive before its predecessor's failures are
+/// forgotten. Resetting on the handshake alone lets a connection that Slack
+/// accepts and immediately closes reset the backoff every second, forever.
+const SOCKET_MODE_HEALTHY_AFTER: Duration = Duration::from_secs(30);
 
 /// One Socket Mode frame. Slack sends `hello` and `disconnect` control frames
 /// alongside the event envelopes, and only envelopes carry an `envelope_id`.
@@ -145,36 +152,70 @@ impl App {
 
     /// Turns one Socket Mode frame into the same response the HTTP route would
     /// have produced, as an ack payload.
+    ///
+    /// Every branch that can fail says so. This used to return `None` on four
+    /// separate error paths, which `drive_socket` turned into a bare ack --
+    /// Slack then treats the envelope as handled and never redelivers, so the
+    /// command was consumed and produced literal silence.
     async fn handle_socket_envelope(
         self: &Arc<Self>,
         envelope: &SocketModeEnvelope,
     ) -> Option<Value> {
         match envelope.kind.as_str() {
             "slash_commands" => {
-                let expected = socket_expected_provider(&envelope.payload).ok()?;
-                let body = socket_payload_to_form(&envelope.payload).ok()?;
+                let Ok(expected) = socket_expected_provider(&envelope.payload) else {
+                    warn!("Socket Mode frame named a command outside the reviewed namespace");
+                    return Some(socket_text("That command is not one this app serves."));
+                };
+                let Ok(body) = socket_payload_to_form(&envelope.payload) else {
+                    warn!("Socket Mode slash command payload could not be re-encoded");
+                    return Some(socket_text("Invalid slash command payload."));
+                };
                 if validate_slash_envelope(&self.config, &body, expected).is_err() {
-                    return Some(json!({
-                        "response_type": "ephemeral",
-                        "text": "This request did not originate from the installed Slack app and workspace."
-                    }));
+                    return Some(socket_text(
+                        "This request did not originate from the installed Slack app and workspace.",
+                    ));
                 }
-                let command = SlashCommand::parse(&body).ok()?;
-                let response =
-                    tokio::time::timeout(SLACK_ACK_DEADLINE, handle_command(self.clone(), command))
-                        .await
-                        .ok()?;
-                response_ack_payload(response).await
+                let Ok(command) = SlashCommand::parse(&body) else {
+                    warn!("Socket Mode slash command failed to parse after validation");
+                    return Some(socket_text("Invalid slash command payload."));
+                };
+                match tokio::time::timeout(SLACK_ACK_DEADLINE, handle_command(self.clone(), command))
+                    .await
+                {
+                    Ok(response) => response_ack_payload(response).await,
+                    Err(_) => {
+                        warn!("Socket Mode command missed the acknowledgement deadline");
+                        Some(socket_text(
+                            "The command could not be acknowledged safely before Slack's deadline.",
+                        ))
+                    }
+                }
             }
+            // Modal submissions. This arm used to do nothing at all and ack
+            // empty, so with Socket Mode enabled -- the only transport running
+            // in production -- the entire guided surface was dead, and it
+            // failed in the shape that looks most like success: the modal
+            // opened, accepted five fields, and closed cleanly with no run.
             "interactive" => {
-                // Interactions ack with an empty body; the surface updates the
-                // view or posts to the channel out of band, exactly as on HTTP.
-                let _ = self;
-                None
+                let value = envelope.payload.clone();
+                let payload = match interaction_payload(&self.config, value) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        warn!(reason = %error, "Socket Mode interaction rejected at the envelope");
+                        return response_ack_payload(interaction_envelope_error(&error)).await;
+                    }
+                };
+                response_ack_payload(handle_interaction(self.clone(), payload).await).await
             }
             _ => None,
         }
     }
+}
+
+/// An ephemeral reply carried back over the socket rather than over HTTP.
+fn socket_text(text: &str) -> Value {
+    json!({ "response_type": "ephemeral", "text": text })
 }
 
 /// Extracts an axum response body so the socket ack shows a member the same text
@@ -203,14 +244,26 @@ async fn run_socket_mode(app: Arc<App>) {
         match app.open_socket_connection().await {
             Ok(url) => match tokio_tungstenite::connect_async(&url).await {
                 Ok((stream, _)) => {
-                    attempt = 0;
                     info!("Slack Socket Mode connection established");
+                    let opened = tokio::time::Instant::now();
                     drive_socket(&app, stream).await;
-                    warn!("Slack Socket Mode connection closed; reconnecting");
+                    let uptime = opened.elapsed();
+                    // Reset only once the connection has proven itself. A
+                    // handshake Slack accepts and closes immediately -- what
+                    // happens when the app is not enabled for Socket Mode --
+                    // would otherwise reset the backoff on every iteration and
+                    // hammer the rate-limited apps.connections.open at 1/s.
+                    if uptime >= SOCKET_MODE_HEALTHY_AFTER {
+                        attempt = 0;
+                    }
+                    warn!(
+                        uptime_secs = uptime.as_secs(),
+                        "Slack Socket Mode connection closed; reconnecting"
+                    );
                 }
-                Err(_) => warn!("Slack Socket Mode handshake failed"),
+                Err(error) => warn!(error = %log_safe(&error.to_string()), "Slack Socket Mode handshake failed"),
             },
-            Err(_) => warn!("Slack refused a Socket Mode connection"),
+            Err(error) => warn!(reason = %error, "Slack refused a Socket Mode connection"),
         }
         let delay = reconnect_delay(attempt);
         attempt = attempt.saturating_add(1);
@@ -232,7 +285,23 @@ where
     use tokio_tungstenite::tungstenite::Message;
 
     let mut stream = stream;
-    while let Some(Ok(message)) = stream.next().await {
+    loop {
+        // A blackholed TCP connection -- NAT or idle timeout with no FIN, which
+        // is routine for long-lived WebSockets -- leaves `next()` pending
+        // forever. The loop never returns, so nothing ever reconnects and the
+        // service is silently dead. Slack pings roughly every five seconds, so
+        // a long silence means the connection is gone, not quiet.
+        let message = match tokio::time::timeout(SOCKET_MODE_READ_IDLE, stream.next()).await {
+            Ok(Some(Ok(message))) => message,
+            Ok(_) => break,
+            Err(_) => {
+                warn!(
+                    idle_secs = SOCKET_MODE_READ_IDLE.as_secs(),
+                    "no Slack Socket Mode frame within the idle window; treating the connection as dead"
+                );
+                break;
+            }
+        };
         let text = match message {
             Message::Text(text) => text.to_string(),
             Message::Ping(payload) => {
@@ -265,6 +334,34 @@ where
         {
             break;
         }
+    }
+}
+
+/// Shared by both socket test modules, so it lives at file scope rather than
+/// inside either one.
+#[cfg(test)]
+fn socket_test_config() -> Config {
+    Config {
+        host: "127.0.0.1".parse().unwrap(),
+        port: 8151,
+        signing_secret: "test-signing-secret".into(),
+        bot_token: "test-bot-token".into(),
+        registry_path: PathBuf::from("/tmp/registry.json"),
+        state_dir: PathBuf::from("/tmp/slack-command-state"),
+        bridge_url: "http://127.0.0.1:8142/".into(),
+        bridge_bearer: None,
+        coordinator_url: "http://127.0.0.1:8160/".into(),
+        coordinator_bearer: None,
+        slack_api_base_url: "http://127.0.0.1:8170/api/".into(),
+        claude_agent: "claude-fable-5".into(),
+        chatgpt_agent: "gpt-5.6-sol".into(),
+        linear_run_project_id: DEFAULT_LINEAR_RUN_PROJECT.into(),
+        context_messages: 5,
+        socket_mode: true,
+        app_token: Some("xapp-1-test-token".into()),
+        dry_run: true,
+        max_concurrent_runs: 1,
+        allow_unpinned_identity: true,
     }
 }
 
@@ -462,31 +559,6 @@ mod socket_mode_tests {
         assert_ne!(team_of(&theirs).as_deref(), Some(pinned.1.as_str()));
     }
 
-    fn socket_test_config() -> Config {
-        Config {
-            host: "127.0.0.1".parse().unwrap(),
-            port: 8151,
-            signing_secret: "test-signing-secret".into(),
-            bot_token: "test-bot-token".into(),
-            registry_path: PathBuf::from("/tmp/registry.json"),
-            state_dir: PathBuf::from("/tmp/slack-command-state"),
-            bridge_url: "http://127.0.0.1:8142/".into(),
-            bridge_bearer: None,
-            coordinator_url: "http://127.0.0.1:8160/".into(),
-            coordinator_bearer: None,
-            slack_api_base_url: "http://127.0.0.1:8170/api/".into(),
-            claude_agent: "claude-fable-5".into(),
-            chatgpt_agent: "gpt-5.6-sol".into(),
-            linear_run_project_id: DEFAULT_LINEAR_RUN_PROJECT.into(),
-            context_messages: 5,
-            socket_mode: true,
-            app_token: Some("xapp-1-test-token".into()),
-            dry_run: true,
-            max_concurrent_runs: 1,
-            allow_unpinned_identity: true,
-        }
-    }
-
     #[test]
     fn acks_carry_the_envelope_id_and_omit_an_empty_body() {
         let bare = socket_ack("env-1", None);
@@ -538,5 +610,87 @@ mod socket_mode_tests {
         .expect("envelope");
         assert_eq!(envelope.envelope_id.as_deref(), Some("e1"));
         assert_eq!(envelope.payload["command"], "/x-ores-claude");
+    }
+}
+
+#[cfg(test)]
+mod socket_interaction_tests {
+    use super::*;
+
+    fn submission(team: &str) -> Value {
+        json!({
+            "type": "view_submission",
+            "api_app_id": "A0BMBAMM5NJ",
+            "team": { "id": team },
+            "user": { "id": "U1" },
+            "view": {
+                "id": "V1",
+                "callback_id": CALLBACK_ID,
+                "private_metadata": "{}",
+                "state": { "values": {} }
+            }
+        })
+    }
+
+    /// A Socket Mode frame carries the interaction as JSON directly, not
+    /// form-wrapped under `payload=`. The shared decoder must take it as-is;
+    /// re-encoding it to a form just to parse it back would be a second,
+    /// subtly different path.
+    #[test]
+    fn a_socket_shaped_payload_decodes_without_a_form_wrapper() {
+        let config = Config {
+            allow_unpinned_identity: true,
+            ..socket_test_config()
+        };
+        let payload = interaction_payload(&config, submission("T01B3C83PMK"))
+            .expect("a socket interaction payload must decode directly");
+        assert_eq!(payload.kind, "view_submission");
+        assert_eq!(payload.view.callback_id, CALLBACK_ID);
+        assert_eq!(payload.team.id, "T01B3C83PMK");
+    }
+
+    /// Identity pinning applies to interactions on the socket exactly as it
+    /// does on HTTP. This matters more here: a socket frame carries no
+    /// signature, so the pinned pair is a larger share of what stands between
+    /// the handler and an unintended payload.
+    #[test]
+    fn a_foreign_workspace_interaction_is_refused_on_the_socket() {
+        std::env::set_var("SLACK_EXPECTED_APP_ID", "A0BMBAMM5NJ");
+        std::env::set_var("SLACK_EXPECTED_TEAM_ID", "T01B3C83PMK");
+        let config = Config {
+            allow_unpinned_identity: false,
+            ..socket_test_config()
+        };
+        let ours = interaction_payload(&config, submission("T01B3C83PMK"));
+        let theirs = interaction_payload(&config, submission("T09999999"));
+        std::env::remove_var("SLACK_EXPECTED_APP_ID");
+        std::env::remove_var("SLACK_EXPECTED_TEAM_ID");
+
+        assert!(ours.is_ok(), "the installed workspace must be accepted");
+        assert!(
+            matches!(theirs, Err(Error::Policy)),
+            "another workspace must be refused by policy",
+        );
+    }
+
+    /// Regression guard for the defect this file shipped: the `"interactive"`
+    /// arm did nothing and acked empty, so with Socket Mode enabled every modal
+    /// submission was dropped in the way that looks most like success.
+    #[test]
+    fn the_interactive_arm_is_wired_to_the_shared_handler() {
+        let source = include_str!("part15.rs");
+        let arm = source
+            .split(r#""interactive" => {"#)
+            .nth(1)
+            .expect("the interactive arm must exist");
+        let body = &arm[..arm.find("\n            _ => None,").unwrap_or(arm.len())];
+        assert!(
+            body.contains("handle_interaction"),
+            "the interactive arm must dispatch through the shared handler",
+        );
+        assert!(
+            !body.contains("let _ = self;"),
+            "the interactive arm must not be a no-op again",
+        );
     }
 }

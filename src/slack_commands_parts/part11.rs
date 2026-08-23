@@ -293,8 +293,10 @@ mod alias_http_contract_tests {
                 .send()
                 .await
                 .unwrap();
-            assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+            // 200 carrying the reason: Slack discards the body of anything else.
+            assert_eq!(response.status(), reqwest::StatusCode::OK);
             let denied = response.json::<Value>().await.unwrap();
+            assert_eq!(denied["response_type"], "ephemeral");
             assert_eq!(denied["text"], "Invalid slash command payload.");
         }
 
