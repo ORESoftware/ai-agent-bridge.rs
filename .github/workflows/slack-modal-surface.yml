@@ -5,8 +5,9 @@
 # correct: every sub-selection present, the safe defaults preselected, and write
 # scope never wider than the channel policy.
 #
-# It needs no running service and no Slack credentials. The Rust job freezes the
-# real `views.open` payloads and the Chromium job renders exactly those.
+# It needs no running service, Slack credentials, or private vendor submodules.
+# The Rust job freezes the real `views.open` payloads and the Chromium job
+# renders exactly those.
 
 name: Slack run modal surface
 
@@ -39,15 +40,14 @@ concurrency:
 
 jobs:
   modal-surface:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          submodules: recursive
 
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable action pin
         with:
           toolchain: "1.95.0"
 
@@ -67,13 +67,15 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: tests/browser/package-lock.json
 
       - name: Install pinned browser dependency
         working-directory: tests/browser
-        run: npm install --ignore-scripts --no-audit --no-fund
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Install Chromium
         working-directory: tests/browser
