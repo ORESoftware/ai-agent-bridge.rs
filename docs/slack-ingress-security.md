@@ -98,6 +98,62 @@ These tests run in the normal pinned CI lane through formatting, Clippy with war
 
 The lane has `contents: read`, uses no live external credentials, and runs one supervised service process with a private state directory and bounded timeout. It is complementary to the cross-repository canary in `ORESoftware/k8s-cluster`, which exercises the bridge, coordinator, PostgreSQL, Slack API double, and browser together.
 
+## Event-callback ingress (`fiducia-slack-bridge`)
+
+The slash-command service above is not the only Slack intake. The
+`fiducia-slack-bridge` binary receives Events API callbacks on:
+
+```text
+POST /slack/events
+```
+
+It enforces the same signed-request contract — exact `v0` HMAC over the
+unmodified body, a ±300 second replay window, canonical 64-character signature
+decoding, and fail-closed rejection before any downstream read or write. On top
+of the shared contract it applies:
+
+- **Installed-application identity.** `SLACK_EXPECTED_APP_ID` pins the reviewed
+  install. A signed `event_callback` whose `api_app_id` is absent or belongs to
+  another application is rejected before channel policy, journaling, bridge
+  dispatch, or any Slack post. The variable is optional for a loopback bind
+  (local tests and sidecars) and **required** for a non-loopback bind, matching
+  `SLACK_EXPECTED_APP_ID`/`SLACK_EXPECTED_TEAM_ID` on the command service.
+- **Workspace, channel, and thread allowlists**, plus bot/self-authored event
+  suppression so the adapter cannot loop on its own replies.
+- **Deterministic single delivery.** Slack retries the same `event_id`; the
+  durable journal claims it once so a retry cannot fan out a second workflow.
+
+`/readyz` reports `dry_run` and `installed_app_identity_enforced` so a deployment
+gate can assert the boundary before activation.
+
+### Request-URL handshake
+
+Slack's Events API request-URL handshake posts only `token`, `challenge`, and
+`type`. It is sent while the Request URL is being configured, before the endpoint
+is bound to a workspace, so no `team_id` is available to match. The handshake is
+therefore accepted on a valid signature alone and echoes only the challenge
+value. When Slack does supply a workspace it is still held to
+`SLACK_ALLOWED_TEAM_IDS`.
+
+### Chromium security lane
+
+`.github/workflows/slack-bridge-events-browser-security.yml` builds and starts
+the production `fiducia-slack-bridge` binary with synthetic, loopback-only
+dry-run configuration, then drives real Chromium requests against
+`/slack/events` to verify:
+
+- readiness reports dry-run mode and installed-app identity enforcement;
+- missing and forged signatures return `401`;
+- missing, stale, and far-future timestamps return `401`;
+- the request-URL handshake completes and echoes only the challenge;
+- a handshake naming an unapproved workspace is ignored, not echoed;
+- a correctly signed event from another `api_app_id`, or with none, returns `400`;
+- unapproved workspaces and channels are ignored rather than accepted;
+- bot-authored events are ignored so the adapter cannot loop;
+- hostile channel text is never reflected as executable markup;
+- a retried delivery is claimed exactly once;
+- malformed JSON carrying a valid signature returns `400`.
+
 ## Production activation checklist
 
 Before turning off `SLACK_COMMAND_DRY_RUN`:
