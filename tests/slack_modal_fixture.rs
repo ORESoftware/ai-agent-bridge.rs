@@ -49,7 +49,6 @@ fn binding(write_policy: WritePolicy, repositories: &[&str]) -> ChannelProjectBi
         write_policy,
         budget_policy: BudgetPolicy {
             max_concurrent_runs: 2,
-            allow_unpinned_identity: true,
             max_runtime_secs: 900,
             max_tokens: 200_000,
             max_spend_cents: 500,

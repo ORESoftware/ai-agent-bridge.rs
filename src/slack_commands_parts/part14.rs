@@ -48,7 +48,6 @@ mod preview_run_modal_tests {
             write_policy,
             budget_policy: BudgetPolicy {
                 max_concurrent_runs: 2,
-                allow_unpinned_identity: true,
                 max_runtime_secs: 600,
                 max_tokens: 100_000,
                 max_spend_cents: 500,
@@ -159,7 +158,6 @@ mod block_kit_limit_tests {
             write_policy,
             budget_policy: BudgetPolicy {
                 max_concurrent_runs: 2,
-                allow_unpinned_identity: true,
                 max_runtime_secs: 600,
                 max_tokens: 100_000,
                 max_spend_cents: 500,

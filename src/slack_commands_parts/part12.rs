@@ -155,7 +155,6 @@ mod observable_event_contract_tests {
             write_policy: WritePolicy::DraftPullRequest,
             budget_policy: crate::slack_project_bindings::BudgetPolicy {
                 max_concurrent_runs: 1,
-                allow_unpinned_identity: true,
                 max_runtime_secs: 900,
                 max_tokens: 20_000,
                 max_spend_cents: 500,
