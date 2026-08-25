@@ -23,17 +23,16 @@ The Slack app is installed in the workspace. The reviewed command and interactio
 The canonical commands are:
 
 ```text
-/ores-claude [task]
-/ores-chatgpt [task]
+/x-ores-claude [task]
+/x-ores-chatgpt [task]
 ```
 
-The reviewed manifest also defines these convenience aliases; they are not assumed present in the installed app until the remote manifest is reconciled and the app is reinstalled:
+The reviewed manifest defines no aliases. These pre-namespace names are retired and must not appear in the installed app after reconciliation:
 
 ```text
-/x-claude [task]
-/x-chatgpt [task]
-/my-claude [task]
-/my-chatgpt [task]
+/ores-claude    /ores-chatgpt
+/x-claude       /x-chatgpt
+/my-claude      /my-chatgpt
 ```
 
 Type a command in the message composer of an authorized project channel. Supplying text dispatches the task directly; leaving the command empty opens the reviewed task modal. Custom slash commands are not invoked from message threads, so start the run in the channel composer and continue in the app's status thread.
@@ -43,12 +42,12 @@ Type a command in the message composer of an authorized project channel. Supplyi
 The reviewed manifest exposes only two provider command endpoints plus one interaction endpoint:
 
 ```text
-https://api.fiducia.cloud/slack/commands/ores-claude
-https://api.fiducia.cloud/slack/commands/ores-chatgpt
+https://api.fiducia.cloud/slack/commands/x-ores-claude
+https://api.fiducia.cloud/slack/commands/x-ores-chatgpt
 https://api.fiducia.cloud/slack/interactions
 ```
 
-`/x-claude` and `/my-claude` share the canonical Claude endpoint. `/x-chatgpt` and `/my-chatgpt` share the canonical ChatGPT endpoint. Slack includes the actual command name in the signed form payload, and the runtime rejects any command outside the six reviewed names.
+`/x-ores-claude` has one request URL and `/x-ores-chatgpt` has another. Slack includes the actual command name in the signed form payload, and the runtime rejects any command outside the two reviewed names — including every retired one.
 
 The application must verify Slack signatures, request freshness, app ID, and workspace ID before parsing or journaling a request. No gateway authentication cookie or operator bearer may be required on these three Slack-signed endpoints.
 
@@ -83,8 +82,8 @@ Using the Slack app settings UI:
 3. Reconcile it with `slack-app/manifest.yaml`; do not discard unrelated reviewed settings.
 4. Validate and save the merged manifest.
 5. Reinstall the app to workspace `T01B3C83PMK` if Slack reports changed commands, scopes, or features.
-6. Refresh the Slack client and type `/ores-` in the `#oresoftware` composer. All six commands should appear in autocomplete.
-7. Invoke `/ores-chatgpt` with no text to verify the modal, then run a bounded dry-run task.
+6. Refresh the Slack client and type `/x-ores-` in the `#oresoftware` composer. Both commands should appear in autocomplete, and no retired name should.
+7. Invoke `/x-ores-chatgpt` with no text to verify the modal, then run a bounded dry-run task.
 
 Using an app configuration token:
 

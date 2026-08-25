@@ -34,3 +34,4 @@ tmp/
 *.pdb
 .cargo-target-*/
 **/.gradle/
+_to_delete/

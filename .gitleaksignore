@@ -1,0 +1,3 @@
+# Test-only Slack app-token shape fixture in app_token_shape_is_validated_at_startup.
+# The exact historical finding is pinned so real Slack tokens remain reportable.
+93c2220d3019e72c6f52e32a17bb604d31b9d47e:src/slack_commands_parts/part15.rs:slack-app-token:370

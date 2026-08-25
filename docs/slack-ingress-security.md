@@ -9,16 +9,38 @@ This document defines the security boundary for the `fiducia-slack-command` serv
 The public deployment exposes only these Slack-signed request routes:
 
 ```text
-POST /slack/commands/ores-claude
-POST /slack/commands/ores-chatgpt
+POST /slack/commands/x-ores-claude
+POST /slack/commands/x-ores-chatgpt
 POST /slack/interactions
 ```
 
-The six reviewed command names map onto the two provider endpoints:
+
+## Identity pinning is not inferred from the bind address
+
+`SLACK_EXPECTED_APP_ID` and `SLACK_EXPECTED_TEAM_ID` are required. They were
+previously optional whenever the process bound a loopback address, on the
+reasoning that a loopback bind implies an isolated deployment. That reasoning is
+wrong for the reviewed production shape: TLS terminates in a same-host proxy
+that forwards to `127.0.0.1`, so the internet-facing deployment *is* a loopback
+bind, and the exemption disabled app/team pinning in exactly the case that
+needed it. The waiver is now an explicit opt-in, `SLACK_ALLOW_UNPINNED_IDENTITY`,
+intended only for local test harnesses.
+
+## Socket Mode is a separate ingress with a different trust basis
+
+`SLACK_SOCKET_MODE` (off by default) opens an outbound WebSocket and receives
+command payloads over it. Frames on that connection carry no `v0` signature and
+no `X-Slack-Request-Timestamp`, so neither the HMAC check nor the ±300s replay
+window below applies to them; the connection's `xapp-` token is the whole of the
+authentication. Everything after the envelope — provider agreement, identity
+pinning, channel policy, the run journal — is shared with the HTTP path. The
+request-validation order below describes the signed Request URL only.
+
+The two reviewed command names map one-to-one onto the two provider endpoints:
 
 ```text
-/ores-claude   /x-claude   /my-claude
-/ores-chatgpt  /x-chatgpt  /my-chatgpt
+/x-ores-claude   /x-ores-claude   /x-ores-claude
+/x-ores-chatgpt  /x-ores-chatgpt  /x-ores-chatgpt
 ```
 
 The payload command must agree with the endpoint provider. A valid HMAC for a Claude payload sent to the ChatGPT endpoint is rejected before channel policy, history access, modal creation, run journaling, bridge dispatch, or coordinator dispatch.
@@ -78,7 +100,7 @@ The repository-local suite locks the following boundaries:
 - loopback URL classification for IPv4, the full `127/8` range, `localhost`, and bracketed IPv6;
 - remote plaintext, hostname lookalike, embedded-credential, query, and fragment rejection;
 - duplicate decoded form keys, malformed escapes, and invalid UTF-8 rejection;
-- deterministic run IDs, distinct Slack trigger IDs, command aliases, prompt limits, identifier limits, and canonical Linear issue identifiers;
+- deterministic run IDs, distinct Slack trigger IDs, retired command names, prompt limits, identifier limits, and canonical Linear issue identifiers;
 - exact manifest scope set, duplicate-scope rejection, secret-literal exclusion, and the runtime-to-manifest `usergroups.list` dependency.
 
 These tests run in the normal pinned CI lane through formatting, Clippy with warnings denied, and `cargo test --all-targets --locked`.
@@ -320,7 +342,7 @@ dry-run configuration, then drives real Chromium requests against
 Before turning off `SLACK_COMMAND_DRY_RUN`:
 
 1. reconcile and validate the complete remote app manifest;
-2. reinstall the app after the `usergroups:read` grant and confirm all six commands appear;
+2. reinstall the app after the `usergroups:read` grant and confirm both `/x-ores-*` commands appear and no retired name does;
 3. set `SLACK_EXPECTED_APP_ID` and `SLACK_EXPECTED_TEAM_ID` to the installed immutable IDs;
 4. source all secrets from the protected deployment secret path, never environment files committed to Git;
 5. keep bridge and coordinator URLs on loopback or HTTPS and require bearer credentials for remote services;

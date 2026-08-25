@@ -1,4 +1,4 @@
-//! `/ores-claude` and `/ores-chatgpt` Slack command ingress.
+//! `/x-ores-claude` and `/x-ores-chatgpt` Slack command ingress.
 //!
 //! The implementation is split into textual include parts only to keep connector
 //! writes reviewable. The included items share this single module scope.
@@ -17,3 +17,4 @@ include!("slack_commands_parts/part11.rs");
 include!("slack_commands_parts/part12.rs");
 include!("slack_commands_parts/part13.rs");
 include!("slack_commands_parts/part14.rs");
+include!("slack_commands_parts/part15.rs");

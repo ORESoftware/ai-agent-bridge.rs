@@ -1,6 +1,6 @@
 # Slack run modal surface and acceptance contract
 
-The AI Agent Bridge exposes reviewed `/ores-claude`, `/x-claude`, `/my-claude`, `/ores-chatgpt`, `/x-chatgpt`, and `/my-chatgpt` commands. Authorized bare commands open one Slack modal built by the production `modal` function.
+The AI Agent Bridge exposes reviewed `/x-ores-claude`, `/x-ores-claude`, `/x-ores-claude`, `/x-ores-chatgpt`, `/x-ores-chatgpt`, and `/x-ores-chatgpt` commands. Authorized bare commands open one Slack modal built by the production `modal` function.
 
 This repository verifies two independent failure classes against that same builder.
 
