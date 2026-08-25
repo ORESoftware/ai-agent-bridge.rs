@@ -177,8 +177,11 @@ mod coordinator_idempotency_http_contract_tests {
             chatgpt_agent: "gpt-5.6-sol".into(),
             linear_run_project_id: DEFAULT_LINEAR_RUN_PROJECT.into(),
             context_messages: 5,
+            socket_mode: false,
+            app_token: None,
             dry_run: false,
             max_concurrent_runs: 8,
+            allow_unpinned_identity: true,
         };
         let app = Arc::new(App::new(config).unwrap());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -238,12 +241,12 @@ mod coordinator_idempotency_http_contract_tests {
         let (service_base, state_dir, registry_path) =
             spawn_command_service(&mock_base).await;
         let client = reqwest::Client::new();
-        let body = "command=%2Fores-chatgpt&team_id=T1&channel_id=C1&user_id=U1&text=Implement+DEN-1231+exact+idempotency&trigger_id=trigger-live";
+        let body = "command=%2Fx-ores-chatgpt&team_id=T1&channel_id=C1&user_id=U1&text=Implement+DEN-1231+exact+idempotency&trigger_id=trigger-live";
         let expected_run_id = run_id("slash:T1:C1:U1:trigger-live");
 
         let response = client
             .post(format!(
-                "{service_base}/slack/commands/ores-chatgpt"
+                "{service_base}/slack/commands/x-ores-chatgpt"
             ))
             .headers(signed_headers(body, Utc::now().timestamp()))
             .body(body)
@@ -293,7 +296,7 @@ mod coordinator_idempotency_http_contract_tests {
 
         let duplicate = client
             .post(format!(
-                "{service_base}/slack/commands/ores-chatgpt"
+                "{service_base}/slack/commands/x-ores-chatgpt"
             ))
             .headers(signed_headers(body, Utc::now().timestamp()))
             .body(body)

@@ -19,7 +19,7 @@ function commandBody(overrides = {}) {
     team_id: expectedTeamId,
     channel_id: 'C_BROWSER_SECURITY_TEST',
     user_id: 'U_BROWSER_SECURITY_TEST',
-    command: '/ores-chatgpt',
+    command: '/x-ores-chatgpt',
     text: 'Investigate DEN-1041 without external writes',
     trigger_id: 'browser-security-trigger',
     ...overrides,
@@ -31,7 +31,7 @@ async function postCommand(
   page,
   {
     body = commandBody(),
-    path = '/slack/commands/ores-chatgpt',
+    path = '/slack/commands/x-ores-chatgpt',
     timestamp = Math.floor(Date.now() / 1000),
     requestSignature = signature(body, timestamp),
     includeSignature = true,
@@ -163,7 +163,7 @@ test('rejects a correctly signed request for an unmapped channel', async ({ page
 test('rejects endpoint and payload provider confusion before policy resolution', async ({
   page,
 }) => {
-  const body = commandBody({ command: '/ores-claude' });
+  const body = commandBody({ command: '/x-ores-claude' });
   const timestamp = Math.floor(Date.now() / 1000);
   const response = await postCommand(page, {
     body,
@@ -180,7 +180,7 @@ test('rejects duplicate keys after percent-decoding normalization', async ({ pag
     `team%5Fid=${encodeURIComponent(expectedTeamId)}`,
     'channel_id=C_BROWSER_SECURITY_TEST',
     'user_id=U_BROWSER_SECURITY_TEST',
-    'command=%2Fores-chatgpt',
+    'command=%2Fx-ores-chatgpt',
     'text=bounded+task',
     'trigger_id=browser-security-trigger',
   ].join('&');

@@ -143,8 +143,11 @@ mod alias_http_contract_tests {
             chatgpt_agent: "gpt-5.6-sol".into(),
             linear_run_project_id: DEFAULT_LINEAR_RUN_PROJECT.into(),
             context_messages: 5,
+            socket_mode: false,
+            app_token: None,
             dry_run: true,
             max_concurrent_runs: 8,
+            allow_unpinned_identity: true,
         };
         let app = Arc::new(App::new(config).unwrap());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -196,34 +199,26 @@ mod alias_http_contract_tests {
     }
 
     #[tokio::test]
-    async fn all_six_reviewed_commands_use_only_the_two_canonical_http_routes() {
+    async fn the_reviewed_namespace_uses_exactly_two_http_routes() {
         let (mock_base, mock) = spawn_mock().await;
         let (service_base, _) = spawn_command_service(&mock_base).await;
         let client = reqwest::Client::new();
         let cases = [
-            ("%2Fores-claude", "/slack/commands/ores-claude", "Claude"),
-            ("%2Fx-claude", "/slack/commands/ores-claude", "Claude"),
-            ("%2Fmy-claude", "/slack/commands/ores-claude", "Claude"),
             (
-                "%2Fores-chatgpt",
-                "/slack/commands/ores-chatgpt",
-                "ChatGPT",
+                "%2Fx-ores-claude",
+                "/slack/commands/x-ores-claude",
+                "Claude",
             ),
             (
-                "%2Fx-chatgpt",
-                "/slack/commands/ores-chatgpt",
-                "ChatGPT",
-            ),
-            (
-                "%2Fmy-chatgpt",
-                "/slack/commands/ores-chatgpt",
+                "%2Fx-ores-chatgpt",
+                "/slack/commands/x-ores-chatgpt",
                 "ChatGPT",
             ),
         ];
 
         for (index, (command, endpoint, provider)) in cases.into_iter().enumerate() {
             let body = format!(
-                "command={command}&team_id=T1&channel_id=C1&user_id=U1&text=alias-case-{index}&trigger_id=trigger-{index}"
+                "command={command}&team_id=T1&channel_id=C1&user_id=U1&text=namespace-case-{index}&trigger_id=trigger-{index}"
             );
             let response = client
                 .post(format!("{service_base}{endpoint}"))
@@ -240,9 +235,9 @@ mod alias_http_contract_tests {
                 .contains(&format!("Accepted {provider} run")));
         }
 
-        wait_for_messages(&mock.messages, 6).await;
+        wait_for_messages(&mock.messages, 2).await;
         let messages = mock.messages.lock().await;
-        assert_eq!(messages.len(), 6);
+        assert_eq!(messages.len(), 2);
         assert_eq!(
             messages
                 .iter()
@@ -251,7 +246,7 @@ mod alias_http_contract_tests {
                     .unwrap()
                     .contains("Dry-run Claude task"))
                 .count(),
-            3
+            1
         );
         assert_eq!(
             messages
@@ -261,7 +256,7 @@ mod alias_http_contract_tests {
                     .unwrap()
                     .contains("Dry-run ChatGPT task"))
                 .count(),
-            3
+            1
         );
         for message in messages.iter() {
             assert_eq!(message["channel"], "C1");
@@ -282,8 +277,11 @@ mod alias_http_contract_tests {
         let client = reqwest::Client::new();
 
         for (command, endpoint) in [
-            ("%2Fx-chatgpt", "/slack/commands/ores-claude"),
-            ("%2Fmy-claude", "/slack/commands/ores-chatgpt"),
+            ("%2Fx-ores-chatgpt", "/slack/commands/x-ores-claude"),
+            ("%2Fx-ores-claude", "/slack/commands/x-ores-chatgpt"),
+            // Retired names must fail at the envelope, not fall through.
+            ("%2Fores-claude", "/slack/commands/x-ores-claude"),
+            ("%2Fmy-chatgpt", "/slack/commands/x-ores-chatgpt"),
         ] {
             let body = format!(
                 "command={command}&team_id=T1&channel_id=C1&user_id=U1&text=must-not-run&trigger_id=mismatch"
@@ -295,20 +293,34 @@ mod alias_http_contract_tests {
                 .send()
                 .await
                 .unwrap();
-            assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+            // 200 carrying the reason: Slack discards the body of anything else.
+            assert_eq!(response.status(), reqwest::StatusCode::OK);
             let denied = response.json::<Value>().await.unwrap();
+            assert_eq!(denied["response_type"], "ephemeral");
             assert_eq!(denied["text"], "Invalid slash command payload.");
         }
 
-        let alias_body = "command=%2Fx-claude&team_id=T1&channel_id=C1&user_id=U1&text=must-not-run&trigger_id=alias-path";
-        let alias_path = client
-            .post(format!("{service_base}/slack/commands/x-claude"))
-            .headers(signed_headers(alias_body, Utc::now().timestamp()))
-            .body(alias_body)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(alias_path.status(), reqwest::StatusCode::NOT_FOUND);
+        let alias_body = "command=%2Fx-ores-claude&team_id=T1&channel_id=C1&user_id=U1&text=must-not-run&trigger_id=alias-path";
+        // Every pre-namespace request URL must be gone from the router.
+        for retired_path in [
+            "/slack/commands/ores-claude",
+            "/slack/commands/ores-chatgpt",
+            "/slack/commands/x-claude",
+            "/slack/commands/my-chatgpt",
+        ] {
+            let retired = client
+                .post(format!("{service_base}{retired_path}"))
+                .headers(signed_headers(alias_body, Utc::now().timestamp()))
+                .body(alias_body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                retired.status(),
+                reqwest::StatusCode::NOT_FOUND,
+                "{retired_path} must no longer be routed"
+            );
+        }
 
         let generic_path = client
             .post(format!("{service_base}/slack"))
@@ -320,7 +332,7 @@ mod alias_http_contract_tests {
         assert_eq!(generic_path.status(), reqwest::StatusCode::NOT_FOUND);
 
         let wrong_method = client
-            .get(format!("{service_base}/slack/commands/ores-claude"))
+            .get(format!("{service_base}/slack/commands/x-ores-claude"))
             .send()
             .await
             .unwrap();

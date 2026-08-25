@@ -30,8 +30,11 @@ mod registry_file_boundary_tests {
             chatgpt_agent: "gpt-5.6-sol".into(),
             linear_run_project_id: DEFAULT_LINEAR_RUN_PROJECT.into(),
             context_messages: 5,
+            socket_mode: false,
+            app_token: None,
             dry_run: true,
             max_concurrent_runs: 1,
+            allow_unpinned_identity: true,
         }
     }
 
@@ -90,8 +93,11 @@ mod ingress_security_tests {
             chatgpt_agent: DEFAULT_CHATGPT_AGENT.to_string(),
             linear_run_project_id: DEFAULT_LINEAR_RUN_PROJECT.to_string(),
             context_messages: DEFAULT_CONTEXT_MESSAGES,
+            socket_mode: false,
+            app_token: None,
             dry_run: true,
             max_concurrent_runs: 1,
+            allow_unpinned_identity: true,
         }
     }
 
@@ -125,7 +131,7 @@ mod ingress_security_tests {
     fn signature_verification_is_exact_and_replay_bounded_in_both_directions() {
         let secret = "unit-test-signing-secret";
         let config = test_config(secret);
-        let body = b"command=%2Fores-chatgpt&team_id=T1&channel_id=C1";
+        let body = b"command=%2Fx-ores-chatgpt&team_id=T1&channel_id=C1";
         let timestamp = 1_800_000_000_i64;
         let headers = signed_headers(secret, timestamp, body);
 
@@ -242,7 +248,7 @@ mod ingress_security_tests {
 
     #[test]
     fn direct_command_alias_preserves_deterministic_routing_metadata() {
-        let body = b"command=%2Fx-chatgpt&team_id=T1&channel_id=C1&user_id=U1&text=Fix+DEN-1041+with+tests&trigger_id=trigger-1";
+        let body = b"command=%2Fx-ores-chatgpt&team_id=T1&channel_id=C1&user_id=U1&text=Fix+DEN-1041+with+tests&trigger_id=trigger-1";
         let command = SlashCommand::parse(body).expect("valid Slack command alias");
         assert_eq!(command.provider(), Provider::Chatgpt);
         assert_eq!(command.text, "Fix DEN-1041 with tests");
@@ -257,7 +263,7 @@ mod ingress_security_tests {
         assert_eq!(request.run_id, duplicate.run_id);
 
         let other = SlashCommand::parse(
-            b"command=%2Fx-chatgpt&team_id=T1&channel_id=C1&user_id=U1&text=Fix+DEN-1041&trigger_id=trigger-2",
+            b"command=%2Fx-ores-chatgpt&team_id=T1&channel_id=C1&user_id=U1&text=Fix+DEN-1041&trigger_id=trigger-2",
         )
         .expect("second Slack command");
         assert_ne!(
@@ -275,7 +281,7 @@ mod ingress_security_tests {
         )
         .is_err());
         assert!(SlashCommand::parse(
-            b"command=%2Fores-chatgpt&team_id=T1%2FT2&channel_id=C1&user_id=U1&trigger_id=t1"
+            b"command=%2Fx-ores-chatgpt&team_id=T1%2FT2&channel_id=C1&user_id=U1&trigger_id=t1"
         )
         .is_err());
         assert!(prompt("").is_err());
