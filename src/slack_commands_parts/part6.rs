@@ -91,15 +91,7 @@ async fn command(
     };
     match validate_slash_envelope(&app.config, &body, expected_provider) {
         Ok(()) => {}
-        Err(Error::Config(_)) => {
-            return ephemeral("The installed Slack app identity is not configured safely.")
-        }
-        Err(Error::Policy) => {
-            return ephemeral(
-                "This request did not originate from the installed Slack app and workspace.",
-            )
-        }
-        Err(_) => return ephemeral("Invalid slash command payload."),
+        Err(error) => return slash_envelope_error(&error),
     }
     let command = match SlashCommand::parse(&body) {
         Ok(command) => command,
@@ -116,10 +108,10 @@ async fn handle_command(app: Arc<App>, command: SlashCommand) -> Response {
         return match app.command_binding(&command).await {
             Ok(binding) => match app.open_modal(&command, &binding).await {
                 Ok(()) => json_response(StatusCode::OK, json!({})),
-                Err(Error::Policy) => ephemeral("This channel or user is not authorized."),
+                Err(Error::Policy) => reject(StatusCode::FORBIDDEN),
                 Err(_) => ephemeral("The agent menu could not be opened safely."),
             },
-            Err(Error::Policy) => ephemeral("This channel or user is not authorized."),
+            Err(Error::Policy) => reject(StatusCode::FORBIDDEN),
             Err(_) => ephemeral("The agent menu could not be opened safely."),
         };
     }
@@ -133,9 +125,7 @@ async fn handle_command(app: Arc<App>, command: SlashCommand) -> Response {
     let authorized = app.resolve(&request).await;
     match authorized {
         Ok(_) => ephemeral(&accept(app, request).await.message()),
-        Err(Error::Policy) => {
-            ephemeral("This channel, user, repository, or write scope is not authorized.")
-        }
+        Err(Error::Policy) => reject(StatusCode::FORBIDDEN),
         Err(_) => ephemeral("The task could not be authorized safely."),
     }
 }
@@ -414,6 +404,19 @@ fn reject(status: StatusCode) -> Response {
     json_response(status, json!({}))
 }
 
+/// Reject an invalid slash-command envelope before any user-facing policy
+/// work begins. These responses are security boundaries, not Slack messages:
+/// returning HTTP 200 would make a wrong app, provider-confused route, or
+/// ambiguous form look accepted to callers and observability.
+fn slash_envelope_error(error: &Error) -> Response {
+    let status = match error {
+        Error::Config(_) => StatusCode::SERVICE_UNAVAILABLE,
+        Error::Policy => StatusCode::FORBIDDEN,
+        _ => StatusCode::BAD_REQUEST,
+    };
+    reject(status)
+}
+
 /// Render a remote-controlled string safe for a structured log line: no
 /// newlines or control characters that could forge a log record, and bounded
 /// so a misbehaving downstream cannot flood the log pipeline.
@@ -542,6 +545,22 @@ mod reply_contract_tests {
         for status in [StatusCode::UNAUTHORIZED, StatusCode::NOT_FOUND] {
             assert_eq!(reject(status).status(), status);
         }
+    }
+
+    #[test]
+    fn slash_envelope_failures_are_never_rendered_as_success() {
+        assert_eq!(
+            slash_envelope_error(&Error::Policy).status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            slash_envelope_error(&Error::Request).status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            slash_envelope_error(&Error::Config("identity pin missing".into())).status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 
     #[test]

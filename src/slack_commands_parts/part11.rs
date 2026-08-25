@@ -293,11 +293,13 @@ mod alias_http_contract_tests {
                 .send()
                 .await
                 .unwrap();
-            // 200 carrying the reason: Slack discards the body of anything else.
-            assert_eq!(response.status(), reqwest::StatusCode::OK);
+            // Provider-confused and retired command names are invalid ingress
+            // envelopes, not authenticated user-facing outcomes. They must be
+            // rejected at the HTTP boundary so callers and observability never
+            // mistake them for accepted Slack commands.
+            assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
             let denied = response.json::<Value>().await.unwrap();
-            assert_eq!(denied["response_type"], "ephemeral");
-            assert_eq!(denied["text"], "Invalid slash command payload.");
+            assert_eq!(denied, json!({}));
         }
 
         let alias_body = "command=%2Fx-ores-claude&team_id=T1&channel_id=C1&user_id=U1&text=must-not-run&trigger_id=alias-path";
