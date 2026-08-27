@@ -36,9 +36,21 @@ identifier character checks downstream.
 ## Operation
 
 The client acknowledges envelopes within Slack's three-second deadline and
-reconnects with bounded exponential backoff, capped at 30 seconds. Slack recycles
-a connection every few minutes and sends a `disconnect` frame first, so
-reconnecting is normal operation rather than an error path.
+reconnects with bounded exponential backoff, capped at 30 seconds, with ±25%
+jitter so replicas do not resynchronise. Slack recycles a connection every few
+minutes and sends a `disconnect` frame first; the replacement URL is requested
+before the current connection is dropped, and that recycle skips the backoff
+sleep.
+
+A blackholed TCP connection — NAT or idle timeout with no FIN — is treated as
+death after 45 seconds of silence (Slack pings roughly every five seconds). The
+receive loop then reconnects. `/healthz` stays green: the process is alive.
+`/readyz` fails closed independently of that HTTP liveness check whenever Socket
+Mode is enabled and the socket is disconnected or has not seen a frame in 60
+seconds. Kubernetes can therefore take the pod out of service even if the
+receive task is wedged. `/metrics` exposes the same liveness as gauges
+(`slack_command_socket_connected`, `slack_command_socket_last_frame_age_seconds`)
+plus command-outcome counters with zero-series present before the first event.
 
 `SLACK_APP_TOKEN` is shape-checked at startup — a bot token pasted into that slot
 would otherwise fail only at connect time, long after the process reported ready.

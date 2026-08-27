@@ -77,7 +77,7 @@ default = []
 postgres = ["dep:sea-orm", "dep:dd-pg-defs-sea-orm"]
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "test-util"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 
 [profile.release]

@@ -258,7 +258,7 @@ easy to confuse it with. All three build from this one source tree:
 | Binary | Port | `/metrics` |
 |---|---|---|
 | `fiducia-ai-agent-bridge` | `8142` | pre-existing, rendered from `crate::metrics` |
-| `fiducia-slack-command` | — | none |
+| `fiducia-slack-command` | `8151` | command outcomes plus Socket Mode liveness gauges |
 | `fiducia-slack-bridge` | `8150` | the outcome counters described above |
 
 A NetworkPolicy that scopes the bridge's metrics port therefore does **not**
