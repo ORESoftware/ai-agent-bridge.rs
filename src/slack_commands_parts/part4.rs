@@ -51,6 +51,8 @@ impl App {
             registry,
             bindings,
             capacity,
+            socket_connected: Arc::new(AtomicBool::new(false)),
+            last_frame_at: Arc::new(AtomicU64::new(0)),
         })
     }
 

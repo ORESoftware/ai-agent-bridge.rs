@@ -41,6 +41,7 @@ fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/readyz", get(ready))
+        .route("/metrics", get(metrics))
         .route("/slack/commands/x-ores-claude", post(command))
         .route("/slack/commands/x-ores-chatgpt", post(command))
         .route("/slack/interactions", post(interaction))
@@ -54,17 +55,53 @@ async fn health() -> Json<Value> {
     Json(json!({"ok": true}))
 }
 
+async fn metrics(State(app): State<Arc<App>>) -> impl IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        render_command_metrics(&app, unix_now()),
+    )
+}
+
 async fn ready(State(app): State<Arc<App>>) -> Response {
     match configured_slack_identity(&app.config) {
-        Ok(identity) => json_response(
-            StatusCode::OK,
-            json!({
-                "ok": true,
-                "dry_run": app.config.dry_run,
-                "default_context_messages": app.config.context_messages,
-                "installed_app_identity_enforced": identity.is_some()
-            }),
-        ),
+        Ok(identity) => {
+            let connected = app.socket_connected.load(Ordering::SeqCst);
+            let last_frame_at = app.last_frame_at.load(Ordering::SeqCst);
+            if !socket_mode_ready(
+                app.config.socket_mode,
+                connected,
+                last_frame_at,
+                unix_now(),
+                SOCKET_MODE_READY_STALE,
+            ) {
+                return json_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({
+                        "ok": false,
+                        "error": "slack_socket_mode_unavailable",
+                        "socket_connected": connected,
+                        "socket_last_frame_age_seconds": socket_last_frame_age_seconds(
+                            last_frame_at,
+                            unix_now()
+                        )
+                    }),
+                );
+            }
+            json_response(
+                StatusCode::OK,
+                json!({
+                    "ok": true,
+                    "dry_run": app.config.dry_run,
+                    "default_context_messages": app.config.context_messages,
+                    "installed_app_identity_enforced": identity.is_some(),
+                    "socket_mode": app.config.socket_mode,
+                    "socket_connected": connected
+                }),
+            )
+        }
         Err(_) => json_response(
             StatusCode::SERVICE_UNAVAILABLE,
             json!({
@@ -82,6 +119,7 @@ async fn command(
     body: Bytes,
 ) -> Response {
     if !verify_signature(&app.config, &headers, &body, Utc::now().timestamp()) {
+        emit_metric("denied_signature");
         return reject(StatusCode::UNAUTHORIZED);
     }
     let expected_provider = match uri.path() {
@@ -95,11 +133,17 @@ async fn command(
     }
     let command = match SlashCommand::parse(&body) {
         Ok(command) => command,
-        Err(_) => return ephemeral("Invalid slash command payload."),
+        Err(_) => {
+            emit_metric("denied_malformed");
+            return ephemeral("Invalid slash command payload.");
+        }
     };
     match tokio::time::timeout(SLACK_ACK_DEADLINE, handle_command(app, command)).await {
         Ok(response) => response,
-        Err(_) => ephemeral("The command could not be acknowledged safely before Slack's deadline."),
+        Err(_) => {
+            emit_metric("ack_timeout");
+            ephemeral("The command could not be acknowledged safely before Slack's deadline.")
+        }
     }
 }
 
@@ -107,31 +151,60 @@ async fn handle_command(app: Arc<App>, command: SlashCommand) -> Response {
     if command.text.trim().is_empty() {
         return match app.command_binding(&command).await {
             Ok(binding) => match app.open_modal(&command, &binding).await {
-                Ok(()) => json_response(StatusCode::OK, json!({})),
-                Err(Error::Policy) => reject(StatusCode::FORBIDDEN),
-                Err(_) => ephemeral("The agent menu could not be opened safely."),
+                Ok(()) => {
+                    emit_metric("modal_opened");
+                    json_response(StatusCode::OK, json!({}))
+                }
+                Err(Error::Policy) => {
+                    emit_metric("denied_policy");
+                    reject(StatusCode::FORBIDDEN)
+                }
+                Err(_) => {
+                    emit_metric("modal_error");
+                    ephemeral("The agent menu could not be opened safely.")
+                }
             },
-            Err(Error::Policy) => reject(StatusCode::FORBIDDEN),
-            Err(_) => ephemeral("The agent menu could not be opened safely."),
+            Err(Error::Policy) => {
+                emit_metric("denied_policy");
+                reject(StatusCode::FORBIDDEN)
+            }
+            Err(_) => {
+                emit_metric("modal_error");
+                ephemeral("The agent menu could not be opened safely.")
+            }
         };
     }
     let request = match RunRequest::direct(&command, app.config.context_messages) {
         Ok(request) => request,
-        Err(_) => return ephemeral("Provide a bounded task after the command."),
+        Err(_) => {
+            emit_metric("denied_malformed");
+            return ephemeral("Provide a bounded task after the command.");
+        }
     };
     // Bind before matching. Temporaries in a match scrutinee live until the end
     // of the match, so the future returned by `resolve` would still borrow
     // `*app` inside the arms -- and an arm moves `app` into `accept`.
     let authorized = app.resolve(&request).await;
     match authorized {
-        Ok(_) => ephemeral(&accept(app, request).await.message()),
-        Err(Error::Policy) => reject(StatusCode::FORBIDDEN),
-        Err(_) => ephemeral("The task could not be authorized safely."),
+        Ok(_) => {
+            let accepted = accept(app, request).await;
+            emit_metric(accepted.metric());
+            ephemeral(&accepted.message())
+        }
+        Err(Error::Policy) => {
+            emit_metric("denied_policy");
+            reject(StatusCode::FORBIDDEN)
+        }
+        Err(_) => {
+            emit_metric("denied_config");
+            ephemeral("The task could not be authorized safely.")
+        }
     }
 }
 
 async fn interaction(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> Response {
     if !verify_signature(&app.config, &headers, &body, Utc::now().timestamp()) {
+        emit_metric("denied_signature");
         return reject(StatusCode::UNAUTHORIZED);
     }
     let payload = match parse_interaction_envelope(&app.config, &body) {
@@ -167,7 +240,10 @@ fn view_error(block: &str, text: &str) -> Response {
 async fn handle_interaction(app: Arc<App>, payload: InteractionPayload) -> Response {
     let request = match RunRequest::interaction(payload) {
         Ok(request) => request,
-        Err(_) => return view_error("task", "The submitted form could not be read."),
+        Err(_) => {
+            emit_metric("denied_malformed");
+            return view_error("task", "The submitted form could not be read.");
+        }
     };
     // The deadline must cover the run claim too, not just the policy resolve:
     // the claim writes and fsyncs a journal entry, and an unbounded tail here
@@ -182,23 +258,36 @@ async fn handle_interaction(app: Arc<App>, payload: InteractionPayload) -> Respo
     .await;
 
     match outcome {
-        Err(_) => view_error(
-            "task",
-            "Authorization did not finish before Slack's acknowledgement deadline.",
-        ),
-        Ok(Err(Error::Policy)) => view_error(
-            "write_scope",
-            "This channel, user, repository, or write scope is not authorized.",
-        ),
-        Ok(Err(_)) => view_error("task", "The task could not be authorized safely."),
+        Err(_) => {
+            emit_metric("ack_timeout");
+            view_error(
+                "task",
+                "Authorization did not finish before Slack's acknowledgement deadline.",
+            )
+        }
+        Ok(Err(Error::Policy)) => {
+            emit_metric("denied_policy");
+            view_error(
+                "write_scope",
+                "This channel, user, repository, or write scope is not authorized.",
+            )
+        }
+        Ok(Err(_)) => {
+            emit_metric("denied_config");
+            view_error("task", "The task could not be authorized safely.")
+        }
         // Slack gives a successful submission no signal beyond the modal
         // closing, which is indistinguishable from the submission being
         // dropped. The in-channel dispatch post is currently the only
         // confirmation; a chat.postEphemeral to the submitter is still owed.
         Ok(Ok(accepted)) if accepted.is_started() => {
+            emit_metric(accepted.metric());
             json_response(StatusCode::OK, json!({}))
         }
-        Ok(Ok(accepted)) => view_error(accepted.modal_block(), &accepted.message()),
+        Ok(Ok(accepted)) => {
+            emit_metric(accepted.metric());
+            view_error(accepted.modal_block(), &accepted.message())
+        }
     }
 }
 
@@ -259,6 +348,15 @@ impl Accepted {
         }
     }
 
+    fn metric(&self) -> &'static str {
+        match self {
+            Self::Started { .. } => "accepted",
+            Self::Duplicate { .. } => "duplicate",
+            Self::AtCapacity => "at_capacity",
+            Self::JournalUnavailable => "journal_failure",
+        }
+    }
+
     /// Which modal input to attach a failure to. Attaching everything to the
     /// task field puts the red note under the textarea while the offending
     /// control sits further down, unmarked.
@@ -315,15 +413,20 @@ async fn accept(app: Arc<App>, request: RunRequest) -> Accepted {
             let dry_run = app.config.dry_run;
             tokio::spawn(async move {
                 let _permit = permit;
-                if let Err(error) = dispatch(&app, &request).await {
-                    warn!(
-                        run_id = %request.run_id,
-                        team_id = %request.team_id,
-                        channel_id = %request.channel_id,
-                        user_id = %request.user_id,
-                        error = %error,
-                        "Slack agent dispatch failed",
-                    );
+                match dispatch(&app, &request).await {
+                    Ok(()) if app.config.dry_run => emit_metric("dry_run"),
+                    Ok(()) => emit_metric("dispatch_succeeded"),
+                    Err(error) => {
+                        emit_metric("dispatch_failed");
+                        warn!(
+                            run_id = %request.run_id,
+                            team_id = %request.team_id,
+                            channel_id = %request.channel_id,
+                            user_id = %request.user_id,
+                            error = %error,
+                            "Slack agent dispatch failed",
+                        );
+                    }
                 }
             });
             Accepted::Started {
@@ -410,9 +513,18 @@ fn reject(status: StatusCode) -> Response {
 /// ambiguous form look accepted to callers and observability.
 fn slash_envelope_error(error: &Error) -> Response {
     let status = match error {
-        Error::Config(_) => StatusCode::SERVICE_UNAVAILABLE,
-        Error::Policy => StatusCode::FORBIDDEN,
-        _ => StatusCode::BAD_REQUEST,
+        Error::Config(_) => {
+            emit_metric("denied_config");
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        Error::Policy => {
+            emit_metric("denied_policy");
+            StatusCode::FORBIDDEN
+        }
+        _ => {
+            emit_metric("denied_malformed");
+            StatusCode::BAD_REQUEST
+        }
     };
     reject(status)
 }
@@ -444,6 +556,91 @@ fn truncate(value: &str, maximum_bytes: usize) -> String {
         boundary -= 1;
     }
     value[..boundary].to_string()
+}
+
+/// Every outcome this adapter can record, declared up front so `/metrics`
+/// exposes a zero series for outcomes that have not happened yet. A counter
+/// that only appears after its first occurrence cannot be alerted on, because
+/// the absence of the series is indistinguishable from the absence of scraping.
+const COMMAND_METRIC_OUTCOMES: [&str; 19] = [
+    "accepted",
+    "ack_timeout",
+    "at_capacity",
+    "denied_config",
+    "denied_malformed",
+    "denied_policy",
+    "denied_signature",
+    "dispatch_failed",
+    "dispatch_succeeded",
+    "dry_run",
+    "duplicate",
+    "journal_failure",
+    "modal_error",
+    "modal_opened",
+    "socket_handshake_failed",
+    "socket_idle_timeout",
+    "socket_reconnect",
+    "socket_recycle",
+    "socket_refused",
+];
+
+static COMMAND_METRICS: std::sync::OnceLock<Mutex<BTreeMap<&'static str, u64>>> =
+    std::sync::OnceLock::new();
+
+fn command_metrics() -> &'static Mutex<BTreeMap<&'static str, u64>> {
+    COMMAND_METRICS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn emit_metric(outcome: &'static str) {
+    debug_assert!(
+        COMMAND_METRIC_OUTCOMES.contains(&outcome),
+        "outcome {outcome} is missing from COMMAND_METRIC_OUTCOMES, so /metrics would omit its zero series"
+    );
+    *command_metrics().lock().entry(outcome).or_insert(0) += 1;
+    info!(
+        target: "fiducia.slack_command.metrics",
+        metric = "slack_command_requests_total",
+        outcome,
+        value = 1_u64
+    );
+}
+
+/// Renders command outcomes and Socket Mode liveness in Prometheus text format.
+///
+/// Metadata only: outcome labels are a closed set of internal identifiers, so
+/// no Slack identifier, prompt text, or channel content can reach a scrape.
+fn render_command_metrics(app: &App, now: u64) -> String {
+    let counts = command_metrics().lock().clone();
+    let mut out = String::from(
+        "# HELP slack_command_requests_total Slack command ingress by terminal outcome.\n\
+         # TYPE slack_command_requests_total counter\n",
+    );
+    for outcome in COMMAND_METRIC_OUTCOMES {
+        let value = counts.get(outcome).copied().unwrap_or(0);
+        out.push_str(&format!(
+            "slack_command_requests_total{{outcome=\"{outcome}\"}} {value}\n"
+        ));
+    }
+    let connected = if app.socket_connected.load(Ordering::SeqCst) {
+        1
+    } else {
+        0
+    };
+    let last_frame_at = app.last_frame_at.load(Ordering::SeqCst);
+    let age = socket_last_frame_age_seconds(last_frame_at, now);
+    out.push_str(
+        "# HELP slack_command_socket_connected Whether the Slack Socket Mode websocket can receive events.\n\
+         # TYPE slack_command_socket_connected gauge\n",
+    );
+    out.push_str(&format!("slack_command_socket_connected {connected}\n"));
+    out.push_str(
+        "# HELP slack_command_socket_last_frame_age_seconds Seconds since the last inbound Socket Mode frame.\n\
+         # TYPE slack_command_socket_last_frame_age_seconds gauge\n",
+    );
+    out.push_str(&format!(
+        "slack_command_socket_last_frame_age_seconds {age}\n"
+    ));
+    out
 }
 
 #[cfg(test)]

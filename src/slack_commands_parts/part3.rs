@@ -156,8 +156,12 @@ struct App {
     registry: SlackProjectRegistry,
     bindings: BTreeMap<(String, String), ChannelProjectBinding>,
     capacity: Arc<Semaphore>,
+    /// Set by the Socket Mode task. Shared across clones so `/readyz` and
+    /// `/metrics` see the same connection the receive loop is driving.
+    socket_connected: Arc<AtomicBool>,
+    /// Unix seconds of the last inbound Socket Mode frame (including pings).
+    last_frame_at: Arc<AtomicU64>,
 }
-
 
 #[cfg(test)]
 mod form_parser_hardening_tests {
@@ -184,8 +188,14 @@ mod form_parser_hardening_tests {
             "&response_url=https%3A%2F%2Fhooks.slack.com%2Fx&trigger_id=t1"
         );
         let form = parse_form(body.as_bytes()).expect("a real envelope must parse");
-        assert_eq!(form.get("command").map(String::as_str), Some("/x-ores-claude"));
-        assert_eq!(form.get("api_app_id").map(String::as_str), Some("A0BMBAMM5NJ"));
+        assert_eq!(
+            form.get("command").map(String::as_str),
+            Some("/x-ores-claude")
+        );
+        assert_eq!(
+            form.get("api_app_id").map(String::as_str),
+            Some("A0BMBAMM5NJ")
+        );
         assert!(form.len() < MAX_FORM_FIELDS);
     }
 

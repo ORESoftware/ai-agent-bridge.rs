@@ -5,7 +5,10 @@ use std::{
     io::Write,
     net::IpAddr,
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
@@ -20,6 +23,7 @@ use axum::{
 use chrono::Utc;
 use futures::StreamExt;
 use hmac::{digest::KeyInit, Hmac, Mac};
+use parking_lot::Mutex;
 use reqwest::{redirect::Policy, Client, Response as HttpResponse, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -172,10 +176,8 @@ impl Config {
                 "SLACK_COORDINATOR_BEARER is required for remote coordinator URLs".into(),
             ));
         }
-        let slack_api_base_url = slack_api_base_url(&env_or(
-            "SLACK_API_BASE_URL",
-            DEFAULT_SLACK_API_BASE_URL,
-        ))?;
+        let slack_api_base_url =
+            slack_api_base_url(&env_or("SLACK_API_BASE_URL", DEFAULT_SLACK_API_BASE_URL))?;
         let context_messages = env_usize(
             "SLACK_CONTEXT_MESSAGE_COUNT",
             DEFAULT_CONTEXT_MESSAGES,
