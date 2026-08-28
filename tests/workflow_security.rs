@@ -31,6 +31,29 @@ async fn spawn() -> String {
         65_536,
     )
     .unwrap();
+    spawn_with_security(security).await
+}
+
+async fn spawn_scoped_only() -> String {
+    let security = WorkflowSecurity::from_json(
+        None,
+        r#"{
+          "credentials": [
+            {
+              "token_id":"codex-v2",
+              "token":"codex-adapter-secret",
+              "agent_key":"codex",
+              "scopes":["workflow:submit"]
+            }
+          ]
+        }"#,
+        65_536,
+    )
+    .unwrap();
+    spawn_with_security(security).await
+}
+
+async fn spawn_with_security(security: std::sync::Arc<WorkflowSecurity>) -> String {
     let app = Router::new()
         .route("/workflows/{id}/submissions", post(echo_auth))
         .route("/channels/{slug}/context", get(echo_auth).post(echo_auth))
@@ -75,6 +98,21 @@ async fn scoped_submission_is_bound_to_adapter_identity_and_rewritten_for_inner_
         .await
         .unwrap();
     assert_eq!(denied.status().as_u16(), 403);
+}
+
+#[tokio::test]
+async fn scoped_submission_strips_adapter_bearer_when_no_inner_auth_is_configured() {
+    let base = spawn_scoped_only().await;
+    let response = reqwest::Client::new()
+        .post(format!("{base}/workflows/wf/submissions"))
+        .bearer_auth("codex-adapter-secret")
+        .json(&json!({ "agent_key": "codex", "content": "done" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    let body = response.json::<Value>().await.unwrap();
+    assert_eq!(body["authorization"], "");
 }
 
 #[tokio::test]

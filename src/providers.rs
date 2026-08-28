@@ -200,6 +200,16 @@ impl ProviderClient {
         Self::with_api_key(config, api_key)
     }
 
+    /// Test-only constructor so retry-engine tests outside this module can
+    /// build a client against a mock server without environment mutation.
+    #[cfg(test)]
+    pub(crate) fn for_test_with_api_key(
+        config: ProviderConfig,
+        api_key: &str,
+    ) -> Result<Self, ProviderError> {
+        Self::with_api_key(config, api_key)
+    }
+
     fn with_api_key(
         config: ProviderConfig,
         api_key: impl Into<String>,

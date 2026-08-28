@@ -21,6 +21,12 @@ target/
 # Logs
 *.log
 
+# Browser automation output
+tests/browser/node_modules/
+tests/browser/test-results/
+tests/browser/playwright-report/
+tests/browser/blob-report/
+
 # --- hardened baseline (auto) ---
 Thumbs.db
 tmp/
@@ -28,3 +34,4 @@ tmp/
 *.pdb
 .cargo-target-*/
 **/.gradle/
+_to_delete/

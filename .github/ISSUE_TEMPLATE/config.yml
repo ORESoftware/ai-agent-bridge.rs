@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Agent Pontifex bridge bugs and features
+    url: https://github.com/agent-pontifex/ai-agent-bridge.rs/issues/new/choose
+    about: File generic bridge implementation issues in the canonical public repository.
+  - name: Agent Pontifex protocol and SDK
+    url: https://github.com/agent-pontifex/agent-sdk.rs/issues/new/choose
+    about: Propose wire-contract, compatibility, fixture, or typed-client changes here.
+  - name: Independent conformance evidence
+    url: https://github.com/fiducia-cloud-test/control-plane-e2e/pull/3
+    about: Review the independent bridge and coordinator release-gate implementation.

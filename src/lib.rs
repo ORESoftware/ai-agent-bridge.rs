@@ -7,6 +7,7 @@
 
 pub mod assignment_claims;
 pub mod blind_competition;
+mod bridge_origin_policy;
 pub mod compat;
 pub mod config;
 mod context_access;
@@ -23,11 +24,13 @@ pub mod policy_admission;
 pub mod preflight;
 pub mod providers;
 pub mod runner;
+pub mod service_identity;
 #[expect(
     clippy::collapsible_if,
     reason = "keep Slack delivery and durable journal persistence as explicit ordered side effects"
 )]
 pub mod slack_bridge;
+pub mod slack_commands;
 pub mod slack_project_bindings;
 pub mod state;
 pub mod tcp;

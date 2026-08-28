@@ -1,3 +1,6 @@
 [submodule "vendor/flags-2-env"]
 	path = vendor/flags-2-env
 	url = https://github.com/ORESoftware/flags-2-env.git
+[submodule "vendor/k8s-libs-and-shared-defs"]
+	path = vendor/k8s-libs-and-shared-defs
+	url = https://github.com/ORESoftware/k8s-libs-and-shared-defs.git

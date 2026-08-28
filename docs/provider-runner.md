@@ -35,8 +35,9 @@ command-execution boundary.
 
 | Variable | Default | Purpose |
 |---|---:|---|
-| `AI_AGENT_RUNNER_BRIDGE_URL` | `http://127.0.0.1:8142/` | Bridge REST base URL. Remote URLs require HTTPS. |
-| `AI_AGENT_RUNNER_BRIDGE_BEARER` | falls back to `API_AUTH_BEARER` | Bridge credential; required for remote bridges. |
+| `AI_AGENT_RUNNER_BRIDGE_URL` | `http://127.0.0.1:8142/` | Bridge REST base URL. Non-loopback origins require a bearer and HTTPS unless the exact Kubernetes service FQDN is admitted below. |
+| `AI_AGENT_RUNNER_BRIDGE_BEARER` | falls back to `API_AUTH_BEARER` | Bridge credential; required for every non-loopback bridge. |
+| `AI_AGENT_RUNNER_BRIDGE_INTERNAL_HTTP_HOSTS` | unset | Comma-separated exact `*.svc.cluster.local` hosts permitted to use bearer-authenticated HTTP inside Kubernetes. Wildcards, ports, schemes, paths, public hosts, IPs, and short names are rejected. |
 | `AI_PROVIDER_CAPABILITIES_JSON` | `{}` | Object mapping provider agent keys to capability arrays. |
 | `AI_AGENT_RUNNER_POLL_INTERVAL_MS` | `5000` | Workflow polling cadence, minimum 250 ms. |
 | `AI_AGENT_RUNNER_MAX_CONCURRENCY` | `4` | Maximum simultaneous provider calls, capped at 64. |
@@ -56,6 +57,22 @@ export AI_PROVIDER_CAPABILITIES_JSON='{
   "qwen": ["rust", "review"]
 }'
 ```
+
+A separate Kubernetes runner can use the bridge's ClusterIP without weakening
+the default HTTPS-only policy:
+
+```sh
+export AI_AGENT_RUNNER_BRIDGE_URL='http://dd-ai-agent-bridge.default.svc.cluster.local:8142/'
+export AI_AGENT_RUNNER_BRIDGE_INTERNAL_HTTP_HOSTS='dd-ai-agent-bridge.default.svc.cluster.local'
+# AI_AGENT_RUNNER_BRIDGE_BEARER remains required and must be scoped.
+```
+
+The exception is deliberately narrow. Both the execution client and readiness
+probe validate the same exact-host policy before creating an HTTP client. An
+allowlist entry must be a complete Kubernetes service FQDN ending in
+`.svc.cluster.local`; it cannot admit an arbitrary cleartext remote origin.
+NetworkPolicy and the bridge bearer remain mandatory because DNS suffix
+validation is not transport encryption.
 
 ## Start
 
@@ -108,7 +125,10 @@ window. DEN-203 remains responsible for renewable heartbeat support.
 ## Security boundaries
 
 - Provider and bridge redirects are disabled.
-- Remote bridge and provider connections require HTTPS.
+- Non-loopback bridge connections require a bearer token.
+- Remote bridge connections require HTTPS by default; bearer-authenticated HTTP
+  is accepted only for an exact Kubernetes service FQDN explicitly listed in
+  `AI_AGENT_RUNNER_BRIDGE_INTERNAL_HTTP_HOSTS`.
 - Credentials remain environment-only and are never included in submission meta.
 - Bridge and provider response bodies are bounded before JSON parsing.
 - Provider HTTP error bodies are not logged.

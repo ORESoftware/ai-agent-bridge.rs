@@ -27,7 +27,7 @@ use axum::{
 };
 use chrono::Utc;
 use futures::StreamExt;
-use hmac::{Hmac, Mac};
+use hmac::{digest::KeyInit, Hmac, Mac};
 use parking_lot::Mutex;
 use reqwest::{redirect::Policy, Client, Response as HttpResponse, Url};
 use serde::{Deserialize, Serialize};
@@ -90,6 +90,7 @@ struct SlackConfig {
     allowed_team_ids: BTreeSet<String>,
     allowed_channel_ids: BTreeSet<String>,
     allowed_thread_ts: BTreeSet<String>,
+    expected_app_id: Option<String>,
     command_prefix: String,
     bridge_url: String,
     bridge_bearer: Option<String>,
@@ -136,6 +137,19 @@ impl SlackConfig {
         let bot_user_id = env_opt("SLACK_BOT_USER_ID")
             .map(|value| normalize_identifier("SLACK_BOT_USER_ID", &value))
             .transpose()?;
+
+        // The installed Slack application identity is a defense-in-depth check on
+        // top of the signing secret, matching the `fiducia-slack-command`
+        // contract. A loopback bind is a local test or sidecar deployment and may
+        // omit it; a publicly reachable bind may not.
+        let expected_app_id = env_opt("SLACK_EXPECTED_APP_ID")
+            .map(|value| normalize_identifier("SLACK_EXPECTED_APP_ID", &value))
+            .transpose()?;
+        if expected_app_id.is_none() && !host.is_loopback() {
+            return Err(AdapterError::Configuration(
+                "SLACK_EXPECTED_APP_ID is required for a non-loopback bind".to_string(),
+            ));
+        }
 
         let command_prefix = env_or("SLACK_COMMAND_PREFIX", DEFAULT_COMMAND_PREFIX);
         validate_command_prefix(&command_prefix)?;
@@ -212,6 +226,7 @@ impl SlackConfig {
             allowed_team_ids,
             allowed_channel_ids,
             allowed_thread_ts,
+            expected_app_id,
             command_prefix,
             bridge_url,
             bridge_bearer,
@@ -240,12 +255,63 @@ impl SlackConfig {
             },
         ]
     }
+
+    /// The routes a given request actually addresses. Every count downstream —
+    /// requested agents, expected submissions, startup-failure replies — is
+    /// derived from this, so nothing keeps assuming a pair.
+    fn selected_models(&self, selection: ModelSelection) -> Vec<ModelRoute<'_>> {
+        let [claude, openai] = self.models();
+        match selection {
+            ModelSelection::Claude => vec![claude],
+            ModelSelection::Chatgpt => vec![openai],
+            ModelSelection::Both => vec![claude, openai],
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
 struct ModelRoute<'a> {
     agent_key: &'a str,
     label: &'static str,
+}
+
+/// Which providers a request addresses. `Both` stays the default so an
+/// unqualified command behaves exactly as it did before this flag existed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum ModelSelection {
+    Claude,
+    Chatgpt,
+    #[default]
+    Both,
+}
+
+impl ModelSelection {
+    fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "claude" => Some(Self::Claude),
+            "chatgpt" | "openai" | "gpt" => Some(Self::Chatgpt),
+            "both" => Some(Self::Both),
+            _ => None,
+        }
+    }
+
+    /// The bridge's competitive mode compares submissions against each other,
+    /// which is meaningless with one participant. A single-provider request is
+    /// therefore a `single` workflow, not a competition of one.
+    fn workflow_mode(self) -> &'static str {
+        match self {
+            Self::Both => "competitive",
+            Self::Claude | Self::Chatgpt => "single",
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Chatgpt => "chatgpt",
+            Self::Both => "both",
+        }
+    }
 }
 
 fn env_opt(key: &str) -> Option<String> {
@@ -417,12 +483,31 @@ fn default_idempotency_path() -> AdapterResult<PathBuf> {
         .join("slack-events.jsonl"))
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum EventState {
     Claimed,
     WorkflowCreated,
     Completed,
+    /// Terminal: an operator asked for the run to stop and the worker observed
+    /// the request at a stage boundary. Distinct from `Completed` so a canceled
+    /// run is never mistaken for one that delivered its submissions.
+    Canceled,
+}
+
+impl EventState {
+    /// Terminal states accept no further work, so a cancel request against one
+    /// is reported rather than silently recorded.
+    fn is_terminal(self) -> bool {
+        matches!(self, EventState::Completed | EventState::Canceled)
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum CancelOutcome {
+    Requested,
+    AlreadyTerminal(EventState),
+    Unknown,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -433,6 +518,11 @@ struct EventRecord {
     workflow_id: Option<String>,
     #[serde(default)]
     posted_agents: BTreeSet<String>,
+    /// Durable cancellation intent. Journaled rather than held in memory so a
+    /// request survives a restart: a worker resuming after a crash still sees
+    /// that the run was canceled instead of quietly finishing it.
+    #[serde(default)]
+    cancel_requested: bool,
     updated_at: String,
 }
 
@@ -484,6 +574,7 @@ impl EventStore {
             state: EventState::Claimed,
             workflow_id: None,
             posted_agents: BTreeSet::new(),
+            cancel_requested: false,
             updated_at: Utc::now().to_rfc3339(),
         };
         self.append(&record)?;
@@ -508,6 +599,36 @@ impl EventStore {
         self.update(event_id, |record| {
             record.state = EventState::Completed;
         })
+    }
+
+    /// Records cancellation intent. The worker observes it at the next stage
+    /// boundary and stops cooperatively; nothing is aborted mid-write, so the
+    /// journal is never left describing a partially applied step.
+    fn request_cancel(&self, event_id: &str) -> AdapterResult<CancelOutcome> {
+        let existing = match self.snapshot(event_id) {
+            Some(record) => record,
+            None => return Ok(CancelOutcome::Unknown),
+        };
+        let state = existing.state;
+        if state.is_terminal() {
+            return Ok(CancelOutcome::AlreadyTerminal(state));
+        }
+        self.update(event_id, |record| {
+            record.cancel_requested = true;
+        })?;
+        Ok(CancelOutcome::Requested)
+    }
+
+    /// Marks a run as stopped after the worker observed the request.
+    fn mark_canceled(&self, event_id: &str) -> AdapterResult<()> {
+        self.update(event_id, |record| {
+            record.state = EventState::Canceled;
+        })
+    }
+
+    fn cancel_requested(&self, event_id: &str) -> bool {
+        self.snapshot(event_id)
+            .is_some_and(|record| record.cancel_requested)
     }
 
     fn snapshot(&self, event_id: &str) -> Option<EventRecord> {
@@ -641,6 +762,8 @@ struct SlackEnvelope {
     #[serde(default)]
     team_id: Option<String>,
     #[serde(default)]
+    api_app_id: Option<String>,
+    #[serde(default)]
     event: Option<SlackEvent>,
 }
 
@@ -672,6 +795,7 @@ struct AcceptedEvent {
     thread_ts: String,
     user: String,
     prompt: String,
+    selection: ModelSelection,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -679,16 +803,35 @@ enum EventDecision {
     Challenge(String),
     Ignore,
     Accept(AcceptedEvent),
+    /// `<prefix> status <event-id>` — resolve a prior delivery from the durable
+    /// journal. Read-only: it claims nothing, reserves no capacity, and starts
+    /// no workflow, so it stays answerable while the service is saturated.
+    Status(String),
+    /// `<prefix> cancel <event-id>` — record cancellation intent for a run. Also
+    /// reserves no capacity, so a run can be stopped precisely when the service
+    /// is saturated and stopping it is most useful.
+    Cancel(String),
     Reject,
+    /// A correctly signed event from an application other than the reviewed
+    /// install. Distinguished from `Reject` because a non-zero rate here means
+    /// a foreign app is posting to this endpoint with a valid signature, which
+    /// is a security signal rather than a malformed-payload signal, and is
+    /// invisible if it is folded into the generic policy-rejection counter.
+    RejectForeignApp,
 }
 
 fn classify_event(config: &SlackConfig, envelope: SlackEnvelope) -> EventDecision {
     if envelope.kind == "url_verification" {
-        let Some(team_id) = envelope.team_id.as_deref() else {
-            return EventDecision::Reject;
-        };
-        if !config.allowed_team_ids.contains(team_id) {
-            return EventDecision::Ignore;
+        // Slack's Events API request-URL handshake carries only `token`,
+        // `challenge`, and `type`. It is sent while the Request URL is being
+        // configured, before the endpoint is bound to a workspace, so there is
+        // no `team_id` to match. Requiring one made the handshake unsatisfiable
+        // and left Event Subscriptions impossible to enable. When Slack does
+        // supply a workspace, it is still held to the allowlist.
+        if let Some(team_id) = envelope.team_id.as_deref() {
+            if !config.allowed_team_ids.contains(team_id) {
+                return EventDecision::Ignore;
+            }
         }
         return match envelope.challenge {
             Some(challenge)
@@ -711,6 +854,17 @@ fn classify_event(config: &SlackConfig, envelope: SlackEnvelope) -> EventDecisio
     };
     if !config.allowed_team_ids.contains(&team_id) {
         return EventDecision::Ignore;
+    }
+
+    // Reject events minted by any application other than the reviewed install,
+    // even when the payload carries an allowlisted workspace.
+    if let Some(expected_app_id) = config.expected_app_id.as_deref() {
+        let Some(api_app_id) = envelope.api_app_id.as_deref() else {
+            return EventDecision::RejectForeignApp;
+        };
+        if api_app_id != expected_app_id {
+            return EventDecision::RejectForeignApp;
+        }
     }
 
     let Some(event_id) = envelope.event_id else {
@@ -768,14 +922,17 @@ fn classify_event(config: &SlackConfig, envelope: SlackEnvelope) -> EventDecisio
     match parse_command(&text, &config.command_prefix) {
         CommandParse::NotCommand => EventDecision::Ignore,
         CommandParse::Invalid => EventDecision::Reject,
-        CommandParse::Prompt(prompt) => EventDecision::Accept(AcceptedEvent {
+        CommandParse::Prompt { prompt, selection } => EventDecision::Accept(AcceptedEvent {
             event_id,
             team_id,
             channel,
             thread_ts,
             user,
             prompt,
+            selection,
         }),
+        CommandParse::Status(target) => EventDecision::Status(target),
+        CommandParse::Cancel(target) => EventDecision::Cancel(target),
     }
 }
 
@@ -783,7 +940,14 @@ fn classify_event(config: &SlackConfig, envelope: SlackEnvelope) -> EventDecisio
 enum CommandParse {
     NotCommand,
     Invalid,
-    Prompt(String),
+    Prompt {
+        prompt: String,
+        selection: ModelSelection,
+    },
+    /// `<prefix> status <event-id>` — read-only lookup of a prior delivery.
+    Status(String),
+    /// `<prefix> cancel <event-id>` — record cancellation intent for a run.
+    Cancel(String),
 }
 
 fn parse_command(text: &str, prefix: &str) -> CommandParse {
@@ -808,7 +972,60 @@ fn parse_command(text: &str, prefix: &str) -> CommandParse {
     {
         return CommandParse::Invalid;
     }
-    CommandParse::Prompt(prompt.to_string())
+
+    // `status` and `cancel` are control verbs, not work. Both are matched
+    // case-insensitively on the first token only, so a prompt that merely
+    // mentions either word is still routed as work.
+    const CONTROL_VERBS: [&str; 2] = ["status", "cancel"];
+    if let Some((verb, argument)) = prompt
+        .split_once(char::is_whitespace)
+        .map(|(head, tail)| (head, tail.trim()))
+        .filter(|(head, _)| {
+            CONTROL_VERBS
+                .iter()
+                .any(|verb| head.eq_ignore_ascii_case(verb))
+        })
+    {
+        if !valid_event_id(argument) {
+            return CommandParse::Invalid;
+        }
+        return if verb.eq_ignore_ascii_case("status") {
+            CommandParse::Status(argument.to_string())
+        } else {
+            CommandParse::Cancel(argument.to_string())
+        };
+    }
+    // A bare control verb names no target.
+    if CONTROL_VERBS
+        .iter()
+        .any(|verb| prompt.eq_ignore_ascii_case(verb))
+    {
+        return CommandParse::Invalid;
+    }
+
+    // An optional leading `--model <claude|chatgpt|both>` selects providers.
+    // Only recognized at the front, so the flag cannot be smuggled in from
+    // untrusted channel text quoted later in a prompt.
+    let (selection, prompt) = match prompt.strip_prefix("--model") {
+        Some(rest) => {
+            let rest = rest.trim_start();
+            let (value, remainder) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            let Some(selection) = ModelSelection::parse(value) else {
+                return CommandParse::Invalid;
+            };
+            let remainder = remainder.trim();
+            if remainder.is_empty() {
+                return CommandParse::Invalid;
+            }
+            (selection, remainder)
+        }
+        None => (ModelSelection::default(), prompt),
+    };
+
+    CommandParse::Prompt {
+        prompt: prompt.to_string(),
+        selection,
+    }
 }
 
 fn strip_leading_mention(text: &str) -> &str {
@@ -1043,16 +1260,20 @@ impl SlackApp {
 }
 
 fn workflow_create_payload(config: &SlackConfig, event: &AcceptedEvent) -> Value {
+    let selected = config.selected_models(event.selection);
+    let agent_keys = selected
+        .iter()
+        .map(|model| model.agent_key)
+        .collect::<Vec<_>>();
     json!({
-        "title": format!("Slack dual-model request {}", event.event_id),
+        "title": format!("Slack {} request {}", event.selection.as_str(), event.event_id),
         "prompt": event.prompt.as_str(),
-        "created_by": config.claude_agent_key.as_str(),
-        "mode": "competitive",
-        "agent_keys": [
-            config.claude_agent_key.as_str(),
-            config.openai_agent_key.as_str()
-        ],
-        "worker_count": 2,
+        // The creator must be a participant; addressing only ChatGPT would
+        // otherwise attribute the workflow to an agent that is not running.
+        "created_by": agent_keys[0],
+        "mode": event.selection.workflow_mode(),
+        "agent_keys": agent_keys,
+        "worker_count": agent_keys.len(),
         "meta": {
             "source": "slack",
             "slack_event_id": event.event_id.as_str(),
@@ -1060,7 +1281,8 @@ fn workflow_create_payload(config: &SlackConfig, event: &AcceptedEvent) -> Value
             "slack_channel_id": event.channel.as_str(),
             "slack_thread_ts": event.thread_ts.as_str(),
             "slack_user_id": event.user.as_str(),
-            "requested_agent_count": 2
+            "requested_agent_count": agent_keys.len(),
+            "model_selection": event.selection.as_str()
         }
     })
 }
@@ -1171,6 +1393,7 @@ fn router(app: Arc<SlackApp>) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .route("/metrics", get(metrics))
         .route("/slack/events", post(slack_events))
         .layer(DefaultBodyLimit::max(app.config.max_body_bytes))
         .layer(TraceLayer::new_for_http())
@@ -1182,10 +1405,21 @@ async fn healthz() -> impl IntoResponse {
     Json(json!({ "ok": true }))
 }
 
+async fn metrics() -> impl IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        render_ingress_metrics(),
+    )
+}
+
 async fn readyz(State(app): State<Arc<SlackApp>>) -> impl IntoResponse {
     Json(json!({
         "ok": true,
-        "dry_run": app.config.dry_run
+        "dry_run": app.config.dry_run,
+        "installed_app_identity_enforced": app.config.expected_app_id.is_some()
     }))
 }
 
@@ -1229,7 +1463,69 @@ async fn slack_events(
                 json!({ "ok": false, "error": "invalid_event" }),
             )
         }
+        EventDecision::Status(target) => {
+            emit_metric("status_query");
+            let body = match app.store.snapshot(&target) {
+                Some(record) => json!({
+                    "ok": true,
+                    "event_id": record.event_id,
+                    "state": record.state,
+                    "workflow_id": record.workflow_id,
+                    "posted_agents": record.posted_agents,
+                    "updated_at": record.updated_at,
+                }),
+                None => json!({ "ok": true, "event_id": target, "state": "unknown" }),
+            };
+            json_response(StatusCode::OK, body)
+        }
+        EventDecision::Cancel(target) => {
+            emit_metric("cancel_requested");
+            match app.store.request_cancel(&target) {
+                Ok(CancelOutcome::Requested) => json_response(
+                    StatusCode::OK,
+                    json!({ "ok": true, "event_id": target, "cancel": "requested" }),
+                ),
+                Ok(CancelOutcome::AlreadyTerminal(state)) => json_response(
+                    StatusCode::OK,
+                    json!({ "ok": true, "event_id": target, "cancel": "already_terminal", "state": state }),
+                ),
+                Ok(CancelOutcome::Unknown) => json_response(
+                    StatusCode::OK,
+                    json!({ "ok": true, "event_id": target, "cancel": "unknown" }),
+                ),
+                Err(_) => {
+                    emit_metric("journal_failure");
+                    json_response(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        json!({ "ok": false, "error": "temporarily_unavailable" }),
+                    )
+                }
+            }
+        }
+        EventDecision::RejectForeignApp => {
+            emit_metric("rejected_app_identity");
+            warn!(
+                target: "fiducia.slack_bridge.security",
+                "rejected a signed event from an unexpected application identity"
+            );
+            json_response(
+                StatusCode::BAD_REQUEST,
+                json!({ "ok": false, "error": "invalid_event" }),
+            )
+        }
         EventDecision::Accept(event) => {
+            // Recognize an already-claimed delivery before reserving capacity.
+            // Slack retries on 503, so answering a duplicate with
+            // `capacity_exceeded` invites another delivery of work that is
+            // already claimed — retry amplification exactly when the service is
+            // saturated. This read does not commit anything; the authoritative
+            // claim still happens under the permit below, so a genuinely new
+            // event racing this check is still admitted exactly once.
+            if app.store.snapshot(&event.event_id).is_some() {
+                emit_metric("duplicate");
+                return json_response(StatusCode::OK, json!({ "ok": true, "duplicate": true }));
+            }
+
             let permit = match app.workflow_limit.clone().try_acquire_owned() {
                 Ok(permit) => permit,
                 Err(_) => {
@@ -1275,13 +1571,76 @@ fn json_response(status: StatusCode, body: Value) -> Response {
     (status, Json(body)).into_response()
 }
 
+/// Every outcome this adapter can record, declared up front so `/metrics`
+/// exposes a zero series for outcomes that have not happened yet. A counter
+/// that only appears after its first occurrence cannot be alerted on, because
+/// the absence of the series is indistinguishable from the absence of scraping.
+const METRIC_OUTCOMES: [&str; 18] = [
+    "accepted",
+    "dry_run",
+    "duplicate",
+    "failed",
+    "ignored",
+    "journal_failure",
+    "partial",
+    "rejected_capacity",
+    "rejected_malformed",
+    "rejected_policy",
+    "rejected_signature",
+    "reply_failed",
+    "succeeded",
+    "url_verification",
+    "rejected_app_identity",
+    "status_query",
+    "cancel_requested",
+    "canceled",
+];
+
+/// Process-global outcome counters for the Slack ingress.
+///
+/// The bridge service renders its own counters through `crate::metrics`, but
+/// that registry is owned by the bridge's `AppState`, which this standalone
+/// adapter binary never constructs. Rather than build a second general-purpose
+/// metrics system, this keeps one fixed-cardinality counter vector for the
+/// outcomes above and renders it in the same Prometheus text format.
+static INGRESS_METRICS: std::sync::OnceLock<Mutex<BTreeMap<&'static str, u64>>> =
+    std::sync::OnceLock::new();
+
+fn ingress_metrics() -> &'static Mutex<BTreeMap<&'static str, u64>> {
+    INGRESS_METRICS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
 fn emit_metric(outcome: &'static str) {
+    debug_assert!(
+        METRIC_OUTCOMES.contains(&outcome),
+        "outcome {outcome} is missing from METRIC_OUTCOMES, so /metrics would omit its zero series"
+    );
+    *ingress_metrics().lock().entry(outcome).or_insert(0) += 1;
     info!(
         target: "fiducia.slack_bridge.metrics",
         metric = "slack_bridge_requests_total",
         outcome,
         value = 1_u64
     );
+}
+
+/// Renders the outcome counters in Prometheus text exposition format.
+///
+/// Metadata only: outcome labels are a closed set of internal identifiers, so
+/// no Slack identifier, prompt text, or channel content can reach a scrape.
+fn render_ingress_metrics() -> String {
+    let counts = ingress_metrics().lock().clone();
+    let mut out = String::from(
+        "# HELP slack_bridge_requests_total Slack ingress requests by terminal outcome.\n\
+         # TYPE slack_bridge_requests_total counter\n",
+    );
+    for outcome in METRIC_OUTCOMES {
+        let value = counts.get(outcome).copied().unwrap_or(0);
+        out.push_str(&format!(
+            "slack_bridge_requests_total{{outcome=\"{outcome}\"}} {value}\n"
+        ));
+    }
+    out
 }
 
 async fn process_event(app: Arc<SlackApp>, event: AcceptedEvent, _permit: OwnedSemaphorePermit) {
@@ -1314,6 +1673,9 @@ async fn process_event(app: Arc<SlackApp>, event: AcceptedEvent, _permit: OwnedS
         }
     };
 
+    // Completion is "every addressed provider replied", which is one for a
+    // single-provider request and two for a paired one.
+    let expected_submissions = app.config.selected_models(event.selection).len();
     let deadline = Instant::now() + app.config.workflow_timeout;
     let mut posted = app
         .store
@@ -1323,9 +1685,22 @@ async fn process_event(app: Arc<SlackApp>, event: AcceptedEvent, _permit: OwnedS
     let mut terminal = false;
 
     while Instant::now() < deadline {
+        // Stage boundary: stop cooperatively rather than aborting mid-write, so
+        // the journal never describes a partially applied step. Submissions
+        // already posted stay posted; cancellation stops further work, it does
+        // not retract what the models already delivered to the thread.
+        if app.store.cancel_requested(&event.event_id) {
+            if app.store.mark_canceled(&event.event_id).is_err() {
+                warn!("failed to persist cancellation");
+                emit_metric("journal_failure");
+            }
+            emit_metric("canceled");
+            return;
+        }
+
         if let Ok(workflow) = app.get_workflow(&workflow_id).await {
             terminal = workflow.status.stage == "completed";
-            for model in app.config.models() {
+            for model in app.config.selected_models(event.selection) {
                 if posted.contains(model.agent_key) {
                     continue;
                 }
@@ -1353,7 +1728,7 @@ async fn process_event(app: Arc<SlackApp>, event: AcceptedEvent, _permit: OwnedS
                     }
                 }
             }
-            if posted.len() == 2 {
+            if posted.len() == expected_submissions {
                 if app.store.complete(&event.event_id).is_err() {
                     warn!("failed to persist workflow completion");
                 }
@@ -1367,7 +1742,7 @@ async fn process_event(app: Arc<SlackApp>, event: AcceptedEvent, _permit: OwnedS
         sleep(app.config.poll_interval).await;
     }
 
-    for model in app.config.models() {
+    for model in app.config.selected_models(event.selection) {
         if posted.contains(model.agent_key) {
             continue;
         }
@@ -1413,8 +1788,9 @@ async fn process_event(app: Arc<SlackApp>, event: AcceptedEvent, _permit: OwnedS
 }
 
 async fn post_start_failure_pair(app: &SlackApp, event: &AcceptedEvent) {
+    let expected = app.config.selected_models(event.selection).len();
     let mut posted = 0usize;
-    for model in app.config.models() {
+    for model in app.config.selected_models(event.selection) {
         let text = labeled_failure(
             model,
             "The bounded bridge workflow could not be started safely.",
@@ -1435,7 +1811,7 @@ async fn post_start_failure_pair(app: &SlackApp, event: &AcceptedEvent) {
             }
         }
     }
-    if posted == 2 && app.store.complete(&event.event_id).is_err() {
+    if posted == expected && app.store.complete(&event.event_id).is_err() {
         warn!("failed to persist startup-failure completion");
     }
 }
@@ -1482,6 +1858,29 @@ fn truncate_utf8(value: &str, maximum_bytes: usize) -> String {
 mod tests {
     use super::*;
 
+    /// Immutable identifier of the reviewed Slack application install.
+    const TEST_APP_ID: &str = "A0BMBAMM5NJ";
+
+    fn accepted_event() -> AcceptedEvent {
+        AcceptedEvent {
+            event_id: "Ev123".to_string(),
+            team_id: "T1".to_string(),
+            channel: "C1".to_string(),
+            thread_ts: "1.1".to_string(),
+            user: "U1".to_string(),
+            prompt: "explain raft".to_string(),
+            selection: ModelSelection::Both,
+        }
+    }
+
+    /// An unqualified prompt: no `--model` flag, so both providers are used.
+    fn both(prompt: &str) -> CommandParse {
+        CommandParse::Prompt {
+            prompt: prompt.to_string(),
+            selection: ModelSelection::Both,
+        }
+    }
+
     fn test_config(path: PathBuf) -> SlackConfig {
         SlackConfig {
             host: DEFAULT_HOST.parse().unwrap(),
@@ -1492,6 +1891,7 @@ mod tests {
             allowed_team_ids: ["T1".to_string()].into_iter().collect(),
             allowed_channel_ids: ["C1".to_string()].into_iter().collect(),
             allowed_thread_ts: BTreeSet::new(),
+            expected_app_id: Some(TEST_APP_ID.to_string()),
             command_prefix: DEFAULT_COMMAND_PREFIX.to_string(),
             bridge_url: DEFAULT_BRIDGE_URL.to_string(),
             bridge_bearer: None,
@@ -1520,6 +1920,7 @@ mod tests {
             challenge: None,
             event_id: Some("Ev123".to_string()),
             team_id: Some("T1".to_string()),
+            api_app_id: Some(TEST_APP_ID.to_string()),
             event: Some(SlackEvent {
                 kind: "app_mention".to_string(),
                 channel: Some("C1".to_string()),
@@ -1633,6 +2034,7 @@ mod tests {
             challenge: Some("abc123".to_string()),
             event_id: None,
             team_id: Some("T1".to_string()),
+            api_app_id: Some(TEST_APP_ID.to_string()),
             event: None,
         };
         assert_eq!(
@@ -1649,9 +2051,467 @@ mod tests {
             challenge: Some("abc123".to_string()),
             event_id: None,
             team_id: Some("T2".to_string()),
+            api_app_id: Some(TEST_APP_ID.to_string()),
             event: None,
         };
         assert_eq!(classify_event(&config, envelope), EventDecision::Ignore);
+    }
+
+    /// Slack's real Events API handshake carries only `token`, `challenge`, and
+    /// `type`. Rejecting it for a missing workspace made Event Subscriptions
+    /// impossible to enable on this endpoint.
+    #[test]
+    fn url_verification_without_workspace_completes_the_slack_handshake() {
+        let config = test_config(temp_path("challenge-no-team"));
+        let envelope = SlackEnvelope {
+            kind: "url_verification".to_string(),
+            challenge: Some("3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P".to_string()),
+            event_id: None,
+            team_id: None,
+            api_app_id: None,
+            event: None,
+        };
+        assert_eq!(
+            classify_event(&config, envelope),
+            EventDecision::Challenge(
+                "3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P".to_string()
+            )
+        );
+    }
+
+    /// The exact JSON Slack posts to the Request URL must survive deserialization
+    /// and reach the challenge branch, not just the hand-built struct.
+    #[test]
+    fn url_verification_wire_payload_completes_the_slack_handshake() {
+        let config = test_config(temp_path("challenge-wire"));
+        let body = br#"{"token":"Jhj5dZrVaK7ZwHHjRyZWjbDl","challenge":"abc123","type":"url_verification"}"#;
+        let envelope = serde_json::from_slice::<SlackEnvelope>(body).expect("payload parses");
+        assert_eq!(
+            classify_event(&config, envelope),
+            EventDecision::Challenge("abc123".to_string())
+        );
+    }
+
+    /// DEN-2863: idempotency must not be conditional on spare capacity. Slack
+    /// retries on 503, so answering an already-claimed delivery with
+    /// `capacity_exceeded` invites another delivery of work already claimed.
+    #[tokio::test]
+    async fn a_retry_is_recognized_as_duplicate_even_with_no_capacity_left() {
+        let path = temp_path("duplicate-at-capacity");
+        let mut config = test_config(path);
+        config.dry_run = true;
+        config.bot_token = None;
+        config.max_concurrent_workflows = 1;
+
+        let app = Arc::new(SlackApp::new(config.clone()).unwrap());
+        // The delivery has already been claimed by an earlier request.
+        assert!(matches!(
+            app.store.claim("Ev123").unwrap(),
+            ClaimOutcome::Claimed
+        ));
+        // Hold the only permit, so the service is genuinely at its ceiling.
+        let permit = app.workflow_limit.clone().try_acquire_owned().unwrap();
+
+        let (url, handle) = spawn_test_server(router(app.clone())).await;
+        let body = serde_json::to_vec(&event_envelope("!ask-both explain raft")).unwrap();
+        let response = send_signed_event(&url, &config, body).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response.json::<Value>().await.unwrap();
+        assert_eq!(payload["duplicate"], json!(true));
+
+        drop(permit);
+        handle.abort();
+    }
+
+    /// The complement: a genuinely new delivery at capacity must still be shed,
+    /// and must not leave a journal claim behind for work that never ran.
+    #[tokio::test]
+    async fn a_new_event_at_capacity_is_shed_without_claiming_it() {
+        let path = temp_path("new-at-capacity");
+        let mut config = test_config(path);
+        config.dry_run = true;
+        config.bot_token = None;
+        config.max_concurrent_workflows = 1;
+
+        let app = Arc::new(SlackApp::new(config.clone()).unwrap());
+        let permit = app.workflow_limit.clone().try_acquire_owned().unwrap();
+
+        let (url, handle) = spawn_test_server(router(app.clone())).await;
+        let body = serde_json::to_vec(&event_envelope("!ask-both explain raft")).unwrap();
+        let response = send_signed_event(&url, &config, body).await;
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            app.store.snapshot("Ev123").is_none(),
+            "a shed event must not leave a claim for work that never ran"
+        );
+
+        drop(permit);
+        handle.abort();
+    }
+
+    #[test]
+    fn status_command_is_parsed_as_a_lookup_rather_than_a_prompt() {
+        assert_eq!(
+            parse_command("!ask-both status Ev123", "!ask-both"),
+            CommandParse::Status("Ev123".to_string())
+        );
+        assert_eq!(
+            parse_command("!ask-both STATUS Ev123", "!ask-both"),
+            CommandParse::Status("Ev123".to_string())
+        );
+        // A bare `status` has no target.
+        assert_eq!(
+            parse_command("!ask-both status", "!ask-both"),
+            CommandParse::Invalid
+        );
+        // An unusable identifier is refused rather than looked up.
+        assert_eq!(
+            parse_command("!ask-both status not a valid id", "!ask-both"),
+            CommandParse::Invalid
+        );
+        // Prose that merely mentions the word is still work.
+        assert_eq!(
+            parse_command("!ask-both status of the raft leader election?", "!ask-both"),
+            CommandParse::Invalid
+        );
+        assert_eq!(
+            parse_command("!ask-both what is the status here", "!ask-both"),
+            both("what is the status here")
+        );
+    }
+
+    #[tokio::test]
+    async fn status_reports_journal_state_without_claiming_or_reserving_capacity() {
+        let path = temp_path("status-lookup");
+        let mut config = test_config(path);
+        config.dry_run = true;
+        config.bot_token = None;
+        config.max_concurrent_workflows = 1;
+
+        let app = Arc::new(SlackApp::new(config.clone()).unwrap());
+        app.store.claim("Ev900").unwrap();
+        app.store.set_workflow("Ev900", "wf-42").unwrap();
+        // Saturated: a status lookup must still be answerable.
+        let permit = app.workflow_limit.clone().try_acquire_owned().unwrap();
+
+        let (url, handle) = spawn_test_server(router(app.clone())).await;
+        let mut envelope = event_envelope("!ask-both status Ev900");
+        envelope.event_id = Some("EvStatusQuery".to_string());
+        let body = serde_json::to_vec(&envelope).unwrap();
+        let response = send_signed_event(&url, &config, body).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response.json::<Value>().await.unwrap();
+        assert_eq!(payload["event_id"], json!("Ev900"));
+        assert_eq!(payload["workflow_id"], json!("wf-42"));
+        // The lookup itself must not be journaled as work.
+        assert!(app.store.snapshot("EvStatusQuery").is_none());
+
+        drop(permit);
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn status_for_an_unknown_delivery_reports_unknown_rather_than_failing() {
+        let path = temp_path("status-unknown");
+        let mut config = test_config(path);
+        config.dry_run = true;
+        config.bot_token = None;
+
+        let app = Arc::new(SlackApp::new(config.clone()).unwrap());
+        let (url, handle) = spawn_test_server(router(app)).await;
+        let body = serde_json::to_vec(&event_envelope("!ask-both status EvNeverSeen")).unwrap();
+        let response = send_signed_event(&url, &config, body).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response.json::<Value>().await.unwrap();
+        assert_eq!(payload["state"], json!("unknown"));
+
+        handle.abort();
+    }
+
+    #[test]
+    fn control_verbs_are_parsed_as_commands_rather_than_prompts() {
+        assert_eq!(
+            parse_command("!ask-both cancel Ev123", "!ask-both"),
+            CommandParse::Cancel("Ev123".to_string())
+        );
+        assert_eq!(
+            parse_command("!ask-both CANCEL Ev123", "!ask-both"),
+            CommandParse::Cancel("Ev123".to_string())
+        );
+        assert_eq!(
+            parse_command("!ask-both cancel", "!ask-both"),
+            CommandParse::Invalid
+        );
+        assert_eq!(
+            parse_command("!ask-both cancel ../../etc/passwd", "!ask-both"),
+            CommandParse::Invalid
+        );
+        // Prose that merely mentions the verb is still work.
+        assert_eq!(
+            parse_command("!ask-both should we cancel the rollout", "!ask-both"),
+            both("should we cancel the rollout")
+        );
+    }
+
+    #[test]
+    fn cancel_records_durable_intent_and_reports_terminal_and_unknown_runs() {
+        let store = EventStore::open(temp_path("cancel-intent")).unwrap();
+
+        // Unknown run: reported, not invented.
+        assert_eq!(
+            store.request_cancel("EvMissing").unwrap(),
+            CancelOutcome::Unknown
+        );
+        assert!(store.snapshot("EvMissing").is_none());
+
+        // In-flight run: intent recorded durably.
+        store.claim("EvLive").unwrap();
+        assert_eq!(
+            store.request_cancel("EvLive").unwrap(),
+            CancelOutcome::Requested
+        );
+        assert!(store.cancel_requested("EvLive"));
+
+        // Terminal run: reported rather than silently recorded.
+        store.claim("EvDone").unwrap();
+        store.complete("EvDone").unwrap();
+        assert_eq!(
+            store.request_cancel("EvDone").unwrap(),
+            CancelOutcome::AlreadyTerminal(EventState::Completed)
+        );
+        assert!(!store.cancel_requested("EvDone"));
+    }
+
+    /// Cancellation intent must outlive the process; a worker resuming after a
+    /// restart has to see it rather than quietly finishing the run.
+    #[test]
+    fn cancellation_intent_survives_restart() {
+        let path = temp_path("cancel-restart");
+        let store = EventStore::open(path.clone()).unwrap();
+        store.claim("EvLive").unwrap();
+        store.request_cancel("EvLive").unwrap();
+        drop(store);
+
+        let reopened = EventStore::open(path).unwrap();
+        assert!(reopened.cancel_requested("EvLive"));
+        reopened.mark_canceled("EvLive").unwrap();
+        assert_eq!(
+            reopened.snapshot("EvLive").unwrap().state,
+            EventState::Canceled
+        );
+    }
+
+    #[test]
+    fn a_canceled_run_is_terminal_and_distinct_from_completed() {
+        let store = EventStore::open(temp_path("cancel-terminal")).unwrap();
+        store.claim("EvStopped").unwrap();
+        store.mark_canceled("EvStopped").unwrap();
+
+        let record = store.snapshot("EvStopped").unwrap();
+        assert_eq!(record.state, EventState::Canceled);
+        assert!(record.state.is_terminal());
+        // A canceled run must never be mistaken for one that delivered.
+        assert_ne!(record.state, EventState::Completed);
+        assert_eq!(
+            store.request_cancel("EvStopped").unwrap(),
+            CancelOutcome::AlreadyTerminal(EventState::Canceled)
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_is_answerable_while_the_service_is_saturated() {
+        let path = temp_path("cancel-at-capacity");
+        let mut config = test_config(path);
+        config.dry_run = true;
+        config.bot_token = None;
+        config.max_concurrent_workflows = 1;
+
+        let app = Arc::new(SlackApp::new(config.clone()).unwrap());
+        app.store.claim("Ev900").unwrap();
+        let permit = app.workflow_limit.clone().try_acquire_owned().unwrap();
+
+        let (url, handle) = spawn_test_server(router(app.clone())).await;
+        let mut envelope = event_envelope("!ask-both cancel Ev900");
+        envelope.event_id = Some("EvCancelRequest".to_string());
+        let response =
+            send_signed_event(&url, &config, serde_json::to_vec(&envelope).unwrap()).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response.json::<Value>().await.unwrap();
+        assert_eq!(payload["cancel"], json!("requested"));
+        assert!(app.store.cancel_requested("Ev900"));
+        // The control request itself is not journaled as work.
+        assert!(app.store.snapshot("EvCancelRequest").is_none());
+
+        drop(permit);
+        handle.abort();
+    }
+
+    #[test]
+    fn model_selection_is_parsed_only_as_a_leading_flag() {
+        assert_eq!(
+            parse_command("!ask-both --model claude explain raft", "!ask-both"),
+            CommandParse::Prompt {
+                prompt: "explain raft".to_string(),
+                selection: ModelSelection::Claude,
+            }
+        );
+        assert_eq!(
+            parse_command("!ask-both --model CHATGPT explain raft", "!ask-both"),
+            CommandParse::Prompt {
+                prompt: "explain raft".to_string(),
+                selection: ModelSelection::Chatgpt,
+            }
+        );
+        // Unqualified requests keep the pre-existing dual-model behaviour.
+        assert_eq!(
+            parse_command("!ask-both explain raft", "!ask-both"),
+            both("explain raft")
+        );
+        // An unknown provider is refused rather than silently defaulted.
+        assert_eq!(
+            parse_command("!ask-both --model gemini explain raft", "!ask-both"),
+            CommandParse::Invalid
+        );
+        // A flag with no task is not a request.
+        assert_eq!(
+            parse_command("!ask-both --model claude", "!ask-both"),
+            CommandParse::Invalid
+        );
+        // Untrusted channel text quoted mid-prompt cannot smuggle the flag in.
+        assert_eq!(
+            parse_command("!ask-both summarize this: --model claude", "!ask-both"),
+            both("summarize this: --model claude")
+        );
+    }
+
+    #[test]
+    fn a_single_provider_request_is_not_a_competition_of_one() {
+        let config = test_config(temp_path("single-mode"));
+        let mut event = accepted_event();
+
+        event.selection = ModelSelection::Claude;
+        let payload = workflow_create_payload(&config, &event);
+        assert_eq!(payload["mode"], json!("single"));
+        assert_eq!(payload["worker_count"], json!(1));
+        assert_eq!(
+            payload["agent_keys"],
+            json!([DEFAULT_CLAUDE_AGENT_KEY]),
+            "a Claude-only request must not enlist the OpenAI agent"
+        );
+        // The creator must participate, or the run is attributed to an agent
+        // that is not running.
+        assert_eq!(payload["created_by"], json!(DEFAULT_CLAUDE_AGENT_KEY));
+
+        event.selection = ModelSelection::Chatgpt;
+        let payload = workflow_create_payload(&config, &event);
+        assert_eq!(payload["agent_keys"], json!([DEFAULT_OPENAI_AGENT_KEY]));
+        assert_eq!(payload["created_by"], json!(DEFAULT_OPENAI_AGENT_KEY));
+
+        event.selection = ModelSelection::Both;
+        let payload = workflow_create_payload(&config, &event);
+        assert_eq!(payload["mode"], json!("competitive"));
+        assert_eq!(payload["worker_count"], json!(2));
+        assert_eq!(
+            payload["agent_keys"],
+            json!([DEFAULT_CLAUDE_AGENT_KEY, DEFAULT_OPENAI_AGENT_KEY])
+        );
+    }
+
+    #[test]
+    fn selected_routes_drive_every_downstream_count() {
+        let config = test_config(temp_path("selected-routes"));
+        assert_eq!(config.selected_models(ModelSelection::Claude).len(), 1);
+        assert_eq!(config.selected_models(ModelSelection::Chatgpt).len(), 1);
+        assert_eq!(config.selected_models(ModelSelection::Both).len(), 2);
+        assert_eq!(
+            config.selected_models(ModelSelection::Chatgpt)[0].agent_key,
+            DEFAULT_OPENAI_AGENT_KEY
+        );
+    }
+
+    #[test]
+    fn every_emitted_outcome_has_a_declared_metric_series() {
+        // Guards the /metrics contract: an outcome that is emitted but missing
+        // from METRIC_OUTCOMES would never render, so its absence would be
+        // indistinguishable from "not scraped".
+        let source = include_str!("slack_bridge.rs");
+        for line in source.lines() {
+            let Some(rest) = line.trim().strip_prefix("emit_metric(\"") else {
+                continue;
+            };
+            let Some(outcome) = rest.split('"').next() else {
+                continue;
+            };
+            assert!(
+                METRIC_OUTCOMES.contains(&outcome),
+                "emit_metric(\"{outcome}\") has no entry in METRIC_OUTCOMES"
+            );
+        }
+    }
+
+    #[test]
+    fn rendered_metrics_expose_a_zero_series_for_every_outcome() {
+        let rendered = render_ingress_metrics();
+        assert!(rendered.contains("# TYPE slack_bridge_requests_total counter"));
+        for outcome in METRIC_OUTCOMES {
+            assert!(
+                rendered.contains(&format!(
+                    "slack_bridge_requests_total{{outcome=\"{outcome}\"}}"
+                )),
+                "missing series for {outcome}"
+            );
+        }
+        // Metadata only: the sole label is a closed set of internal outcome
+        // names, so no Slack identifier or message content can reach a scrape.
+        for line in rendered.lines().filter(|l| !l.starts_with('#')) {
+            let label = line
+                .split_once("outcome=\"")
+                .and_then(|(_, rest)| rest.split('"').next())
+                .expect("every series carries exactly one outcome label");
+            assert!(METRIC_OUTCOMES.contains(&label));
+            assert_eq!(line.matches("=\"").count(), 1, "unexpected extra label");
+        }
+    }
+
+    #[test]
+    fn events_from_another_installed_application_are_rejected() {
+        let config = test_config(temp_path("foreign-app"));
+        let mut envelope = event_envelope("!ask-both hello");
+        envelope.api_app_id = Some("A0FOREIGNAPP".to_string());
+        assert_eq!(
+            classify_event(&config, envelope),
+            EventDecision::RejectForeignApp
+        );
+    }
+
+    #[test]
+    fn events_without_an_application_identity_are_rejected_when_enforced() {
+        let config = test_config(temp_path("missing-app"));
+        let mut envelope = event_envelope("!ask-both hello");
+        envelope.api_app_id = None;
+        assert_eq!(
+            classify_event(&config, envelope),
+            EventDecision::RejectForeignApp
+        );
+    }
+
+    /// A loopback sidecar may run without a configured install identity; the
+    /// workspace and channel allowlists still apply.
+    #[test]
+    fn events_are_accepted_when_application_identity_is_not_configured() {
+        let mut config = test_config(temp_path("unenforced-app"));
+        config.expected_app_id = None;
+        let mut envelope = event_envelope("!ask-both hello");
+        envelope.api_app_id = Some("A0FOREIGNAPP".to_string());
+        assert!(matches!(
+            classify_event(&config, envelope),
+            EventDecision::Accept(_)
+        ));
     }
 
     #[test]
@@ -1707,7 +2567,7 @@ mod tests {
     fn leading_app_mention_is_removed_before_command_parsing() {
         assert_eq!(
             parse_command("<@UBOT> !ask-both explain raft", "!ask-both"),
-            CommandParse::Prompt("explain raft".to_string())
+            both("explain raft")
         );
     }
 
@@ -1767,12 +2627,8 @@ mod tests {
     fn workflow_title_does_not_copy_the_prompt() {
         let config = test_config(temp_path("payload-title"));
         let event = AcceptedEvent {
-            event_id: "Ev123".to_string(),
-            team_id: "T1".to_string(),
-            channel: "C1".to_string(),
-            thread_ts: "1.1".to_string(),
-            user: "U1".to_string(),
             prompt: "sensitive prompt".to_string(),
+            ..accepted_event()
         };
         let payload = workflow_create_payload(&config, &event);
         assert!(!payload["title"].as_str().unwrap().contains("sensitive"));

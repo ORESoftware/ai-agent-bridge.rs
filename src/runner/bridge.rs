@@ -1,4 +1,3 @@
-use std::net::IpAddr;
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -7,6 +6,7 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::bridge_origin_policy::{validate_bridge_origin, INTERNAL_HTTP_HOSTS_ENV};
 use crate::orchestration::{WorkflowPlan, WorkflowStatus, WorkflowSubmission, WorkflowView};
 use crate::types::AgentKind;
 
@@ -91,22 +91,11 @@ impl BridgeClient {
                 "bridge URL must not contain a query or fragment".into(),
             ));
         }
-        let host = base_url
-            .host_str()
-            .ok_or_else(|| BridgeClientError::InvalidConfig("bridge URL requires a host".into()))?
-            .to_ascii_lowercase();
         let bearer =
             env_opt("AI_AGENT_RUNNER_BRIDGE_BEARER").or_else(|| env_opt("API_AUTH_BEARER"));
-        if base_url.scheme() != "https" && !is_loopback_host(&host) {
-            return Err(BridgeClientError::InvalidConfig(
-                "remote bridge URLs must use HTTPS".into(),
-            ));
-        }
-        if !is_loopback_host(&host) && bearer.is_none() {
-            return Err(BridgeClientError::InvalidConfig(
-                "remote bridge URLs require AI_AGENT_RUNNER_BRIDGE_BEARER".into(),
-            ));
-        }
+        let internal_http_hosts = env_opt(INTERNAL_HTTP_HOSTS_ENV);
+        validate_bridge_origin(&base_url, bearer.as_deref(), internal_http_hosts.as_deref())
+            .map_err(BridgeClientError::InvalidConfig)?;
         if !base_url.path().ends_with('/') {
             base_url.set_path(&format!("{}/", base_url.path()));
         }
@@ -131,6 +120,29 @@ impl BridgeClient {
             http,
             max_response_bytes,
         })
+    }
+
+    /// Test-only constructor pointing at a scripted loopback bridge. Client
+    /// timeouts are deliberately huge so scripted long-delay scenarios can
+    /// prove engine-side cancellation without racing a client timeout.
+    #[cfg(test)]
+    pub(crate) fn for_test(base_url: &str) -> Self {
+        let mut base_url = Url::parse(base_url).expect("test bridge URL is valid");
+        if !base_url.path().ends_with('/') {
+            base_url.set_path(&format!("{}/", base_url.path()));
+        }
+        Self {
+            base_url,
+            bearer: None,
+            http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(Duration::from_secs(3_600))
+                .connect_timeout(Duration::from_secs(3_600))
+                .user_agent("fiducia-ai-agent-runner/0.1")
+                .build()
+                .expect("test bridge HTTP client builds"),
+            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+        }
     }
 
     pub(crate) async fn register_agent(
@@ -376,14 +388,6 @@ fn env_usize(key: &str, default: usize) -> usize {
     env_opt(key)
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
-}
-
-fn is_loopback_host(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost")
-        || host
-            .trim_matches(|character| character == '[' || character == ']')
-            .parse::<IpAddr>()
-            .is_ok_and(|address| address.is_loopback())
 }
 
 #[cfg(test)]
