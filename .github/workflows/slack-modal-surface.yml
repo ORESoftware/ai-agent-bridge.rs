@@ -1,3 +1,14 @@
+# Operator-facing gate for the reviewed Slack run modal.
+#
+# `slack-ingress-browser-security.yml` proves the ingress *rejects* what it
+# should. This workflow proves the surface an authorized operator is *shown* is
+# correct: every sub-selection present, the safe defaults preselected, and write
+# scope never wider than the channel policy.
+#
+# It needs no running service, Slack credentials, or private vendor submodules.
+# The Rust job freezes the real `views.open` payloads and the Chromium job
+# renders exactly those.
+
 name: Slack run modal contract
 
 on:
@@ -13,6 +24,7 @@ on:
       - tests/browser/package.json
       - tests/browser/package-lock.json
       - tests/browser/specs/modal.spec.mjs
+      - tests/browser/playwright.config.mjs
   push:
     branches: [main]
     paths:
@@ -26,6 +38,7 @@ on:
       - tests/browser/package.json
       - tests/browser/package-lock.json
       - tests/browser/specs/modal.spec.mjs
+      - tests/browser/playwright.config.mjs
   workflow_dispatch:
 
 permissions:
@@ -76,6 +89,9 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
+      # Fails if a modal change landed without regenerating the fixtures, so the
+      # browser job can never assert against a payload the service no longer
+      # sends.
       - name: Verify modal preview and Slack Block Kit ceilings
         run: |
           set -euo pipefail

@@ -35,3 +35,7 @@ tmp/
 .cargo-target-*/
 **/.gradle/
 _to_delete/
+tmp
+temp
+tmp/worktrees
+temp/worktrees

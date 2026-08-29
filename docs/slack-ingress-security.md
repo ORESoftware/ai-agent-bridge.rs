@@ -38,7 +38,7 @@ authentication. Everything after the envelope — provider agreement, identity
 pinning, channel policy, the run journal — is shared with the HTTP path. The
 request-validation order below describes the signed Request URL only.
 
-The six reviewed command names map onto two provider endpoints. `/x-ores-*` paths remain mounted for a stale live app:
+The eight reviewed command names map onto two provider endpoints. `/x-ores-*` paths remain mounted for a stale live app:
 
 ```text
 /ores-claude     /x-claude     /my-claude     /x-ores-claude   -> ores-claude

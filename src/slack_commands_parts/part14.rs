@@ -81,7 +81,7 @@ mod preview_run_modal_tests {
                 "{command} must open the reviewed modal"
             );
         }
-        for command in ["/x-ores-gemini", "/claude", "/xores-claude"] {
+        for command in ["/x-ores-gemini", "/x-gemini", "/claude", "/xores-claude"] {
             assert!(
                 preview_run_modal(
                     command,
