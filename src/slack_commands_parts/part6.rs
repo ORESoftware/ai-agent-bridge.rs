@@ -42,6 +42,8 @@ fn router(app: Arc<App>) -> Router {
         .route("/healthz", get(health))
         .route("/readyz", get(ready))
         .route("/metrics", get(metrics))
+        .route("/slack/commands/ores-claude", post(command))
+        .route("/slack/commands/ores-chatgpt", post(command))
         .route("/slack/commands/x-ores-claude", post(command))
         .route("/slack/commands/x-ores-chatgpt", post(command))
         .route("/slack/interactions", post(interaction))
@@ -122,10 +124,9 @@ async fn command(
         emit_metric("denied_signature");
         return reject(StatusCode::UNAUTHORIZED);
     }
-    let expected_provider = match uri.path() {
-        "/slack/commands/x-ores-claude" => Provider::Claude,
-        "/slack/commands/x-ores-chatgpt" => Provider::Chatgpt,
-        _ => return reject(StatusCode::NOT_FOUND),
+    let expected_provider = match Provider::from_request_path(uri.path()) {
+        Some(provider) => provider,
+        None => return reject(StatusCode::NOT_FOUND),
     };
     match validate_slash_envelope(&app.config, &body, expected_provider) {
         Ok(()) => {}

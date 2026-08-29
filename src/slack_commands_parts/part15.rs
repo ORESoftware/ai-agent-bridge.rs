@@ -620,7 +620,13 @@ mod socket_mode_tests {
     #[test]
     fn both_transports_resolve_the_same_namespace() {
         for (command, expected) in [
+            ("/ores-claude", Provider::Claude),
+            ("/x-claude", Provider::Claude),
+            ("/my-claude", Provider::Claude),
             ("/x-ores-claude", Provider::Claude),
+            ("/ores-chatgpt", Provider::Chatgpt),
+            ("/x-chatgpt", Provider::Chatgpt),
+            ("/my-chatgpt", Provider::Chatgpt),
             ("/x-ores-chatgpt", Provider::Chatgpt),
         ] {
             let over_socket = socket_expected_provider(&json!({ "command": command }))
@@ -631,15 +637,7 @@ mod socket_mode_tests {
             assert_eq!(over_socket, over_http, "{command} must mean one provider");
         }
 
-        for command in [
-            "/ores-claude",
-            "/ores-chatgpt",
-            "/x-claude",
-            "/x-chatgpt",
-            "/my-claude",
-            "/my-chatgpt",
-            "/x-ores-gemini",
-        ] {
+        for command in ["/x-ores-gemini", "/claude", "/xores-claude"] {
             assert!(
                 socket_expected_provider(&json!({ "command": command })).is_err(),
                 "{command} must be refused over the socket"

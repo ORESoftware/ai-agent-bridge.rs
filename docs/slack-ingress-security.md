@@ -9,6 +9,8 @@ This document defines the security boundary for the `fiducia-slack-command` serv
 The public deployment exposes only these Slack-signed request routes:
 
 ```text
+POST /slack/commands/ores-claude
+POST /slack/commands/ores-chatgpt
 POST /slack/commands/x-ores-claude
 POST /slack/commands/x-ores-chatgpt
 POST /slack/interactions
@@ -36,11 +38,11 @@ authentication. Everything after the envelope — provider agreement, identity
 pinning, channel policy, the run journal — is shared with the HTTP path. The
 request-validation order below describes the signed Request URL only.
 
-The two reviewed command names map one-to-one onto the two provider endpoints:
+The six reviewed command names map onto two provider endpoints. `/x-ores-*` paths remain mounted for a stale live app:
 
 ```text
-/x-ores-claude   /x-ores-claude   /x-ores-claude
-/x-ores-chatgpt  /x-ores-chatgpt  /x-ores-chatgpt
+/ores-claude     /x-claude     /my-claude     /x-ores-claude   -> ores-claude
+/ores-chatgpt    /x-chatgpt    /my-chatgpt    /x-ores-chatgpt  -> ores-chatgpt
 ```
 
 The payload command must agree with the endpoint provider. A valid HMAC for a Claude payload sent to the ChatGPT endpoint is rejected before channel policy, history access, modal creation, run journaling, bridge dispatch, or coordinator dispatch.
@@ -342,7 +344,7 @@ dry-run configuration, then drives real Chromium requests against
 Before turning off `SLACK_COMMAND_DRY_RUN`:
 
 1. reconcile and validate the complete remote app manifest;
-2. reinstall the app after the `usergroups:read` grant and confirm both `/x-ores-*` commands appear and no retired name does;
+2. reinstall the app after the `usergroups:read` grant and confirm `/ores-claude`, `/ores-chatgpt`, and the `/x-*` and `/my-*` aliases appear;
 3. set `SLACK_EXPECTED_APP_ID` and `SLACK_EXPECTED_TEAM_ID` to the installed immutable IDs;
 4. source all secrets from the protected deployment secret path, never environment files committed to Git;
 5. keep bridge and coordinator URLs on loopback or HTTPS and require bearer credentials for remote services;

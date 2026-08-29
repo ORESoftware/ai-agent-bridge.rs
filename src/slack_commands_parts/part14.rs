@@ -60,7 +60,16 @@ mod preview_run_modal_tests {
 
     #[test]
     fn every_reviewed_command_resolves_to_a_modal() {
-        for command in ["/x-ores-claude", "/x-ores-chatgpt"] {
+        for command in [
+            "/ores-claude",
+            "/ores-chatgpt",
+            "/x-claude",
+            "/x-chatgpt",
+            "/my-claude",
+            "/my-chatgpt",
+            "/x-ores-claude",
+            "/x-ores-chatgpt",
+        ] {
             assert!(
                 preview_run_modal(
                     command,
@@ -72,7 +81,7 @@ mod preview_run_modal_tests {
                 "{command} must open the reviewed modal"
             );
         }
-        for command in ["/x-ores-gemini", "/ores-claude", "/x-claude", "/my-chatgpt"] {
+        for command in ["/x-ores-gemini", "/claude", "/xores-claude"] {
             assert!(
                 preview_run_modal(
                     command,

@@ -248,21 +248,23 @@ mod installed_app_contract_tests {
     }
 
     #[test]
-    fn retired_pre_namespace_commands_are_refused_at_the_envelope() {
+    fn workspace_aliases_are_accepted_when_the_path_provider_matches() {
         let config = unpinned_config();
-        for command in [
-            "%2Fores-claude",
-            "%2Fores-chatgpt",
-            "%2Fx-claude",
-            "%2Fx-chatgpt",
-            "%2Fmy-claude",
-            "%2Fmy-chatgpt",
+        for (command, ok, not_ok) in [
+            ("%2Fores-claude", Provider::Claude, Provider::Chatgpt),
+            ("%2Fx-claude", Provider::Claude, Provider::Chatgpt),
+            ("%2Fmy-claude", Provider::Claude, Provider::Chatgpt),
+            ("%2Fx-ores-claude", Provider::Claude, Provider::Chatgpt),
+            ("%2Fores-chatgpt", Provider::Chatgpt, Provider::Claude),
+            ("%2Fx-chatgpt", Provider::Chatgpt, Provider::Claude),
+            ("%2Fmy-chatgpt", Provider::Chatgpt, Provider::Claude),
+            ("%2Fx-ores-chatgpt", Provider::Chatgpt, Provider::Claude),
         ] {
             let body = format!(
                 "command={command}&team_id=T1&channel_id=C1&user_id=U1&text=test&trigger_id=1"
             );
-            assert!(validate_slash_envelope(&config, body.as_bytes(), Provider::Claude).is_err());
-            assert!(validate_slash_envelope(&config, body.as_bytes(), Provider::Chatgpt).is_err());
+            assert!(validate_slash_envelope(&config, body.as_bytes(), ok).is_ok());
+            assert!(validate_slash_envelope(&config, body.as_bytes(), not_ok).is_err());
         }
     }
 
@@ -270,38 +272,33 @@ mod installed_app_contract_tests {
     fn reviewed_manifest_keeps_exact_app_commands_and_routes() {
         let manifest = include_str!("../../slack-app/manifest.yaml");
         assert!(manifest.contains("name: alex-main-agent"));
-        for command in ["/x-ores-claude", "/x-ores-chatgpt"] {
+        for command in [
+            "/ores-claude",
+            "/ores-chatgpt",
+            "/x-claude",
+            "/x-chatgpt",
+            "/my-claude",
+            "/my-chatgpt",
+        ] {
             assert!(manifest.contains(&format!("command: {command}")));
         }
-        // One command, one request URL. Slack routes by path, and the service
-        // recovers the provider from that path, so a URL reused by a second
-        // command would silently cross providers.
+        // Six aliases share two provider URLs. Slack includes the real command
+        // name in the signed form; the service refuses a provider mismatch.
         assert_eq!(
             manifest
-                .matches("https://api.fiducia.cloud/slack/commands/x-ores-claude")
+                .matches("https://api.fiducia.cloud/slack/commands/ores-claude")
                 .count(),
-            1
+            3
         );
         assert_eq!(
             manifest
-                .matches("https://api.fiducia.cloud/slack/commands/x-ores-chatgpt")
+                .matches("https://api.fiducia.cloud/slack/commands/ores-chatgpt")
                 .count(),
-            1
+            3
         );
-        assert_eq!(manifest.matches("- command: ").count(), 2);
-        for retired in [
-            "command: /ores-claude",
-            "command: /ores-chatgpt",
-            "command: /x-claude",
-            "command: /x-chatgpt",
-            "command: /my-claude",
-            "command: /my-chatgpt",
-        ] {
-            assert!(
-                !manifest.contains(retired),
-                "{retired} was retired by the /x-ores-* namespace"
-            );
-        }
+        assert_eq!(manifest.matches("- command: ").count(), 6);
+        assert!(!manifest.contains("command: /x-ores-claude"));
+        assert!(!manifest.contains("command: /x-ores-chatgpt"));
         assert!(manifest.contains("https://api.fiducia.cloud/slack/interactions"));
         assert!(manifest.contains("token_rotation_enabled: true"));
         assert!(!manifest.contains("xoxb-"));

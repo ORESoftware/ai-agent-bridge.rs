@@ -88,8 +88,23 @@ enum Provider {
 impl Provider {
     fn from_command(command: &str) -> Option<Self> {
         match command.trim() {
-            "/x-ores-claude" => Some(Self::Claude),
-            "/x-ores-chatgpt" => Some(Self::Chatgpt),
+            "/ores-claude" | "/x-claude" | "/my-claude" | "/x-ores-claude" => Some(Self::Claude),
+            "/ores-chatgpt" | "/x-chatgpt" | "/my-chatgpt" | "/x-ores-chatgpt" => {
+                Some(Self::Chatgpt)
+            }
+            _ => None,
+        }
+    }
+
+    /// GitOps and `slack-ores-integrations` post to `/slack/commands/ores-*`.
+    /// A stale live app may still post to `/slack/commands/x-ores-*`. Both
+    /// families are accepted; the signed `command` field must still match.
+    fn from_request_path(path: &str) -> Option<Self> {
+        match path {
+            "/slack/commands/ores-claude" | "/slack/commands/x-ores-claude" => Some(Self::Claude),
+            "/slack/commands/ores-chatgpt" | "/slack/commands/x-ores-chatgpt" => {
+                Some(Self::Chatgpt)
+            }
             _ => None,
         }
     }
@@ -293,34 +308,47 @@ mod provider_command_namespace_tests {
 
     #[test]
     fn the_reviewed_namespace_maps_to_the_expected_provider() {
-        assert_eq!(
-            Provider::from_command("/x-ores-claude"),
-            Some(Provider::Claude)
-        );
-        assert_eq!(
-            Provider::from_command("/x-ores-chatgpt"),
-            Some(Provider::Chatgpt)
-        );
-    }
-
-    #[test]
-    fn retired_pre_namespace_commands_are_rejected() {
-        // Every name the workspace used before the /x-ores-* namespace. A stale
-        // manifest must fail closed rather than silently route to a provider.
+        for command in ["/ores-claude", "/x-claude", "/my-claude", "/x-ores-claude"] {
+            assert_eq!(
+                Provider::from_command(command),
+                Some(Provider::Claude),
+                "{command}"
+            );
+        }
         for command in [
-            "/ores-claude",
             "/ores-chatgpt",
-            "/x-claude",
             "/x-chatgpt",
-            "/my-claude",
             "/my-chatgpt",
+            "/x-ores-chatgpt",
         ] {
             assert_eq!(
                 Provider::from_command(command),
-                None,
-                "{command} was retired and must not resolve"
+                Some(Provider::Chatgpt),
+                "{command}"
             );
         }
+    }
+
+    #[test]
+    fn gitops_and_stale_live_paths_map_to_the_same_providers() {
+        assert_eq!(
+            Provider::from_request_path("/slack/commands/ores-claude"),
+            Some(Provider::Claude)
+        );
+        assert_eq!(
+            Provider::from_request_path("/slack/commands/x-ores-claude"),
+            Some(Provider::Claude)
+        );
+        assert_eq!(
+            Provider::from_request_path("/slack/commands/ores-chatgpt"),
+            Some(Provider::Chatgpt)
+        );
+        assert_eq!(
+            Provider::from_request_path("/slack/commands/x-ores-chatgpt"),
+            Some(Provider::Chatgpt)
+        );
+        assert_eq!(Provider::from_request_path("/slack/commands/x-claude"), None);
+        assert_eq!(Provider::from_request_path("/slack/commands/my-chatgpt"), None);
     }
 
     #[test]

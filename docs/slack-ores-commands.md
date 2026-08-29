@@ -2,13 +2,15 @@
 
 Tracking issues: `DEN-1041`, `DEN-1298`
 
-The `fiducia-slack-command` process accepts two reviewed command names, both in the `/x-ores-*` namespace. There are no aliases: one command, one request URL, one provider.
-
-The pre-namespace names `/ores-claude`, `/ores-chatgpt`, `/x-claude`, `/x-chatgpt`, `/my-claude`, and `/my-chatgpt` are retired. They are rejected at the envelope and their request URLs are no longer routed, so a stale manifest fails closed rather than silently reaching a provider.
+The `fiducia-slack-command` process accepts six reviewed command names. The `/ores-*` names are canonical; `/x-*` and `/my-*` are workspace convenience aliases that use the same provider, authorization, routing, budgets, and write policy. A stale live app that still posts `/x-ores-*` to `/slack/commands/x-ores-*` is also accepted so dispatch does not fail closed during manifest rollout.
 
 ```text
-/x-ores-claude [task]
-/x-ores-chatgpt [task]
+/ores-claude [task]
+/ores-chatgpt [task]
+/x-claude [task]
+/x-chatgpt [task]
+/my-claude [task]
+/my-chatgpt [task]
 ```
 
 ## How to invoke the app
@@ -58,8 +60,12 @@ Both commands belong to the same reviewed Slack app, and each has its own reques
 
 | Command | Request URL |
 |---|---|
-| `/x-ores-claude` | `https://api.fiducia.cloud/slack/commands/x-ores-claude` |
-| `/x-ores-chatgpt` | `https://api.fiducia.cloud/slack/commands/x-ores-chatgpt` |
+| `/ores-claude` | `https://api.fiducia.cloud/slack/commands/ores-claude` |
+| `/x-claude` | `https://api.fiducia.cloud/slack/commands/ores-claude` |
+| `/my-claude` | `https://api.fiducia.cloud/slack/commands/ores-claude` |
+| `/ores-chatgpt` | `https://api.fiducia.cloud/slack/commands/ores-chatgpt` |
+| `/x-chatgpt` | `https://api.fiducia.cloud/slack/commands/ores-chatgpt` |
+| `/my-chatgpt` | `https://api.fiducia.cloud/slack/commands/ores-chatgpt` |
 
 Configure the interactivity request URL as:
 
@@ -148,7 +154,7 @@ The image defaults to port `8151`, context depth `5`, and `SLACK_COMMAND_DRY_RUN
 
 Do not enable live mode until all of these are true:
 
-- the remote Slack app manifest contains exactly the two `/x-ores-*` commands, no retired names, and the interactivity URL;
+- the remote Slack app manifest contains the six reviewed aliases, the two canonical provider URLs, and the interactivity URL;
 - app `A0BMBAMM5NJ` is reinstalled to workspace `T01B3C83PMK` after manifest changes;
 - Slack signatures and stale/replayed requests fail closed;
 - the exact ORESoftware workspace/channel/user IDs are in a reviewed registry;

@@ -199,7 +199,7 @@ mod alias_http_contract_tests {
     }
 
     #[tokio::test]
-    async fn the_reviewed_namespace_uses_exactly_two_http_routes() {
+    async fn gitops_and_stale_live_paths_accept_matching_commands() {
         let (mock_base, mock) = spawn_mock().await;
         let (service_base, _) = spawn_command_service(&mock_base).await;
         let client = reqwest::Client::new();
@@ -214,6 +214,10 @@ mod alias_http_contract_tests {
                 "/slack/commands/x-ores-chatgpt",
                 "ChatGPT",
             ),
+            ("%2Fores-claude", "/slack/commands/ores-claude", "Claude"),
+            ("%2Fores-chatgpt", "/slack/commands/ores-chatgpt", "ChatGPT"),
+            ("%2Fx-claude", "/slack/commands/ores-claude", "Claude"),
+            ("%2Fmy-chatgpt", "/slack/commands/ores-chatgpt", "ChatGPT"),
         ];
 
         for (index, (command, endpoint, provider)) in cases.into_iter().enumerate() {
@@ -235,9 +239,9 @@ mod alias_http_contract_tests {
                 .contains(&format!("Accepted {provider} run")));
         }
 
-        wait_for_messages(&mock.messages, 2).await;
+        wait_for_messages(&mock.messages, 6).await;
         let messages = mock.messages.lock().await;
-        assert_eq!(messages.len(), 2);
+        assert_eq!(messages.len(), 6);
         assert_eq!(
             messages
                 .iter()
@@ -246,7 +250,7 @@ mod alias_http_contract_tests {
                     .unwrap()
                     .contains("Dry-run Claude task"))
                 .count(),
-            1
+            3
         );
         assert_eq!(
             messages
@@ -256,7 +260,7 @@ mod alias_http_contract_tests {
                     .unwrap()
                     .contains("Dry-run ChatGPT task"))
                 .count(),
-            1
+            3
         );
         for message in messages.iter() {
             assert_eq!(message["channel"], "C1");
@@ -279,9 +283,8 @@ mod alias_http_contract_tests {
         for (command, endpoint) in [
             ("%2Fx-ores-chatgpt", "/slack/commands/x-ores-claude"),
             ("%2Fx-ores-claude", "/slack/commands/x-ores-chatgpt"),
-            // Retired names must fail at the envelope, not fall through.
-            ("%2Fores-claude", "/slack/commands/x-ores-claude"),
-            ("%2Fmy-chatgpt", "/slack/commands/x-ores-chatgpt"),
+            ("%2Fores-chatgpt", "/slack/commands/ores-claude"),
+            ("%2Fmy-chatgpt", "/slack/commands/ores-claude"),
         ] {
             let body = format!(
                 "command={command}&team_id=T1&channel_id=C1&user_id=U1&text=must-not-run&trigger_id=mismatch"
@@ -293,7 +296,7 @@ mod alias_http_contract_tests {
                 .send()
                 .await
                 .unwrap();
-            // Provider-confused and retired command names are invalid ingress
+            // Provider-confused command names are invalid ingress
             // envelopes, not authenticated user-facing outcomes. They must be
             // rejected at the HTTP boundary so callers and observability never
             // mistake them for accepted Slack commands.
@@ -303,24 +306,23 @@ mod alias_http_contract_tests {
         }
 
         let alias_body = "command=%2Fx-ores-claude&team_id=T1&channel_id=C1&user_id=U1&text=must-not-run&trigger_id=alias-path";
-        // Every pre-namespace request URL must be gone from the router.
-        for retired_path in [
-            "/slack/commands/ores-claude",
-            "/slack/commands/ores-chatgpt",
+        // Command names are not HTTP paths. /x-claude posts to ores-claude.
+        for missing_path in [
             "/slack/commands/x-claude",
             "/slack/commands/my-chatgpt",
+            "/slack/commands/x-ores-gemini",
         ] {
-            let retired = client
-                .post(format!("{service_base}{retired_path}"))
+            let missing = client
+                .post(format!("{service_base}{missing_path}"))
                 .headers(signed_headers(alias_body, Utc::now().timestamp()))
                 .body(alias_body)
                 .send()
                 .await
                 .unwrap();
             assert_eq!(
-                retired.status(),
+                missing.status(),
                 reqwest::StatusCode::NOT_FOUND,
-                "{retired_path} must no longer be routed"
+                "{missing_path} must not be routed"
             );
         }
 
