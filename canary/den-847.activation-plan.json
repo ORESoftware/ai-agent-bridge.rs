@@ -1,0 +1,65 @@
+{
+  "schemaVersion": "ai-agent-bridge.activation-canary.v1",
+  "ticket": "DEN-847",
+  "enabled": false,
+  "activationBlocked": true,
+  "provider": {
+    "count": 1,
+    "providerId": null,
+    "credentialReference": null
+  },
+  "runner": {
+    "activeReplicas": 1,
+    "rollbackReplicas": 0,
+    "imageDigest": null,
+    "scaleToZeroOnAnyFailure": true
+  },
+  "preconditions": {
+    "DEN-845": false,
+    "DEN-391": false,
+    "DEN-680": false,
+    "DEN-1227": false,
+    "DEN-287": false,
+    "DEN-523": false,
+    "DEN-601": false
+  },
+  "budgets": {
+    "maxProviderCalls": 12,
+    "maxCostUsdMicros": 5000000,
+    "maxWallClockSeconds": 1800,
+    "maxPromptBytes": 8192,
+    "maxOutputBytes": 65536
+  },
+  "workflowModes": [
+    "single",
+    "sequential",
+    "competitive",
+    "consensus",
+    "blind_competition"
+  ],
+  "failureDrills": [
+    "cancellation",
+    "provider_failure",
+    "budget_exhaustion",
+    "lease_loss",
+    "stale_claim",
+    "runner_drain",
+    "bridge_restart"
+  ],
+  "requiredEvidence": [
+    "admission_record",
+    "provider_reservation",
+    "normalized_usage",
+    "submission_record",
+    "lease_lifecycle",
+    "claim_lifecycle",
+    "readiness_transition",
+    "scale_to_zero"
+  ],
+  "fixturePolicy": {
+    "fixtureIdPrefix": "canary:den-847:",
+    "allowRepositoryWrites": false,
+    "allowPromptOrOutputInEvidence": false,
+    "allowCredentialValues": false
+  }
+}
