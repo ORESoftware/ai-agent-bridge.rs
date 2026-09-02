@@ -1,0 +1,49 @@
+name: Deprecation guard
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - chore/deprecate-in-favor-of-agent-pontifex
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify deprecation policy remains first and actionable
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          expectations = {
+              Path('README.md'): (
+                  '<!-- ores-deprecated: agent-pontifex -->',
+                  'https://github.com/agent-pontifex',
+              ),
+              Path('AGENTS.md'): (
+                  '<!-- ores-deprecated-agents: agent-pontifex -->',
+                  'https://github.com/agent-pontifex',
+              ),
+          }
+
+          for path, (marker, replacement) in expectations.items():
+              if not path.is_file():
+                  raise SystemExit(f'{path} is required')
+              text = path.read_text(encoding='utf-8')
+              if not text.startswith(marker):
+                  raise SystemExit(f'{path} must begin with {marker}')
+              if replacement not in text[:2000]:
+                  raise SystemExit(f'{path} must name the canonical replacement near the top')
+          PY
