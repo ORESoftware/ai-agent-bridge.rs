@@ -11,9 +11,19 @@
     "test:registry": "playwright test specs/registry.spec.mjs",
     "test:slack-ingress": "playwright test specs/slack-ingress.spec.mjs",
     "test:slack-bridge-events": "playwright test specs/slack-bridge-events.spec.mjs",
-    "test:modal": "playwright test specs/modal.spec.mjs"
+    "test:modal": "playwright test specs/modal.spec.mjs",
+    "lint:ores": "if [ -f ../../.ores-lint/lint.sh ]; then sh ../../.ores-lint/lint.sh; else echo 'ores-lint not installed'; fi",
+    "prepublishOnly": "npm run lint:ores"
   },
   "devDependencies": {
     "@playwright/test": "1.55.0"
+  },
+  "oresLint": {
+    "note": "Declared, not installed. ores-lint resolves these from a global install - see .ores-lint/README.md",
+    "requires": {
+      "eslint": ">=9",
+      "typescript-eslint": ">=8 (optional; without it .ts files are skipped)"
+    },
+    "install": "npm i -g eslint typescript-eslint"
   }
 }
