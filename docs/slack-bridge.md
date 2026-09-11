@@ -13,8 +13,8 @@ The adapter creates one `competitive` workflow with `worker_count=2`, polls the
 authoritative workflow record, and posts one deterministic, labeled reply for
 each configured identity to the originating `channel` and `thread_ts`.
 
-For the one-model-at-a-time surface driven by slash commands — `/ores-claude`
-and `/ores-chatgpt`, with `/my-claude` and `/my-chatgpt` accepted as aliases —
+For the one-model-at-a-time surface driven by slash commands — `/x-ores-claude`
+and `/x-ores-chatgpt` (the pre-namespace aliases are retired) —
 see [`slack-ores-commands.md`](./slack-ores-commands.md). That surface runs as
 its own `fiducia-slack-command` service rather than on this adapter, but applies
 the same signature, replay, allowlist and idempotency rules.

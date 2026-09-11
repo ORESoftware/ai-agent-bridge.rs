@@ -103,6 +103,16 @@ impl RetryPolicies {
         Self::from_optional_json(providers, raw.as_deref())
     }
 
+    /// Test-only constructor so sibling runner test modules can build
+    /// validated policies from explicit JSON without environment mutation.
+    #[cfg(test)]
+    pub(crate) fn from_json_for_test(
+        providers: &[ProviderWorker],
+        raw: &str,
+    ) -> Result<Self, RetryConfigError> {
+        Self::from_optional_json(providers, Some(raw))
+    }
+
     fn from_optional_json(
         providers: &[ProviderWorker],
         raw: Option<&str>,

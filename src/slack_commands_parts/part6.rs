@@ -25,13 +25,7 @@ pub async fn run() -> anyhow::Result<()> {
     configured_slack_identity(&app.config)
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let listener = TcpListener::bind(address).await?;
-    info!(
-        %address,
-        dry_run = app.config.dry_run,
-        socket_mode = app.config.socket_mode,
-        "starting ORESoftware Slack commands"
-    );
-
+    info!(%address, dry_run = app.config.dry_run, "starting ORESoftware Slack commands");
     // Socket Mode is additive: the HTTP listener still serves health and
     // readiness for the orchestrator, and the Request URL routes stay mounted so
     // a deployment can move between transports without a code change.
@@ -47,8 +41,9 @@ fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/readyz", get(ready))
-        .route("/slack/commands/ores-claude", post(command))
-        .route("/slack/commands/ores-chatgpt", post(command))
+        .route("/metrics", get(metrics))
+        .route("/slack/commands/x-ores-claude", post(command))
+        .route("/slack/commands/x-ores-chatgpt", post(command))
         .route("/slack/interactions", post(interaction))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(TraceLayer::new_for_http())
@@ -60,17 +55,53 @@ async fn health() -> Json<Value> {
     Json(json!({"ok": true}))
 }
 
+async fn metrics(State(app): State<Arc<App>>) -> impl IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        render_command_metrics(&app, unix_now()),
+    )
+}
+
 async fn ready(State(app): State<Arc<App>>) -> Response {
     match configured_slack_identity(&app.config) {
-        Ok(identity) => json_response(
-            StatusCode::OK,
-            json!({
-                "ok": true,
-                "dry_run": app.config.dry_run,
-                "default_context_messages": app.config.context_messages,
-                "installed_app_identity_enforced": identity.is_some()
-            }),
-        ),
+        Ok(identity) => {
+            let connected = app.socket_connected.load(Ordering::SeqCst);
+            let last_frame_at = app.last_frame_at.load(Ordering::SeqCst);
+            if !socket_mode_ready(
+                app.config.socket_mode,
+                connected,
+                last_frame_at,
+                unix_now(),
+                SOCKET_MODE_READY_STALE,
+            ) {
+                return json_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({
+                        "ok": false,
+                        "error": "slack_socket_mode_unavailable",
+                        "socket_connected": connected,
+                        "socket_last_frame_age_seconds": socket_last_frame_age_seconds(
+                            last_frame_at,
+                            unix_now()
+                        )
+                    }),
+                );
+            }
+            json_response(
+                StatusCode::OK,
+                json!({
+                    "ok": true,
+                    "dry_run": app.config.dry_run,
+                    "default_context_messages": app.config.context_messages,
+                    "installed_app_identity_enforced": identity.is_some(),
+                    "socket_mode": app.config.socket_mode,
+                    "socket_connected": connected
+                }),
+            )
+        }
         Err(_) => json_response(
             StatusCode::SERVICE_UNAVAILABLE,
             json!({
@@ -88,39 +119,31 @@ async fn command(
     body: Bytes,
 ) -> Response {
     if !verify_signature(&app.config, &headers, &body, Utc::now().timestamp()) {
-        return ephemeral(StatusCode::UNAUTHORIZED, "Request authentication failed.");
+        emit_metric("denied_signature");
+        return reject(StatusCode::UNAUTHORIZED);
     }
     let expected_provider = match uri.path() {
-        "/slack/commands/ores-claude" => Provider::Claude,
-        "/slack/commands/ores-chatgpt" => Provider::Chatgpt,
-        _ => return ephemeral(StatusCode::NOT_FOUND, "Unknown Slack command endpoint."),
+        "/slack/commands/x-ores-claude" => Provider::Claude,
+        "/slack/commands/x-ores-chatgpt" => Provider::Chatgpt,
+        _ => return reject(StatusCode::NOT_FOUND),
     };
     match validate_slash_envelope(&app.config, &body, expected_provider) {
         Ok(()) => {}
-        Err(Error::Config(_)) => {
-            return ephemeral(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "The installed Slack app identity is not configured safely.",
-            )
-        }
-        Err(Error::Policy) => {
-            return ephemeral(
-                StatusCode::FORBIDDEN,
-                "This request did not originate from the installed Slack app and workspace.",
-            )
-        }
-        Err(_) => return ephemeral(StatusCode::BAD_REQUEST, "Invalid slash command payload."),
+        Err(error) => return slash_envelope_error(&error),
     }
     let command = match SlashCommand::parse(&body) {
         Ok(command) => command,
-        Err(_) => return ephemeral(StatusCode::BAD_REQUEST, "Invalid slash command payload."),
+        Err(_) => {
+            emit_metric("denied_malformed");
+            return ephemeral("Invalid slash command payload.");
+        }
     };
     match tokio::time::timeout(SLACK_ACK_DEADLINE, handle_command(app, command)).await {
         Ok(response) => response,
-        Err(_) => ephemeral(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "The command could not be acknowledged safely before Slack's deadline.",
-        ),
+        Err(_) => {
+            emit_metric("ack_timeout");
+            ephemeral("The command could not be acknowledged safely before Slack's deadline.")
+        }
     }
 }
 
@@ -128,123 +151,304 @@ async fn handle_command(app: Arc<App>, command: SlashCommand) -> Response {
     if command.text.trim().is_empty() {
         return match app.command_binding(&command).await {
             Ok(binding) => match app.open_modal(&command, &binding).await {
-                Ok(()) => json_response(StatusCode::OK, json!({})),
-                Err(Error::Policy) => ephemeral(
-                    StatusCode::FORBIDDEN,
-                    "This channel or user is not authorized.",
-                ),
-                Err(_) => ephemeral(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "The agent menu could not be opened safely.",
-                ),
+                Ok(()) => {
+                    emit_metric("modal_opened");
+                    json_response(StatusCode::OK, json!({}))
+                }
+                Err(Error::Policy) => {
+                    emit_metric("denied_policy");
+                    reject(StatusCode::FORBIDDEN)
+                }
+                Err(_) => {
+                    emit_metric("modal_error");
+                    ephemeral("The agent menu could not be opened safely.")
+                }
             },
-            Err(Error::Policy) => ephemeral(
-                StatusCode::FORBIDDEN,
-                "This channel or user is not authorized.",
-            ),
-            Err(_) => ephemeral(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "The agent menu could not be opened safely.",
-            ),
+            Err(Error::Policy) => {
+                emit_metric("denied_policy");
+                reject(StatusCode::FORBIDDEN)
+            }
+            Err(_) => {
+                emit_metric("modal_error");
+                ephemeral("The agent menu could not be opened safely.")
+            }
         };
     }
     let request = match RunRequest::direct(&command, app.config.context_messages) {
         Ok(request) => request,
         Err(_) => {
-            return ephemeral(
-                StatusCode::BAD_REQUEST,
-                "Provide a bounded task after the command.",
-            )
+            emit_metric("denied_malformed");
+            return ephemeral("Provide a bounded task after the command.");
         }
     };
-    match app.resolve(&request).await {
-        Ok(_) => accept(app, request),
-        Err(Error::Policy) => ephemeral(
-            StatusCode::FORBIDDEN,
-            "This channel, user, repository, or write scope is not authorized.",
-        ),
-        Err(_) => ephemeral(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "The task could not be authorized safely.",
-        ),
+    // Bind before matching. Temporaries in a match scrutinee live until the end
+    // of the match, so the future returned by `resolve` would still borrow
+    // `*app` inside the arms -- and an arm moves `app` into `accept`.
+    let authorized = app.resolve(&request).await;
+    match authorized {
+        Ok(_) => {
+            let accepted = accept(app, request).await;
+            emit_metric(accepted.metric());
+            ephemeral(&accepted.message())
+        }
+        Err(Error::Policy) => {
+            emit_metric("denied_policy");
+            reject(StatusCode::FORBIDDEN)
+        }
+        Err(_) => {
+            emit_metric("denied_config");
+            ephemeral("The task could not be authorized safely.")
+        }
     }
 }
 
 async fn interaction(State(app): State<Arc<App>>, headers: HeaderMap, body: Bytes) -> Response {
     if !verify_signature(&app.config, &headers, &body, Utc::now().timestamp()) {
-        return json_response(StatusCode::UNAUTHORIZED, json!({}));
+        emit_metric("denied_signature");
+        return reject(StatusCode::UNAUTHORIZED);
     }
     let payload = match parse_interaction_envelope(&app.config, &body) {
         Ok(payload) => payload,
-        Err(Error::Config(_)) => {
-            return json_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                json!({"error": "installed_slack_app_identity_not_configured"}),
-            )
-        }
-        Err(Error::Policy) => return json_response(StatusCode::FORBIDDEN, json!({})),
-        Err(_) => return json_response(StatusCode::BAD_REQUEST, json!({})),
+        Err(error) => return interaction_envelope_error(&error),
     };
+    handle_interaction(app, payload).await
+}
+
+/// A `view_submission` reply is always HTTP 200 -- Slack reads `response_action`
+/// from the body, and a non-200 leaves the modal open with a generic failure.
+fn interaction_envelope_error(error: &Error) -> Response {
+    let text = match error {
+        Error::Config(_) => "The installed Slack app identity is not configured safely.",
+        Error::Policy => "This request did not originate from the installed Slack app and workspace.",
+        _ => "The submitted form could not be read.",
+    };
+    view_error("task", text)
+}
+
+fn view_error(block: &str, text: &str) -> Response {
+    json_response(
+        StatusCode::OK,
+        json!({"response_action": "errors", "errors": {block: text}}),
+    )
+}
+
+/// The whole modal-submission path, shared by both transports.
+///
+/// This used to live inline in the HTTP handler, which is why Socket Mode --
+/// the transport actually running in production -- silently dropped every
+/// submission: its `"interactive"` arm had nothing to call.
+async fn handle_interaction(app: Arc<App>, payload: InteractionPayload) -> Response {
     let request = match RunRequest::interaction(payload) {
         Ok(request) => request,
-        Err(_) => return json_response(StatusCode::BAD_REQUEST, json!({})),
-    };
-    let authorized = match tokio::time::timeout(SLACK_ACK_DEADLINE, app.resolve(&request)).await {
-        Ok(result) => result,
         Err(_) => {
-            return json_response(
-                StatusCode::OK,
-                json!({"response_action": "errors", "errors": {"task": "Authorization did not finish before Slack's acknowledgement deadline."}}),
-            )
+            emit_metric("denied_malformed");
+            return view_error("task", "The submitted form could not be read.");
         }
     };
-    let accepted = match authorized {
-        Ok(_) => accept(app, request),
-        Err(_) => ephemeral(StatusCode::FORBIDDEN, "The submitted scope is not authorized."),
-    };
-    if accepted.status() == StatusCode::OK {
-        json_response(StatusCode::OK, json!({}))
-    } else {
-        json_response(
-            StatusCode::OK,
-            json!({"response_action": "errors", "errors": {"task": "The run could not be accepted safely."}}),
-        )
+    // The deadline must cover the run claim too, not just the policy resolve:
+    // the claim writes and fsyncs a journal entry, and an unbounded tail here
+    // is what actually blows Slack's 3s acknowledgement window.
+    let outcome = tokio::time::timeout(SLACK_ACK_DEADLINE, async {
+        let authorized = app.resolve(&request).await;
+        match authorized {
+            Ok(_) => Ok(accept(app, request).await),
+            Err(error) => Err(error),
+        }
+    })
+    .await;
+
+    match outcome {
+        Err(_) => {
+            emit_metric("ack_timeout");
+            view_error(
+                "task",
+                "Authorization did not finish before Slack's acknowledgement deadline.",
+            )
+        }
+        Ok(Err(Error::Policy)) => {
+            emit_metric("denied_policy");
+            view_error(
+                "write_scope",
+                "This channel, user, repository, or write scope is not authorized.",
+            )
+        }
+        Ok(Err(_)) => {
+            emit_metric("denied_config");
+            view_error("task", "The task could not be authorized safely.")
+        }
+        // Slack gives a successful submission no signal beyond the modal
+        // closing, which is indistinguishable from the submission being
+        // dropped. The in-channel dispatch post is currently the only
+        // confirmation; a chat.postEphemeral to the submitter is still owed.
+        Ok(Ok(accepted)) if accepted.is_started() => {
+            emit_metric(accepted.metric());
+            json_response(StatusCode::OK, json!({}))
+        }
+        Ok(Ok(accepted)) => {
+            emit_metric(accepted.metric());
+            view_error(accepted.modal_block(), &accepted.message())
+        }
     }
 }
 
-fn accept(app: Arc<App>, request: RunRequest) -> Response {
+/// What `accept` decided. Deliberately not a `Response`.
+///
+/// Slack renders a slash command body only on HTTP 200, so the outcome cannot
+/// be carried in the status code. It also has to be rendered two different ways
+/// -- as an ephemeral message for a slash command, and as a `view_submission`
+/// reply for a modal -- so the decision and its presentation are separated.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Accepted {
+    Started {
+        run_id: String,
+        provider: &'static str,
+        dry_run: bool,
+    },
+    Duplicate {
+        run_id: String,
+    },
+    AtCapacity,
+    JournalUnavailable,
+}
+
+impl Accepted {
+    fn is_started(&self) -> bool {
+        matches!(self, Self::Started { .. })
+    }
+
+    /// The text a person sees. Every one of these is delivered with HTTP 200,
+    /// because Slack discards the body of anything else.
+    fn message(&self) -> String {
+        match self {
+            Self::Started {
+                run_id,
+                provider,
+                dry_run: false,
+            } => format!(
+                "Accepted {provider} run `{run_id}`. IDs and progress will be posted in-channel."
+            ),
+            // The dry-run marker belongs in the acknowledgement the user
+            // actually reads. It used to appear only in a separate in-channel
+            // post, so a failure to post left them holding an "Accepted" that
+            // read as real work.
+            Self::Started {
+                run_id,
+                provider,
+                dry_run: true,
+            } => format!(
+                "Accepted {provider} run `{run_id}` — dry run, no external writes will be performed."
+            ),
+            Self::Duplicate { run_id } => {
+                format!("Run `{run_id}` was already accepted.")
+            }
+            Self::AtCapacity => "The agent queue is at capacity. Try again shortly.".into(),
+            Self::JournalUnavailable => {
+                "The durable run journal is unavailable, so the run was not started.".into()
+            }
+        }
+    }
+
+    fn metric(&self) -> &'static str {
+        match self {
+            Self::Started { .. } => "accepted",
+            Self::Duplicate { .. } => "duplicate",
+            Self::AtCapacity => "at_capacity",
+            Self::JournalUnavailable => "journal_failure",
+        }
+    }
+
+    /// Which modal input to attach a failure to. Attaching everything to the
+    /// task field puts the red note under the textarea while the offending
+    /// control sits further down, unmarked.
+    fn modal_block(&self) -> &'static str {
+        // Every current outcome is about the run as a whole rather than about
+        // one input, so they all attach to the task field. Scope-specific
+        // denials should attach to `write_scope` or `repository` once the
+        // registry's reason survives that far -- see DEN-3898.
+        "task"
+    }
+}
+
+async fn accept(app: Arc<App>, request: RunRequest) -> Accepted {
+    // Answer a duplicate truthfully *before* reserving capacity. Replying
+    // "queue is at capacity" to an already-claimed delivery invites another
+    // delivery of work that is already running — retry amplification exactly
+    // when the service is saturated.
+    match journal({
+        let app = app.clone();
+        let run_id = request.run_id.clone();
+        move || Ok(app.claimed(&run_id))
+    })
+    .await
+    {
+        Ok(true) => {
+            return Accepted::Duplicate {
+                run_id: request.run_id,
+            }
+        }
+        Ok(false) => {}
+        Err(()) => return Accepted::JournalUnavailable,
+    }
+
     let permit = match app.capacity.clone().try_acquire_owned() {
         Ok(permit) => permit,
-        Err(_) => {
-            return ephemeral(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "The agent queue is at capacity.",
-            )
-        }
+        Err(_) => return Accepted::AtCapacity,
     };
-    match app.claim(&request) {
-        Ok(false) => ephemeral(
-            StatusCode::OK,
-            &format!("Run `{}` was already accepted.", request.run_id),
-        ),
-        Err(_) => ephemeral(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "The durable run journal is unavailable.",
-        ),
+
+    let claimed = journal({
+        let app = app.clone();
+        let request = request.clone();
+        move || app.claim(&request)
+    })
+    .await;
+
+    match claimed {
+        Ok(false) => Accepted::Duplicate {
+            run_id: request.run_id,
+        },
+        Err(()) => Accepted::JournalUnavailable,
         Ok(true) => {
             let run_id = request.run_id.clone();
             let provider = request.provider.label();
+            let dry_run = app.config.dry_run;
             tokio::spawn(async move {
                 let _permit = permit;
-                if let Err(error) = dispatch(&app, &request).await {
-                    warn!(run_id = %request.run_id, error = %error, "Slack agent dispatch failed");
+                match dispatch(&app, &request).await {
+                    Ok(()) if app.config.dry_run => emit_metric("dry_run"),
+                    Ok(()) => emit_metric("dispatch_succeeded"),
+                    Err(error) => {
+                        emit_metric("dispatch_failed");
+                        warn!(
+                            run_id = %request.run_id,
+                            team_id = %request.team_id,
+                            channel_id = %request.channel_id,
+                            user_id = %request.user_id,
+                            error = %error,
+                            "Slack agent dispatch failed",
+                        );
+                    }
                 }
             });
-            ephemeral(
-                StatusCode::OK,
-                &format!("Accepted {provider} run `{run_id}`. IDs and progress will be posted in-channel."),
-            )
+            Accepted::Started {
+                run_id,
+                provider,
+                dry_run,
+            }
         }
+    }
+}
+
+/// Run a blocking run-journal operation off the async runtime. `claim` opens a
+/// file and fsyncs; `tokio::time::timeout` cannot preempt a blocking syscall,
+/// so doing this inline would let a slow disk blow Slack's 3s deadline and
+/// stall unrelated requests sharing the worker thread.
+async fn journal<F>(operation: F) -> std::result::Result<bool, ()>
+where
+    F: FnOnce() -> Result<bool> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(operation).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(_)) | Err(_) => Err(()),
     }
 }
 
@@ -285,8 +489,62 @@ fn json_response(status: StatusCode, body: Value) -> Response {
     (status, Json(body)).into_response()
 }
 
-fn ephemeral(status: StatusCode, text: &str) -> Response {
-    json_response(status, json!({"response_type": "ephemeral", "text": text}))
+/// A reply meant for a person.
+///
+/// Always HTTP 200. Slack renders a slash command's response body *only* on
+/// 200 -- "Any other flavor of response will result in a user-facing error" --
+/// so a carefully worded 403 reaches the user as `http_status_code_403` and the
+/// text is discarded. Every diagnostic here was invisible for exactly that
+/// reason. The outcome travels in the body.
+fn ephemeral(text: &str) -> Response {
+    json_response(StatusCode::OK, json!({"response_type": "ephemeral", "text": text}))
+}
+
+/// A refusal aimed at Slack rather than at a person. No body is rendered, so
+/// nothing is lost by using a real status code -- and an unauthenticated caller
+/// should not be told why it failed.
+fn reject(status: StatusCode) -> Response {
+    json_response(status, json!({}))
+}
+
+/// Reject an invalid slash-command envelope before any user-facing policy
+/// work begins. These responses are security boundaries, not Slack messages:
+/// returning HTTP 200 would make a wrong app, provider-confused route, or
+/// ambiguous form look accepted to callers and observability.
+fn slash_envelope_error(error: &Error) -> Response {
+    let status = match error {
+        Error::Config(_) => {
+            emit_metric("denied_config");
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        Error::Policy => {
+            emit_metric("denied_policy");
+            StatusCode::FORBIDDEN
+        }
+        _ => {
+            emit_metric("denied_malformed");
+            StatusCode::BAD_REQUEST
+        }
+    };
+    reject(status)
+}
+
+/// Render a remote-controlled string safe for a structured log line: no
+/// newlines or control characters that could forge a log record, and bounded
+/// so a misbehaving downstream cannot flood the log pipeline.
+fn log_safe(value: &str) -> String {
+    let cleaned = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | ':' | ' ')
+            {
+                character
+            } else {
+                '?'
+            }
+        })
+        .collect::<String>();
+    truncate(&cleaned, 64)
 }
 
 fn truncate(value: &str, maximum_bytes: usize) -> String {
@@ -300,6 +558,91 @@ fn truncate(value: &str, maximum_bytes: usize) -> String {
     value[..boundary].to_string()
 }
 
+/// Every outcome this adapter can record, declared up front so `/metrics`
+/// exposes a zero series for outcomes that have not happened yet. A counter
+/// that only appears after its first occurrence cannot be alerted on, because
+/// the absence of the series is indistinguishable from the absence of scraping.
+const COMMAND_METRIC_OUTCOMES: [&str; 19] = [
+    "accepted",
+    "ack_timeout",
+    "at_capacity",
+    "denied_config",
+    "denied_malformed",
+    "denied_policy",
+    "denied_signature",
+    "dispatch_failed",
+    "dispatch_succeeded",
+    "dry_run",
+    "duplicate",
+    "journal_failure",
+    "modal_error",
+    "modal_opened",
+    "socket_handshake_failed",
+    "socket_idle_timeout",
+    "socket_reconnect",
+    "socket_recycle",
+    "socket_refused",
+];
+
+static COMMAND_METRICS: std::sync::OnceLock<Mutex<BTreeMap<&'static str, u64>>> =
+    std::sync::OnceLock::new();
+
+fn command_metrics() -> &'static Mutex<BTreeMap<&'static str, u64>> {
+    COMMAND_METRICS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn emit_metric(outcome: &'static str) {
+    debug_assert!(
+        COMMAND_METRIC_OUTCOMES.contains(&outcome),
+        "outcome {outcome} is missing from COMMAND_METRIC_OUTCOMES, so /metrics would omit its zero series"
+    );
+    *command_metrics().lock().entry(outcome).or_insert(0) += 1;
+    info!(
+        target: "fiducia.slack_command.metrics",
+        metric = "slack_command_requests_total",
+        outcome,
+        value = 1_u64
+    );
+}
+
+/// Renders command outcomes and Socket Mode liveness in Prometheus text format.
+///
+/// Metadata only: outcome labels are a closed set of internal identifiers, so
+/// no Slack identifier, prompt text, or channel content can reach a scrape.
+fn render_command_metrics(app: &App, now: u64) -> String {
+    let counts = command_metrics().lock().clone();
+    let mut out = String::from(
+        "# HELP slack_command_requests_total Slack command ingress by terminal outcome.\n\
+         # TYPE slack_command_requests_total counter\n",
+    );
+    for outcome in COMMAND_METRIC_OUTCOMES {
+        let value = counts.get(outcome).copied().unwrap_or(0);
+        out.push_str(&format!(
+            "slack_command_requests_total{{outcome=\"{outcome}\"}} {value}\n"
+        ));
+    }
+    let connected = if app.socket_connected.load(Ordering::SeqCst) {
+        1
+    } else {
+        0
+    };
+    let last_frame_at = app.last_frame_at.load(Ordering::SeqCst);
+    let age = socket_last_frame_age_seconds(last_frame_at, now);
+    out.push_str(
+        "# HELP slack_command_socket_connected Whether the Slack Socket Mode websocket can receive events.\n\
+         # TYPE slack_command_socket_connected gauge\n",
+    );
+    out.push_str(&format!("slack_command_socket_connected {connected}\n"));
+    out.push_str(
+        "# HELP slack_command_socket_last_frame_age_seconds Seconds since the last inbound Socket Mode frame.\n\
+         # TYPE slack_command_socket_last_frame_age_seconds gauge\n",
+    );
+    out.push_str(&format!(
+        "slack_command_socket_last_frame_age_seconds {age}\n"
+    ));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,7 +650,7 @@ mod tests {
     #[test]
     fn parses_exact_commands() {
         let command = SlashCommand::parse(
-            b"command=%2Fores-claude&team_id=T1&channel_id=C1&user_id=U1&text=fix+DEN-1041&trigger_id=1.2",
+            b"command=%2Fx-ores-claude&team_id=T1&channel_id=C1&user_id=U1&text=fix+DEN-1041&trigger_id=1.2",
         )
         .expect("valid command");
         assert_eq!(command.provider(), Provider::Claude);
@@ -342,5 +685,124 @@ mod tests {
         );
         assert!(slack_api_base_url("https://attacker.example/api").is_err());
         assert!(slack_api_base_url("http://slack.com/api").is_err());
+    }
+}
+
+#[cfg(test)]
+mod log_safety_tests {
+    use super::*;
+
+    #[test]
+    fn a_downstream_cannot_forge_log_records_or_flood_the_pipeline() {
+        let forged = "not_authed\n2026-08-22 ERROR fabricated line";
+        let rendered = log_safe(forged);
+        assert!(!rendered.contains('\n'));
+        assert!(rendered.starts_with("not_authed"));
+
+        let flood = "a".repeat(4_096);
+        assert!(log_safe(&flood).len() <= 64);
+    }
+
+    #[test]
+    fn ordinary_slack_error_codes_survive_unchanged() {
+        for code in ["not_authed", "channel_not_found", "ratelimited", "invalid_auth"] {
+            assert_eq!(log_safe(code), code);
+        }
+    }
+}
+
+#[cfg(test)]
+mod reply_contract_tests {
+    use super::*;
+
+    /// Slack renders a slash command's response body only on HTTP 200 --
+    /// "Any other flavor of response will result in a user-facing error". A
+    /// reply carrying text on any other status is text no one will ever read.
+    #[test]
+    fn every_reply_meant_for_a_person_is_two_hundred() {
+        for text in [
+            "This channel or user is not authorized.",
+            "The agent queue is at capacity. Try again shortly.",
+            "Provide a bounded task after the command.",
+            "Invalid slash command payload.",
+        ] {
+            let response = ephemeral(text);
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "{text:?} would be discarded by Slack on a non-200",
+            );
+        }
+    }
+
+    /// The converse: a refusal aimed at Slack carries no body, so a real status
+    /// code costs nothing and an unauthenticated caller learns nothing.
+    #[test]
+    fn refusals_aimed_at_slack_keep_their_status_and_say_nothing() {
+        for status in [StatusCode::UNAUTHORIZED, StatusCode::NOT_FOUND] {
+            assert_eq!(reject(status).status(), status);
+        }
+    }
+
+    #[test]
+    fn slash_envelope_failures_are_never_rendered_as_success() {
+        assert_eq!(
+            slash_envelope_error(&Error::Policy).status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            slash_envelope_error(&Error::Request).status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            slash_envelope_error(&Error::Config("identity pin missing".into())).status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn the_dry_run_marker_is_in_the_acknowledgement_itself() {
+        let live = Accepted::Started {
+            run_id: "ores-abc".into(),
+            provider: "Claude",
+            dry_run: false,
+        };
+        let dry = Accepted::Started {
+            run_id: "ores-abc".into(),
+            provider: "Claude",
+            dry_run: true,
+        };
+        assert!(!live.message().contains("dry run"));
+        // The only disclosure used to be a separate in-channel post. If that
+        // post failed, the user was left holding an "Accepted" that read as
+        // real work.
+        assert!(dry.message().contains("dry run"));
+        assert!(dry.message().contains("no external writes"));
+        assert!(live.is_started() && dry.is_started());
+    }
+
+    #[test]
+    fn a_duplicate_is_reported_as_a_duplicate_not_as_capacity() {
+        let duplicate = Accepted::Duplicate {
+            run_id: "ores-abc".into(),
+        };
+        assert!(duplicate.message().contains("already accepted"));
+        assert!(!duplicate.message().contains("capacity"));
+        assert!(!duplicate.is_started());
+
+        assert!(Accepted::AtCapacity.message().contains("capacity"));
+        assert!(!Accepted::AtCapacity.is_started());
+        assert!(Accepted::JournalUnavailable
+            .message()
+            .contains("not started"));
+        assert!(!Accepted::JournalUnavailable.is_started());
+    }
+
+    #[test]
+    fn a_view_submission_error_is_two_hundred_and_names_a_block() {
+        let response = view_error("write_scope", "nope");
+        // Slack reads response_action from the body; a non-200 leaves the modal
+        // open with a generic failure instead.
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

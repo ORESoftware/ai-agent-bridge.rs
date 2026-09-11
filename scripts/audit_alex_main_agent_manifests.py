@@ -23,7 +23,7 @@ MAX_LOCK = 262_144
 MAX_REMOTE = 1_048_576
 MAX_MANIFEST = 65_536
 PROJECT_COUNT = 13
-CENTRAL_BINDING_COUNT = PROJECT_COUNT + 1
+CENTRAL_BINDING_COUNT = PROJECT_COUNT + 2
 WORKSPACE = "T01B3C83PMK"
 APP = "A0BMBAMM5NJ"
 TEAM = "Denman"
@@ -36,6 +36,30 @@ PILOT_DEFAULT_REPOSITORY = "ORESoftware/ai-agent-bridge.rs"
 PILOT_REPOSITORY_ALLOWLIST = (
     "ORESoftware/ai-agent-bridge.rs",
     "ORESoftware/ai-agent-coordinator.rs",
+    "ORESoftware/k8s-cluster",
+)
+FANWAAVE_CHANNEL = "C0BN3FMEJGL"
+FANWAAVE_LINEAR_PROJECT_ID = "d765e227-5726-42c8-8643-a8bd9e5a9a8c"
+FANWAAVE_DEFAULT_REPOSITORY = "fanwaave/push-notification-server.rs"
+FANWAAVE_REPOSITORY_ALLOWLIST = (
+    "fanwaave/push-notification-server.rs",
+    "fanwaave/.github",
+)
+BENEFACTOR_CHANNEL = "C0BKP367N95"
+BENEFACTOR_REPOSITORY_ALLOWLIST = (
+    "benefactor-cc/benefactor-cc-mcp-server.rs",
+    "benefactor-cc/backend.rs",
+    "benefactor-cc/benefactor-sync",
+    "benefactor-cc/benefactor-interfaces",
+    "benefactor-cc/benefactor-e2e",
+    "benefactor-cc/benefactor-automations",
+    "benefactor-cc/benefactor-sendgrid-outreach",
+    "benefactor-cc/benefactor-monorepo",
+    "benefactor-cc/benefactor-lib",
+    "benefactor-cc/benefactor-clients",
+    "benefactor-cc/benefactor-cli",
+    "benefactor-cc/.github",
+    "ORESoftware/benefactor.cc",
     "ORESoftware/k8s-cluster",
 )
 SHA1 = re.compile(r"[0-9a-f]{40}")
@@ -339,11 +363,14 @@ def validate_registry(raw: Any, lock: Lock) -> None:
         eq(binding["linear_team_id"], lock.policy["linear_team_id"], f"{label}.team_id")
         eq(binding["linear_team_key"], lock.policy["linear_team_key"], f"{label}.team_key")
         repo = pattern(binding["default_repository"], REPO, f"{label}.repository", "invalid_repository")
-        expected_allowlist = (
-            list(PILOT_REPOSITORY_ALLOWLIST)
-            if channel == PILOT_CHANNEL
-            else [repo]
-        )
+        if channel == PILOT_CHANNEL:
+            expected_allowlist = list(PILOT_REPOSITORY_ALLOWLIST)
+        elif channel == FANWAAVE_CHANNEL:
+            expected_allowlist = list(FANWAAVE_REPOSITORY_ALLOWLIST)
+        elif channel == BENEFACTOR_CHANNEL:
+            expected_allowlist = list(BENEFACTOR_REPOSITORY_ALLOWLIST)
+        else:
+            expected_allowlist = [repo]
         eq(
             string_list(binding["repository_allowlist"], f"{label}.allowlist"),
             expected_allowlist,
@@ -360,12 +387,24 @@ def validate_registry(raw: Any, lock: Lock) -> None:
         as_str(binding["updated_at"], f"{label}.updated_at")
         indexed[channel] = binding
     project_channels = {entry.slack["channel_id"] for entry in lock.entries}
-    if set(indexed) != project_channels | {PILOT_CHANNEL}:
+    if set(indexed) != project_channels | {PILOT_CHANNEL, FANWAAVE_CHANNEL}:
         raise AuditError("contract_mismatch", "central/lock channel set")
     pilot = indexed[PILOT_CHANNEL]
     eq(pilot["linear_project_id"], PILOT_LINEAR_PROJECT_ID, "pilot project UUID")
     eq(pilot["default_repository"], PILOT_DEFAULT_REPOSITORY, "pilot repository")
     eq(pilot["updated_by"], "DEN-1298", "pilot owning issue")
+    fanwaave = indexed[FANWAAVE_CHANNEL]
+    eq(
+        fanwaave["linear_project_id"],
+        FANWAAVE_LINEAR_PROJECT_ID,
+        "Fanwaave project UUID",
+    )
+    eq(
+        fanwaave["default_repository"],
+        FANWAAVE_DEFAULT_REPOSITORY,
+        "Fanwaave repository",
+    )
+    eq(fanwaave["updated_by"], "DEN-1874", "Fanwaave owning issue")
     for entry in lock.entries:
         binding = indexed[entry.slack["channel_id"]]
         eq(binding["linear_project_id"], entry.central["linear_project_id"], f"{entry.slack['channel_name']} project UUID")

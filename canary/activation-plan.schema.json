@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ORESoftware/ai-agent-bridge.rs/canary/activation-plan.schema.json",
+  "title": "AI bridge bounded activation canary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "ticket",
+    "enabled",
+    "activationBlocked",
+    "provider",
+    "runner",
+    "preconditions",
+    "budgets",
+    "workflowModes",
+    "failureDrills",
+    "requiredEvidence",
+    "fixturePolicy"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "ai-agent-bridge.activation-canary.v1"},
+    "ticket": {"const": "DEN-847"},
+    "enabled": {"type": "boolean"},
+    "activationBlocked": {"type": "boolean"},
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "providerId", "credentialReference"],
+      "properties": {
+        "count": {"const": 1},
+        "providerId": {
+          "type": ["string", "null"],
+          "pattern": "^[a-z][a-z0-9_-]{1,63}$"
+        },
+        "credentialReference": {
+          "type": ["string", "null"],
+          "pattern": "^external-secret://[a-z0-9][a-z0-9/._-]{2,191}$"
+        }
+      }
+    },
+    "runner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activeReplicas",
+        "rollbackReplicas",
+        "imageDigest",
+        "scaleToZeroOnAnyFailure"
+      ],
+      "properties": {
+        "activeReplicas": {"const": 1},
+        "rollbackReplicas": {"const": 0},
+        "imageDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "scaleToZeroOnAnyFailure": {"const": true}
+      }
+    },
+    "preconditions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "DEN-845",
+        "DEN-391",
+        "DEN-680",
+        "DEN-1227",
+        "DEN-287",
+        "DEN-523",
+        "DEN-601"
+      ],
+      "properties": {
+        "DEN-845": {"type": "boolean"},
+        "DEN-391": {"type": "boolean"},
+        "DEN-680": {"type": "boolean"},
+        "DEN-1227": {"type": "boolean"},
+        "DEN-287": {"type": "boolean"},
+        "DEN-523": {"type": "boolean"},
+        "DEN-601": {"type": "boolean"}
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxProviderCalls",
+        "maxCostUsdMicros",
+        "maxWallClockSeconds",
+        "maxPromptBytes",
+        "maxOutputBytes"
+      ],
+      "properties": {
+        "maxProviderCalls": {"type": "integer", "minimum": 5, "maximum": 20},
+        "maxCostUsdMicros": {"type": "integer", "minimum": 1, "maximum": 10000000},
+        "maxWallClockSeconds": {"type": "integer", "minimum": 60, "maximum": 3600},
+        "maxPromptBytes": {"type": "integer", "minimum": 1, "maximum": 16384},
+        "maxOutputBytes": {"type": "integer", "minimum": 1, "maximum": 131072}
+      }
+    },
+    "workflowModes": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "single",
+          "sequential",
+          "competitive",
+          "consensus",
+          "blind_competition"
+        ]
+      }
+    },
+    "failureDrills": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "cancellation",
+          "provider_failure",
+          "budget_exhaustion",
+          "lease_loss",
+          "stale_claim",
+          "runner_drain",
+          "bridge_restart"
+        ]
+      }
+    },
+    "requiredEvidence": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "admission_record",
+          "provider_reservation",
+          "normalized_usage",
+          "submission_record",
+          "lease_lifecycle",
+          "claim_lifecycle",
+          "readiness_transition",
+          "scale_to_zero"
+        ]
+      }
+    },
+    "fixturePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixtureIdPrefix",
+        "allowRepositoryWrites",
+        "allowPromptOrOutputInEvidence",
+        "allowCredentialValues"
+      ],
+      "properties": {
+        "fixtureIdPrefix": {"const": "canary:den-847:"},
+        "allowRepositoryWrites": {"const": false},
+        "allowPromptOrOutputInEvidence": {"const": false},
+        "allowCredentialValues": {"const": false}
+      }
+    }
+  }
+}

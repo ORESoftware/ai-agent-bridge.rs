@@ -377,7 +377,7 @@ help = "Base URL for the durable AI agent coordinator job API."
 env = "SLACK_CHATGPT_AGENT_KEY"
 aliases = ["slack-chatgpt-agent-key"]
 type = "string"
-help = "Registered bridge identity used by /ores-chatgpt."
+help = "Registered bridge identity used by /x-ores-chatgpt."
 
 [flags.slack-linear-run-project-id]
 env = "SLACK_LINEAR_RUN_PROJECT_ID"

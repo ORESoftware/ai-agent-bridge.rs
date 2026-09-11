@@ -1,0 +1,18 @@
+[package]
+name = "dd-pg-defs-sea-orm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Keep dependency metadata identical to the exact generated adapter pinned by
+# Cargo.toml/Cargo.lock. The source intentionally does not implement that API;
+# enabling the root `postgres` feature with this placeholder fails at compile
+# time and directs callers to the centralized private-schema certification lane.
+[dependencies]
+# `default-features = false` is load-bearing and must match the generated
+# adapter exactly. Without it the placeholder enables sea-orm's default
+# features, which pull in the rkyv/borsh graph (ahash, bitvec, rkyv, seahash,
+# …) that the real adapter never selects. That changes resolution, so every
+# `--locked` step fails with "cannot update the lock file" before compiling.
+sea-orm = { version = "1", default-features = false, features = ["macros", "with-uuid", "with-json", "with-chrono"] }
+serde = { version = "1", features = ["derive"] }

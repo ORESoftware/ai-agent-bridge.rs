@@ -294,3 +294,163 @@ test('rejects malformed JSON bodies that carry a valid signature', async ({ page
   expect(response.status).toBe(400);
   expect(response.contentType).toContain('application/json');
 });
+
+// DEN-2863: idempotency must not be conditional on spare capacity. The lane
+// runs at SLACK_MAX_CONCURRENT_WORKFLOWS=1 precisely so this holds at the
+// ceiling; Slack retries on 503, so answering a claimed delivery with
+// capacity_exceeded would invite another delivery of work already claimed.
+test('recognizes a retry as duplicate rather than shedding it at capacity', async ({ page }) => {
+  const body = eventBody();
+
+  const first = await postSigned(page, body);
+  expect(first.status).toBe(200);
+  expect(JSON.parse(first.body).accepted).toBe(true);
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const retry = await postSigned(page, body);
+    expect(retry.status).toBe(200);
+    expect(JSON.parse(retry.body).duplicate).toBe(true);
+  }
+});
+
+test('answers a status lookup for a known delivery while saturated', async ({ page }) => {
+  const body = eventBody();
+  const accepted = await postSigned(page, body);
+  expect(JSON.parse(accepted.body).accepted).toBe(true);
+  const deliveredId = JSON.parse(body).event_id;
+
+  const lookup = await postSigned(
+    page,
+    eventBody({ event: { text: `${commandPrefix} status ${deliveredId}` } }),
+  );
+
+  expect(lookup.status).toBe(200);
+  const payload = JSON.parse(lookup.body);
+  expect(payload.event_id).toBe(deliveredId);
+  expect(payload.state).not.toBe('unknown');
+});
+
+test('reports unknown for a status lookup that names no known delivery', async ({ page }) => {
+  const lookup = await postSigned(
+    page,
+    eventBody({ event: { text: `${commandPrefix} status EvNeverDelivered` } }),
+  );
+
+  expect(lookup.status).toBe(200);
+  expect(JSON.parse(lookup.body).state).toBe('unknown');
+});
+
+test('rejects a status lookup whose target is not a usable identifier', async ({ page }) => {
+  const lookup = await postSigned(
+    page,
+    eventBody({ event: { text: `${commandPrefix} status ../../etc/passwd` } }),
+  );
+
+  expect(lookup.status).toBe(400);
+});
+
+test('records cancellation intent and reports terminal and unknown runs', async ({ page }) => {
+  // Unknown run: reported, never invented.
+  const unknown = await postSigned(
+    page,
+    eventBody({ event: { text: `${commandPrefix} cancel EvNeverDelivered` } }),
+  );
+  expect(unknown.status).toBe(200);
+  expect(JSON.parse(unknown.body).cancel).toBe('unknown');
+
+  // A delivery that already finished is reported, not silently re-marked.
+  const body = eventBody();
+  const deliveredId = JSON.parse(body).event_id;
+  expect(JSON.parse((await postSigned(page, body)).body).accepted).toBe(true);
+
+  await expect
+    .poll(async () => {
+      const lookup = await postSigned(
+        page,
+        eventBody({ event: { text: `${commandPrefix} status ${deliveredId}` } }),
+      );
+      return JSON.parse(lookup.body).state;
+    })
+    .toBe('completed');
+
+  const terminal = await postSigned(
+    page,
+    eventBody({ event: { text: `${commandPrefix} cancel ${deliveredId}` } }),
+  );
+  expect(terminal.status).toBe(200);
+  const payload = JSON.parse(terminal.body);
+  expect(payload.cancel).toBe('already_terminal');
+  expect(payload.state).toBe('completed');
+});
+
+test('accepts a single-provider request and refuses an unknown provider', async ({ page }) => {
+  // What is under test is whether the flag parses and routes as work, not
+  // whether capacity happens to be free. This lane runs at a ceiling of 1, so a
+  // genuinely new delivery may legitimately be shed with 503 while the previous
+  // one still holds the only permit. Both 200 and 503 mean the command was
+  // understood; only 400 means it was refused.
+  for (const model of ['claude', 'chatgpt', 'both']) {
+    const accepted = await postSigned(
+      page,
+      eventBody({ event: { text: `${commandPrefix} --model ${model} explain raft` } }),
+    );
+    expect([200, 503], `--model ${model} should be understood, not refused`).toContain(
+      accepted.status,
+    );
+    if (accepted.status === 200) {
+      expect(JSON.parse(accepted.body).accepted).toBe(true);
+    }
+  }
+
+  // An unknown provider is refused rather than silently defaulted to both.
+  const unknown = await postSigned(
+    page,
+    eventBody({ event: { text: `${commandPrefix} --model gemini explain raft` } }),
+  );
+  expect(unknown.status).toBe(400);
+
+  // A flag with no task is not a request.
+  const bare = await postSigned(
+    page,
+    eventBody({ event: { text: `${commandPrefix} --model claude` } }),
+  );
+  expect(bare.status).toBe(400);
+});
+
+test('rejects a cancel whose target is not a usable identifier', async ({ page }) => {
+  const response = await postSigned(
+    page,
+    eventBody({ event: { text: `${commandPrefix} cancel ../../etc/passwd` } }),
+  );
+
+  expect(response.status).toBe(400);
+});
+
+test('exposes scrapeable outcome counters carrying no Slack content', async ({ page }) => {
+  const response = await page.goto('/metrics');
+  expect(response).not.toBeNull();
+  expect(response.status()).toBe(200);
+
+  const body = await response.text();
+  expect(body).toContain('# TYPE slack_bridge_requests_total counter');
+
+  // Every series is declared up front, so an outcome that has not happened yet
+  // still scrapes as 0 rather than being absent.
+  for (const outcome of ['accepted', 'duplicate', 'rejected_signature', 'rejected_app_identity']) {
+    expect(body).toMatch(
+      new RegExp(`slack_bridge_requests_total\\{outcome="${outcome}"\\} \\d+`),
+    );
+  }
+
+  // Earlier tests in this file drove signature and app-identity rejections.
+  const rejected = Number(
+    /slack_bridge_requests_total\{outcome="rejected_signature"\} (\d+)/.exec(body)?.[1] ?? '0',
+  );
+  expect(rejected).toBeGreaterThan(0);
+
+  // Metadata only: no Slack identifier, channel, or prompt text may be exposed.
+  expect(body).not.toContain(allowedChannelId);
+  expect(body).not.toContain(allowedTeamId);
+  expect(body).not.toContain(expectedAppId);
+  expect(body).not.toContain('DEN-1041');
+});

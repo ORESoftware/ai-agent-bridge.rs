@@ -1,6 +1,120 @@
+/// Build the reviewed run modal for fixture generation and preview tooling.
+///
+/// `modal` is private and reached only through `views.open`, which makes the
+/// rendered submenu hard to assert on outside a full ingress round trip. This
+/// wrapper exposes the same builder — no second copy of the layout — so
+/// `tests/slack_modal_fixture.rs` can freeze the payload and the Chromium spec
+/// in `tests/browser/specs/modal.spec.mjs` can assert what an operator actually
+/// sees.
+///
+/// `private_metadata` is supplied by the caller because the real value carries
+/// per-run routing state; previews pass a fixed placeholder so the fixture stays
+/// deterministic.
+pub fn preview_run_modal(
+    provider_command: &str,
+    binding: &ChannelProjectBinding,
+    private_metadata: &str,
+    context_messages: usize,
+) -> Option<Value> {
+    let provider = Provider::from_command(provider_command)?;
+    Some(modal(
+        provider,
+        binding,
+        private_metadata,
+        context_messages,
+    ))
+}
+
 #[cfg(test)]
-mod block_kit_contract_tests {
-    use std::{collections::BTreeSet, fs, path::Path};
+mod preview_run_modal_tests {
+    use super::*;
+    use crate::slack_project_bindings::BudgetPolicy;
+
+    fn binding(write_policy: WritePolicy) -> ChannelProjectBinding {
+        ChannelProjectBinding {
+            workspace_id: "T01B3C83PMK".into(),
+            channel_id: "C0BKP2N3LG7".into(),
+            linear_team_id: "team-uuid".into(),
+            linear_team_key: "DEN".into(),
+            linear_project_id: "project-uuid".into(),
+            default_repository: "oresoftware/k8s-cluster".into(),
+            repository_allowlist: ["oresoftware/k8s-cluster".to_string()]
+                .into_iter()
+                .collect(),
+            default_agent_mode: AgentMode::Claude,
+            allowed_agent_modes: [AgentMode::Claude].into_iter().collect(),
+            allowed_user_ids: ["U1".to_string()].into_iter().collect(),
+            allowed_user_group_ids: Default::default(),
+            write_policy,
+            budget_policy: BudgetPolicy {
+                max_concurrent_runs: 2,
+                max_runtime_secs: 600,
+                max_tokens: 100_000,
+                max_spend_cents: 500,
+                max_retries: 2,
+            },
+            updated_by: "U1".into(),
+            updated_at: "2026-08-01T12:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn every_reviewed_command_resolves_to_a_modal() {
+        for command in ["/x-ores-claude", "/x-ores-chatgpt"] {
+            assert!(
+                preview_run_modal(
+                    command,
+                    &binding(WritePolicy::DraftPullRequest),
+                    "m",
+                    5,
+                )
+                .is_some(),
+                "{command} must open the reviewed modal"
+            );
+        }
+        for command in ["/x-ores-gemini", "/ores-claude", "/x-claude", "/my-chatgpt"] {
+            assert!(
+                preview_run_modal(
+                    command,
+                    &binding(WritePolicy::DraftPullRequest),
+                    "m",
+                    5,
+                )
+                .is_none(),
+                "{command} is outside the reviewed namespace and must not open the modal"
+            );
+        }
+    }
+
+    #[test]
+    fn the_preview_is_the_same_payload_the_ingress_opens() {
+        let binding = binding(WritePolicy::DraftPullRequest);
+        assert_eq!(
+            preview_run_modal("/x-ores-claude", &binding, "meta", 5).unwrap(),
+            modal(Provider::Claude, &binding, "meta", 5),
+            "the preview must not drift from the builder used by views.open"
+        );
+    }
+
+    #[test]
+    fn write_scope_options_never_exceed_the_channel_policy() {
+        let read_only = preview_run_modal("/x-ores-claude", &binding(WritePolicy::ReadOnly), "m", 5)
+            .unwrap()
+            .to_string();
+        assert!(!read_only.contains("draft_pull_request"));
+        assert!(!read_only.contains("linear_write"));
+
+        let linear_only = preview_run_modal("/x-ores-claude", &binding(WritePolicy::LinearOnly), "m", 5)
+            .unwrap()
+            .to_string();
+        assert!(linear_only.contains("linear_write"));
+        assert!(!linear_only.contains("draft_pull_request"));
+    }
+}
+
+#[cfg(test)]
+mod block_kit_limit_tests {
+    use std::collections::BTreeSet;
 
     use serde_json::Value;
 
@@ -11,46 +125,50 @@ mod block_kit_contract_tests {
 
     /// Slack rejects a `views.open` payload that breaches any documented Block
     /// Kit ceiling, and the member only ever sees "the dialog could not be
-    /// opened". A longer provider label, an extra menu entry, or a wider
-    /// repository allowlist are all easy ways to trip one, so the ceilings are
-    /// asserted here rather than discovered in a channel.
+    /// opened". A longer provider label, an extra menu entry or a wider
+    /// repository allowlist are each enough to trip one.
+    ///
+    /// These are deliberately API-shape limits rather than rendering checks: a
+    /// payload Slack refuses outright still renders perfectly well in a browser,
+    /// so the Chromium coverage over the frozen fixtures cannot catch them.
     fn binding(repositories: usize, write_policy: WritePolicy) -> ChannelProjectBinding {
-        let allowlist: BTreeSet<String> = (0..repositories)
+        let repository_allowlist: BTreeSet<String> = (0..repositories)
             .map(|index| format!("oresoftware/repo-{index:03}"))
             .collect();
-        let default_repository = allowlist
+        let default_repository = repository_allowlist
             .iter()
             .next()
             .cloned()
             .unwrap_or_else(|| "oresoftware/repo-000".to_string());
 
         ChannelProjectBinding {
-            workspace_id: "T01B3C83PMK".to_string(),
-            channel_id: "C1".to_string(),
-            linear_team_id: "team-eb8ab169".to_string(),
-            linear_team_key: "DEN".to_string(),
-            linear_project_id: "project-1".to_string(),
+            workspace_id: "T01B3C83PMK".into(),
+            channel_id: "C0BKP2N3LG7".into(),
+            linear_team_id: "team-uuid".into(),
+            linear_team_key: "DEN".into(),
+            linear_project_id: "project-uuid".into(),
             default_repository,
-            repository_allowlist: allowlist,
+            repository_allowlist,
             default_agent_mode: AgentMode::Claude,
-            allowed_agent_modes: [AgentMode::Claude, AgentMode::Chatgpt].into_iter().collect(),
-            allowed_user_ids: ["U01OPERATOR".to_string()].into_iter().collect(),
+            allowed_agent_modes: [AgentMode::Claude, AgentMode::Chatgpt]
+                .into_iter()
+                .collect(),
+            allowed_user_ids: ["U1".to_string()].into_iter().collect(),
             allowed_user_group_ids: BTreeSet::new(),
             write_policy,
             budget_policy: BudgetPolicy {
                 max_concurrent_runs: 2,
-                max_runtime_secs: 900,
-                max_tokens: 500_000,
+                max_runtime_secs: 600,
+                max_tokens: 100_000,
                 max_spend_cents: 500,
                 max_retries: 2,
             },
-            updated_by: "U01OPERATOR".to_string(),
-            updated_at: "2026-08-01T00:00:00Z".to_string(),
+            updated_by: "U1".into(),
+            updated_at: "2026-08-01T12:00:00Z".into(),
         }
     }
 
     fn assert_within_block_kit_limits(view: &Value) {
-        // Modal titles are capped at 24 characters; Slack hard-rejects longer.
         let title = view["title"]["text"].as_str().expect("title");
         assert!(
             title.chars().count() <= 24,
@@ -58,11 +176,19 @@ mod block_kit_contract_tests {
         );
         for key in ["submit", "close"] {
             let label = view[key]["text"].as_str().expect(key);
-            assert!(label.chars().count() <= 24, "{key} label exceeds 24 chars");
+            assert!(
+                label.chars().count() <= 24,
+                "{key} label {label:?} exceeds 24 characters",
+            );
         }
 
-        let metadata = view["private_metadata"].as_str().expect("private_metadata");
-        assert!(metadata.len() <= 3_000, "private_metadata exceeds 3000 bytes");
+        let metadata = view["private_metadata"]
+            .as_str()
+            .expect("private_metadata");
+        assert!(
+            metadata.len() <= 3_000,
+            "private_metadata exceeds 3000 bytes",
+        );
 
         let blocks = view["blocks"].as_array().expect("blocks");
         assert!(!blocks.is_empty(), "a modal must carry at least one block");
@@ -102,11 +228,6 @@ mod block_kit_contract_tests {
                     );
                     assert!(value.len() <= 150, "{block_id} option value too long");
                 }
-                // Slack rejects a view whose initial_option is absent from its
-                // own options list. `Config::from_env` currently constrains the
-                // context default to exactly the offered values, and the
-                // repository menu is bounded by MAX_REPOSITORIES_PER_BINDING —
-                // this keeps both true if either constraint is ever relaxed.
                 if let Some(initial) = element.get("initial_option") {
                     assert!(
                         options.contains(initial),
@@ -118,10 +239,7 @@ mod block_kit_contract_tests {
     }
 
     #[test]
-    fn both_provider_modals_respect_slack_block_kit_limits() {
-        // The widest realistic shape: a full repository allowlist, the broadest
-        // write policy, and the largest private_metadata a run correlation
-        // produces.
+    fn every_modal_shape_respects_slack_block_kit_limits() {
         let metadata = "m".repeat(2_000);
         for provider in [Provider::Claude, Provider::Chatgpt] {
             for write_policy in [
@@ -144,9 +262,6 @@ mod block_kit_contract_tests {
 
     #[test]
     fn the_repository_menu_never_drops_the_default_repository() {
-        // The menu is truncated to Slack's 100-option ceiling. A default outside
-        // the retained slice would preselect an option the member cannot see,
-        // which Slack refuses to render.
         let binding = binding(100, WritePolicy::DraftPullRequest);
         let view = modal(Provider::Claude, &binding, "m", 5);
 
@@ -166,31 +281,5 @@ mod block_kit_contract_tests {
                 .any(|option| option["value"] == binding.default_repository.as_str()),
             "the default repository must remain selectable",
         );
-    }
-
-    /// Writes the exact payload the adapter hands to `views.open` so the Block
-    /// Kit browser contract renders the real thing rather than a hand-kept copy
-    /// that drifts from the code.
-    #[test]
-    fn emits_block_kit_fixtures_for_the_browser_contract() {
-        let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/blockkit");
-        fs::create_dir_all(&out).expect("fixture directory");
-
-        for (provider, name) in [
-            (Provider::Claude, "ores-claude"),
-            (Provider::Chatgpt, "ores-chatgpt"),
-        ] {
-            let view = modal(
-                provider,
-                &binding(3, WritePolicy::DraftPullRequest),
-                "browser-contract",
-                5,
-            );
-            let rendered = serde_json::to_string_pretty(&view).expect("serialize view");
-            fs::write(out.join(format!("{name}.json")), rendered).expect("write fixture");
-        }
-
-        assert!(out.join("ores-claude.json").exists());
-        assert!(out.join("ores-chatgpt.json").exists());
     }
 }

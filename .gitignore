@@ -44,3 +44,5 @@ tests/blockkit/test-results/
 # Local/CI manifest-audit reports are uploaded as run artifacts, not source.
 /artifacts/
 tests/blockkit/package-lock.json
+
+_to_delete/

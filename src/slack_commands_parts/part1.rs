@@ -5,7 +5,10 @@ use std::{
     io::Write,
     net::IpAddr,
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
@@ -19,7 +22,8 @@ use axum::{
 };
 use chrono::Utc;
 use futures::StreamExt;
-use hmac::{Hmac, Mac};
+use hmac::{digest::KeyInit, Hmac, Mac};
+use parking_lot::Mutex;
 use reqwest::{redirect::Policy, Client, Response as HttpResponse, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -52,8 +56,6 @@ const MAX_CONTEXT_MESSAGE_BYTES: usize = 4_000;
 const MAX_CONTEXT_TOTAL_BYTES: usize = 32_000;
 const MAX_REMOTE_RESPONSE_BYTES: usize = 1_048_576;
 const MAX_SLACK_RESPONSE_BYTES: usize = 65_536;
-const MAX_SLACK_POST_ATTEMPTS: u32 = 3;
-const MAX_SLACK_RETRY_AFTER_SECS: u64 = 10;
 const MAX_IDENTIFIER_BYTES: usize = 255;
 
 #[derive(Debug, thiserror::Error)]
@@ -86,8 +88,8 @@ enum Provider {
 impl Provider {
     fn from_command(command: &str) -> Option<Self> {
         match command.trim() {
-            "/ores-claude" | "/x-claude" | "/my-claude" => Some(Self::Claude),
-            "/ores-chatgpt" | "/x-chatgpt" | "/my-chatgpt" => Some(Self::Chatgpt),
+            "/x-ores-claude" => Some(Self::Claude),
+            "/x-ores-chatgpt" => Some(Self::Chatgpt),
             _ => None,
         }
     }
@@ -124,12 +126,17 @@ struct Config {
     chatgpt_agent: String,
     linear_run_project_id: String,
     context_messages: usize,
-    dry_run: bool,
-    max_concurrent_runs: usize,
     // Socket Mode ingress. Off by default: the reviewed production posture is
     // the signed Request URL. See docs/slack-socket-mode.md.
     socket_mode: bool,
     app_token: Option<String>,
+    dry_run: bool,
+    max_concurrent_runs: usize,
+    // Whether the installed app/team identifiers may be omitted. Exposure is
+    // NOT inferable from the bind address: the reviewed production shape
+    // terminates TLS in a same-host proxy and forwards to 127.0.0.1, so an
+    // internet-facing deployment binds loopback. Operators opt out explicitly.
+    allow_unpinned_identity: bool,
 }
 
 impl Config {
@@ -169,28 +176,22 @@ impl Config {
                 "SLACK_COORDINATOR_BEARER is required for remote coordinator URLs".into(),
             ));
         }
-        let slack_api_base_url = slack_api_base_url(&env_or(
-            "SLACK_API_BASE_URL",
-            DEFAULT_SLACK_API_BASE_URL,
-        ))?;
+        let slack_api_base_url =
+            slack_api_base_url(&env_or("SLACK_API_BASE_URL", DEFAULT_SLACK_API_BASE_URL))?;
         let context_messages = env_usize(
             "SLACK_CONTEXT_MESSAGE_COUNT",
             DEFAULT_CONTEXT_MESSAGES,
             0,
             MAX_CONTEXT_MESSAGES,
         )?;
+        let socket_mode = env_bool("SLACK_SOCKET_MODE", false)?;
+        let app_token = env_opt("SLACK_APP_TOKEN");
+        validate_app_token(socket_mode, app_token.as_deref())?;
         if ![0, 5, 10, 20].contains(&context_messages) {
             return Err(Error::Config(
                 "SLACK_CONTEXT_MESSAGE_COUNT must be 0, 5, 10, or 20".into(),
             ));
         }
-
-        // Socket Mode trades Slack's per-request HMAC for connection-level auth
-        // on an app token, so it is opt-in and must carry that token explicitly.
-        let socket_mode = env_bool("SLACK_SOCKET_MODE", false)?;
-        let app_token = env_opt("SLACK_APP_TOKEN");
-        validate_app_token(socket_mode, app_token.as_deref())?;
-
         Ok(Self {
             host,
             port,
@@ -220,6 +221,7 @@ impl Config {
             app_token,
             dry_run: env_bool("SLACK_COMMAND_DRY_RUN", true)?,
             max_concurrent_runs: env_usize("SLACK_COMMAND_MAX_CONCURRENT_RUNS", 8, 1, 128)?,
+            allow_unpinned_identity: env_bool(ALLOW_UNPINNED_IDENTITY_ENV, false)?,
         })
     }
 
@@ -286,16 +288,38 @@ fn absolute_path(key: &str) -> Result<PathBuf> {
 }
 
 #[cfg(test)]
-mod provider_command_alias_tests {
+mod provider_command_namespace_tests {
     use super::*;
 
     #[test]
-    fn reviewed_aliases_map_to_the_expected_provider() {
-        for command in ["/ores-claude", "/x-claude", "/my-claude"] {
-            assert_eq!(Provider::from_command(command), Some(Provider::Claude));
-        }
-        for command in ["/ores-chatgpt", "/x-chatgpt", "/my-chatgpt"] {
-            assert_eq!(Provider::from_command(command), Some(Provider::Chatgpt));
+    fn the_reviewed_namespace_maps_to_the_expected_provider() {
+        assert_eq!(
+            Provider::from_command("/x-ores-claude"),
+            Some(Provider::Claude)
+        );
+        assert_eq!(
+            Provider::from_command("/x-ores-chatgpt"),
+            Some(Provider::Chatgpt)
+        );
+    }
+
+    #[test]
+    fn retired_pre_namespace_commands_are_rejected() {
+        // Every name the workspace used before the /x-ores-* namespace. A stale
+        // manifest must fail closed rather than silently route to a provider.
+        for command in [
+            "/ores-claude",
+            "/ores-chatgpt",
+            "/x-claude",
+            "/x-chatgpt",
+            "/my-claude",
+            "/my-chatgpt",
+        ] {
+            assert_eq!(
+                Provider::from_command(command),
+                None,
+                "{command} was retired and must not resolve"
+            );
         }
     }
 
@@ -304,10 +328,12 @@ mod provider_command_alias_tests {
         for command in [
             "/claude",
             "/chatgpt",
-            "/ores-claude-extra",
-            "/ores-chatgpt-extra",
-            "/x_claude",
-            "/my_chatgpt",
+            "/x-ores-claude-extra",
+            "/x-ores-chatgpt-extra",
+            "/x_ores_claude",
+            "/x-ores_chatgpt",
+            "/xores-claude",
+            "/x-ores-gemini",
         ] {
             assert_eq!(Provider::from_command(command), None);
         }

@@ -4,9 +4,13 @@ on:
   pull_request:
     paths:
       - .github/workflows/slack-ingress-browser-security.yml
+      - .gitmodules
       - Cargo.lock
       - Cargo.toml
       - config/alex-main-agent.channels.json
+      - config/shared-schema-pin
+      - scripts/ci/prepare-credential-free-build.sh
+      - scripts/ci/fixtures/dd-pg-defs-sea-orm/**
       - slack-app/manifest.yaml
       - src/bin/fiducia-slack-command.rs
       - src/slack_commands.rs
@@ -16,9 +20,13 @@ on:
     branches: [main]
     paths:
       - .github/workflows/slack-ingress-browser-security.yml
+      - .gitmodules
       - Cargo.lock
       - Cargo.toml
       - config/alex-main-agent.channels.json
+      - config/shared-schema-pin
+      - scripts/ci/prepare-credential-free-build.sh
+      - scripts/ci/fixtures/dd-pg-defs-sea-orm/**
       - slack-app/manifest.yaml
       - src/bin/fiducia-slack-command.rs
       - src/slack_commands.rs
@@ -53,7 +61,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          submodules: recursive
+          submodules: false
+
+      - name: Prepare credential-free build inputs
+        run: bash scripts/ci/prepare-credential-free-build.sh
 
       - name: Initialize private evidence directories
         run: |

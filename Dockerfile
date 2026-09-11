@@ -1,8 +1,13 @@
 # syntax=docker/dockerfile:1.7
 
 # One reviewed source tree builds all runtime binaries. Final targets copy only
-# the selected executable into a non-root distroless image.
-# DEN-1041 validates the Slack command image independently in CI.
+# the selected executable and explicitly audited non-secret runtime data into a
+# non-root distroless image.
+#
+# Runtime images intentionally use the credential-free, in-memory feature set.
+# The optional Postgres adapter is private shared-schema material and is tested
+# in the centralized exact-schema certification lane; it is not required by the
+# currently deployed bridge or provider runner.
 FROM rust:1.97.1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa AS builder
 
 WORKDIR /workspace
@@ -13,18 +18,30 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/workspace/target,sharing=locked \
-    cargo build --release --locked --features postgres \
+    cargo build --release --locked \
       --bin fiducia-ai-agent-bridge \
       --bin fiducia-ai-agent-runner \
       --bin fiducia-slack-bridge \
       --bin fiducia-slack-command \
+      --bin ores-ai-agent-bridge \
     && install -D -m 0755 target/release/fiducia-ai-agent-bridge /out/fiducia-ai-agent-bridge \
     && install -D -m 0755 target/release/fiducia-ai-agent-runner /out/fiducia-ai-agent-runner \
     && install -D -m 0755 target/release/fiducia-slack-bridge /out/fiducia-slack-bridge \
     && install -D -m 0755 target/release/fiducia-slack-command /out/fiducia-slack-command \
+    && install -D -m 0755 target/release/ores-ai-agent-bridge /out/ores-ai-agent-bridge \
     && mkdir -p /out/runtime-state/claude-inbox \
     && mkdir -p /out/slack-state \
     && mkdir -p /out/slack-command-state/runs
+
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:fccdbb0a547c14e23fcf4ce8ad62ca5d43b4faae8d22cd292f490fef9946c96e AS ores-client
+
+LABEL org.opencontainers.image.source="https://github.com/ORESoftware/ai-agent-bridge.rs" \
+      org.opencontainers.image.description="Credential-safe ORES client for com.ores.ai-agent-bridge"
+
+COPY --from=builder /out/ores-ai-agent-bridge /usr/local/bin/ores-ai-agent-bridge
+
+USER nonroot:nonroot
+ENTRYPOINT ["/usr/local/bin/ores-ai-agent-bridge"]
 
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:fccdbb0a547c14e23fcf4ce8ad62ca5d43b4faae8d22cd292f490fef9946c96e AS bridge
 
@@ -77,10 +94,12 @@ LABEL org.opencontainers.image.source="https://github.com/ORESoftware/ai-agent-b
 
 COPY --from=builder /out/fiducia-slack-command /usr/local/bin/fiducia-slack-command
 COPY --from=builder --chown=nonroot:nonroot /out/slack-command-state/ /var/lib/slack-command/
+COPY --from=builder --chown=nonroot:nonroot /workspace/config/alex-main-agent.channels.json /etc/alex-main-agent/alex-main-agent.channels.json
 
 ENV SLACK_COMMAND_HOST=0.0.0.0 \
     SLACK_COMMAND_PORT=8151 \
     SLACK_COMMAND_STATE_DIR=/var/lib/slack-command/runs \
+    SLACK_PROJECT_REGISTRY_PATH=/etc/alex-main-agent/alex-main-agent.channels.json \
     SLACK_CONTEXT_MESSAGE_COUNT=5 \
     SLACK_COMMAND_DRY_RUN=true
 

@@ -1,0 +1,35 @@
+name: DEN-847 activation canary plan
+
+on:
+  pull_request:
+    paths:
+      - 'canary/activation-plan.schema.json'
+      - 'canary/den-847.activation-plan.json'
+      - 'scripts/validate_activation_canary.py'
+      - '.github/workflows/den-847-canary-plan.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'canary/activation-plan.schema.json'
+      - 'canary/den-847.activation-plan.json'
+      - 'scripts/validate_activation_canary.py'
+      - '.github/workflows/den-847-canary-plan.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: den-847-canary-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate bounded fail-closed activation plan
+        run: python3 scripts/validate_activation_canary.py

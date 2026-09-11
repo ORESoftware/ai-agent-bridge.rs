@@ -139,6 +139,7 @@ mod observable_event_contract_tests {
             app_token: None,
             dry_run: true,
             max_concurrent_runs: 1,
+            allow_unpinned_identity: true,
         }
     }
 

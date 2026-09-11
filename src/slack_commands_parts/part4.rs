@@ -51,6 +51,8 @@ impl App {
             registry,
             bindings,
             capacity,
+            socket_connected: Arc::new(AtomicBool::new(false)),
+            last_frame_at: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -134,6 +136,16 @@ impl App {
             .ok_or(Error::Policy)
     }
 
+    /// Cheap, non-authoritative probe used to answer duplicates truthfully
+    /// before a capacity permit is taken. `claim` remains the atomic decision.
+    fn claimed(&self, run_id: &str) -> bool {
+        self.config.state_dir.join(run_id).exists()
+    }
+
+    /// Blocking: opens a file and fsyncs. Callers on the async runtime must
+    /// reach this through `spawn_blocking` — `tokio::time::timeout` cannot
+    /// preempt a blocking syscall, so an fsync stall would silently blow the
+    /// Slack acknowledgement deadline and park a runtime worker.
     fn claim(&self, request: &RunRequest) -> Result<bool> {
         let path = self.config.state_dir.join(&request.run_id);
         let mut options = OpenOptions::new();
@@ -284,6 +296,7 @@ impl App {
             let error_code = serde_json::from_slice::<Value>(&body)
                 .ok()
                 .and_then(|value| value.get("error").and_then(Value::as_str).map(str::to_string))
+                .map(|value| log_safe(&value))
                 .unwrap_or_else(|| "unknown".to_string());
             warn!(
                 run_id = %request.run_id,
@@ -345,6 +358,7 @@ impl App {
             let error_code = serde_json::from_slice::<Value>(&body)
                 .ok()
                 .and_then(|value| value.get("error").and_then(Value::as_str).map(str::to_string))
+                .map(|value| log_safe(&value))
                 .unwrap_or_else(|| "unknown".to_string());
             warn!(
                 run_id = %request.run_id,

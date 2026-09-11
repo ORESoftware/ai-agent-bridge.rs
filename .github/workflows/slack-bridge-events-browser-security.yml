@@ -4,8 +4,12 @@ on:
   pull_request:
     paths:
       - .github/workflows/slack-bridge-events-browser-security.yml
+      - .gitmodules
       - Cargo.lock
       - Cargo.toml
+      - config/shared-schema-pin
+      - scripts/ci/prepare-credential-free-build.sh
+      - scripts/ci/fixtures/dd-pg-defs-sea-orm/**
       - src/bin/fiducia-slack-bridge.rs
       - src/slack_bridge.rs
       - tests/browser/**
@@ -13,8 +17,12 @@ on:
     branches: [main]
     paths:
       - .github/workflows/slack-bridge-events-browser-security.yml
+      - .gitmodules
       - Cargo.lock
       - Cargo.toml
+      - config/shared-schema-pin
+      - scripts/ci/prepare-credential-free-build.sh
+      - scripts/ci/fixtures/dd-pg-defs-sea-orm/**
       - src/bin/fiducia-slack-bridge.rs
       - src/slack_bridge.rs
       - tests/browser/**
@@ -44,12 +52,19 @@ jobs:
       SLACK_BOT_USER_ID: UBOTBROWSERTEST
       SLACK_COMMAND_PREFIX: "!ask-both"
       SLACK_BRIDGE_DRY_RUN: "true"
+      # Deliberately 1. DEN-2863 moved duplicate detection ahead of the capacity
+      # reservation, so a retry is recognized as a duplicate even when the only
+      # permit is held. A ceiling of 1 is the strongest setting for that
+      # assertion; raising it would let the regression back in unnoticed.
       SLACK_MAX_CONCURRENT_WORKFLOWS: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          submodules: recursive
+          submodules: false
+
+      - name: Prepare credential-free build inputs
+        run: bash scripts/ci/prepare-credential-free-build.sh
 
       - name: Initialize private evidence directories
         run: |

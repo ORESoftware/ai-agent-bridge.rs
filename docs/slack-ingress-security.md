@@ -9,16 +9,38 @@ This document defines the security boundary for the `fiducia-slack-command` serv
 The public deployment exposes only these Slack-signed request routes:
 
 ```text
-POST /slack/commands/ores-claude
-POST /slack/commands/ores-chatgpt
+POST /slack/commands/x-ores-claude
+POST /slack/commands/x-ores-chatgpt
 POST /slack/interactions
 ```
 
-The six reviewed command names map onto the two provider endpoints:
+
+## Identity pinning is not inferred from the bind address
+
+`SLACK_EXPECTED_APP_ID` and `SLACK_EXPECTED_TEAM_ID` are required. They were
+previously optional whenever the process bound a loopback address, on the
+reasoning that a loopback bind implies an isolated deployment. That reasoning is
+wrong for the reviewed production shape: TLS terminates in a same-host proxy
+that forwards to `127.0.0.1`, so the internet-facing deployment *is* a loopback
+bind, and the exemption disabled app/team pinning in exactly the case that
+needed it. The waiver is now an explicit opt-in, `SLACK_ALLOW_UNPINNED_IDENTITY`,
+intended only for local test harnesses.
+
+## Socket Mode is a separate ingress with a different trust basis
+
+`SLACK_SOCKET_MODE` (off by default) opens an outbound WebSocket and receives
+command payloads over it. Frames on that connection carry no `v0` signature and
+no `X-Slack-Request-Timestamp`, so neither the HMAC check nor the ±300s replay
+window below applies to them; the connection's `xapp-` token is the whole of the
+authentication. Everything after the envelope — provider agreement, identity
+pinning, channel policy, the run journal — is shared with the HTTP path. The
+request-validation order below describes the signed Request URL only.
+
+The two reviewed command names map one-to-one onto the two provider endpoints:
 
 ```text
-/ores-claude   /x-claude   /my-claude
-/ores-chatgpt  /x-chatgpt  /my-chatgpt
+/x-ores-claude   /x-ores-claude   /x-ores-claude
+/x-ores-chatgpt  /x-ores-chatgpt  /x-ores-chatgpt
 ```
 
 The payload command must agree with the endpoint provider. A valid HMAC for a Claude payload sent to the ChatGPT endpoint is rejected before channel policy, history access, modal creation, run journaling, bridge dispatch, or coordinator dispatch.
@@ -78,7 +100,7 @@ The repository-local suite locks the following boundaries:
 - loopback URL classification for IPv4, the full `127/8` range, `localhost`, and bracketed IPv6;
 - remote plaintext, hostname lookalike, embedded-credential, query, and fragment rejection;
 - duplicate decoded form keys, malformed escapes, and invalid UTF-8 rejection;
-- deterministic run IDs, distinct Slack trigger IDs, command aliases, prompt limits, identifier limits, and canonical Linear issue identifiers;
+- deterministic run IDs, distinct Slack trigger IDs, retired command names, prompt limits, identifier limits, and canonical Linear issue identifiers;
 - exact manifest scope set, duplicate-scope rejection, secret-literal exclusion, and the runtime-to-manifest `usergroups.list` dependency.
 
 These tests run in the normal pinned CI lane through formatting, Clippy with warnings denied, and `cargo test --all-targets --locked`.
@@ -126,6 +148,158 @@ of the shared contract it applies:
 `/readyz` reports `dry_run` and `installed_app_identity_enforced` so a deployment
 gate can assert the boundary before activation.
 
+### Admission ordering
+
+Duplicate detection runs **before** the concurrency reservation:
+
+```text
+signature -> workspace/channel policy -> installed-app identity
+  -> duplicate check (read-only)      <- answers 200 duplicate at any load
+  -> capacity reservation             <- answers 503 only for genuinely new work
+  -> authoritative claim              <- admits exactly once
+```
+
+Slack retries on `503`. If a retry of an already-claimed delivery were answered
+`capacity_exceeded`, the response would invite another delivery of work that is
+already claimed — retry amplification exactly when the service is saturated. The
+duplicate check therefore commits nothing and reserves nothing, so idempotency
+holds at any ceiling, including one. The authoritative claim still happens under
+the permit, so a genuinely new delivery racing that read is admitted exactly
+once, and a shed delivery leaves no journal claim for work that never ran.
+
+### Read-only status lookups
+
+```text
+<prefix> status <event-id>
+```
+
+Resolves a prior delivery from the durable journal and returns its state,
+workflow ID, posted agents, and last update. It claims nothing, reserves no
+capacity, and starts no workflow, so it stays answerable while the service is at
+its ceiling. An unknown delivery reports `state: "unknown"` rather than failing;
+a target that is not a valid event identifier is rejected rather than looked up.
+`status` is matched only as the first token, so prose that merely mentions the
+word is still routed as work.
+
+### Provider selection
+
+```text
+<prefix> --model <claude|chatgpt|both> <task>
+```
+
+Optional and defaulting to `both`, so an unqualified command behaves exactly as
+it did before the flag existed. `chatgpt` also accepts `openai` and `gpt`. An
+unrecognized provider is refused rather than silently defaulted, and a flag with
+no task is not a request.
+
+The flag is recognized **only at the front of the command**, so it cannot be
+smuggled in from untrusted channel text quoted later in a prompt.
+
+Selection drives every downstream count — requested agent keys, expected
+submissions, and startup-failure replies — rather than each site assuming a
+pair. Two consequences worth stating:
+
+- a single-provider request is dispatched as a `single` workflow, not a
+  `competitive` one, because competitive mode compares submissions against each
+  other and that is meaningless with one participant;
+- the workflow creator is drawn from the selected agents, so a ChatGPT-only
+  request is not attributed to a Claude agent that is not running.
+
+### Cancellation
+
+```text
+<prefix> cancel <event-id>
+```
+
+Records cancellation intent in the durable journal. The worker observes it at
+the next stage boundary and stops cooperatively — nothing is aborted mid-write,
+so the journal is never left describing a partially applied step. Like `status`,
+it reserves no capacity, so a run can be stopped precisely when the service is
+saturated and stopping it is most useful.
+
+Intent is journaled rather than held in memory, so it survives a restart: a
+worker resuming after a crash still sees that the run was canceled instead of
+quietly finishing it. `Canceled` is a terminal state distinct from `Completed`,
+so a stopped run is never mistaken for one that delivered its submissions.
+
+A cancel against an already-terminal run reports `already_terminal` with the
+state; an unknown run reports `unknown`. Neither invents a journal entry.
+Cancellation stops further work — it does not retract submissions already posted
+to the thread.
+
+### Operational metrics
+
+```text
+GET /metrics
+```
+
+Renders Prometheus text with one counter, `slack_bridge_requests_total`, labelled
+by terminal outcome. Every outcome is declared up front so an outcome that has
+not occurred yet still scrapes as `0` — a series that only appears after its
+first occurrence cannot be alerted on, because its absence is indistinguishable
+from the absence of scraping.
+
+`rejected_app_identity` is counted separately from `rejected_policy`: a non-zero
+rate means a foreign application is posting correctly signed events to this
+endpoint, which is a security signal rather than a malformed-payload signal, and
+is invisible when folded into a generic rejection counter.
+
+The label set is a closed list of internal outcome names. No Slack workspace,
+channel, user, application identifier, prompt text, or channel content appears
+in a scrape, and the Chromium lane asserts that. The endpoint is unauthenticated
+and intended for a private scrape path; it must not be exposed publicly
+alongside the signed Slack route.
+
+### Deployment exposure contract
+
+`fiducia-slack-bridge` is a **third workload**, distinct from the two that are
+easy to confuse it with. All three build from this one source tree:
+
+| Binary | Port | `/metrics` |
+|---|---|---|
+| `fiducia-ai-agent-bridge` | `8142` | pre-existing, rendered from `crate::metrics` |
+| `fiducia-slack-command` | `8151` | command outcomes plus Socket Mode liveness gauges |
+| `fiducia-slack-bridge` | `8150` | the outcome counters described above |
+
+A NetworkPolicy that scopes the bridge's metrics port therefore does **not**
+cover this service. Any manifest for the Events API ingress needs its own:
+
+- `/slack/events` is the only route that may be reachable externally;
+- `/metrics`, `/healthz`, and `/readyz` belong on a private path, with
+  `/metrics` scoped to the metrics scraper;
+- the service binds `127.0.0.1` by default, so serving in a pod requires
+  `SLACK_BRIDGE_HOST=0.0.0.0` — which is exactly the moment `/metrics` stops
+  being protected by loopback and the policy above starts carrying the weight;
+- `SLACK_EXPECTED_APP_ID` is **required** for any non-loopback bind and the
+  service refuses to start without it, so a pod-networked deployment cannot run
+  without the installed-application identity check.
+
+When pinning images by digest, read the `image-digest-<target>` evidence
+artifact from the `container images` run for the exact source SHA. This
+repository merges several times a day and every merge that touches `src/**`
+rebuilds all four images, so a digest copied by hand goes stale quickly.
+
+### Bumping the shared-schema pin
+
+`config/shared-schema-pin` is the single source of truth for the reviewed
+`vendor/k8s-libs-and-shared-defs` commit. A vendor bump updates the gitlink and
+that one file, in the same pull request.
+
+The value is deliberately **not** derived from the gitlink. The guard exists to
+catch an unreviewed submodule move, and a value read from the thing it checks
+would compare the gitlink to itself and always pass.
+
+It was previously duplicated across seven workflow sites, and three separate
+bumps moved the gitlink without updating them, taking every credential-free lane
+down with `shared-schema gitlink mismatch` until someone re-baselined by hand.
+Two checks now prevent that recurring:
+
+- `scripts/ci/prepare-credential-free-build.sh` reads the file, rejects anything
+  that is not a single 40-character SHA, and publishes `EXPECTED_SHARED_COMMIT`
+  to `GITHUB_ENV`, so no workflow restates the value;
+- `ci.yml` fails if any workflow or script reintroduces a literal SHA, and
+  reports the exact mismatch when the gitlink and the pin file disagree.
+
 ### Request-URL handshake
 
 Slack's Events API request-URL handshake posts only `token`, `challenge`, and
@@ -152,14 +326,23 @@ dry-run configuration, then drives real Chromium requests against
 - bot-authored events are ignored so the adapter cannot loop;
 - hostile channel text is never reflected as executable markup;
 - a retried delivery is claimed exactly once;
-- malformed JSON carrying a valid signature returns `400`.
+- malformed JSON carrying a valid signature returns `400`;
+- a retry is still recognized as a duplicate with the concurrency ceiling at one;
+- a status lookup resolves a known delivery while the service is saturated,
+  reports `unknown` for an unseen one, and refuses an unusable identifier;
+- a cancel reports `already_terminal` for a finished run and `unknown` for an
+  unseen one, invents no journal entry, and refuses an unusable identifier;
+- each `--model` value is accepted, an unknown provider and a flag with no task
+  are refused, and the flag is not honoured mid-prompt;
+- `/metrics` renders a zero series for every declared outcome and leaks no Slack
+  workspace, channel, application identifier, or prompt text.
 
 ## Production activation checklist
 
 Before turning off `SLACK_COMMAND_DRY_RUN`:
 
 1. reconcile and validate the complete remote app manifest;
-2. reinstall the app after the `usergroups:read` grant and confirm all six commands appear;
+2. reinstall the app after the `usergroups:read` grant and confirm both `/x-ores-*` commands appear and no retired name does;
 3. set `SLACK_EXPECTED_APP_ID` and `SLACK_EXPECTED_TEAM_ID` to the installed immutable IDs;
 4. source all secrets from the protected deployment secret path, never environment files committed to Git;
 5. keep bridge and coordinator URLs on loopback or HTTPS and require bearer credentials for remote services;
