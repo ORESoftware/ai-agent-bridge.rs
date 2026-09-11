@@ -1,3 +1,11 @@
+<!-- ores-deprecated: agent-pontifex -->
+> [!WARNING]
+> **DEPRECATED — do not start new feature work in this repository.**
+>
+> `ORESoftware/ai-agent-bridge.rs` is superseded by the repositories in [agent-pontifex](https://github.com/agent-pontifex). Migrate active consumers and new agent-bridge work there. During migration, changes here must be limited to security fixes, migration support, or narrowly scoped compatibility fixes.
+>
+> Deprecation recorded: 2026-09-01.
+
 # fiducia-ai-agent-bridge
 
 > Ported from ORESoftware/ai-agent-bridge.rs into fiducia.cloud. See
