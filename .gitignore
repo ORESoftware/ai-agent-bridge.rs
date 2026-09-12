@@ -35,3 +35,6 @@ tmp/
 .cargo-target-*/
 **/.gradle/
 _to_delete/
+
+# Sanctioned scratch locations - AGENTS.md requires both, trailing-slash form
+temp/
