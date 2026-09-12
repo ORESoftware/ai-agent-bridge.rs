@@ -1,0 +1,134 @@
+# Advisory browser contract for the Slack slash-command modal.
+#
+# Renders the adapter's real `views.open` payload in Slack's Block Kit Builder
+# so a malformed dialog is caught here rather than as "the dispatch dialog could
+# not be opened" in a channel.
+#
+# This job is deliberately NOT a merge gate: it drives a third-party UI that can
+# change or gate itself behind a workspace login at any time. The deterministic
+# ceilings gate in CI instead, via the Rust test
+# `modal_payload_respects_slack_block_kit_limits`.
+name: Block Kit contract
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, so a Slack-side Block Kit change surfaces without blocking anyone.
+    - cron: '17 6 * * 1'
+  pull_request:
+    paths:
+      - 'src/slack_bridge.rs'
+      - 'src/slack_bridge/**'
+      - 'tests/blockkit/**'
+      - '.github/workflows/block-kit-contract.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  block-kit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate GitHub Actions
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+        with:
+          args: ./.github/workflows/block-kit-contract.yml
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: "1.95.0"
+
+      # Generates target/blockkit/*.json from the same build_modal() the adapter
+      # calls, so the browser check can never drift from the shipped payload.
+      - name: Emit Block Kit fixtures from the adapter
+        run: cargo test --locked --lib slack_bridge::commands
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Install Playwright
+        working-directory: tests/blockkit
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      # Slack's builder 302s anonymous visitors to /workspace-signin, so this
+      # step is inert until a saved workspace session is supplied. Configure the
+      # SLACK_BUILDER_STORAGE_STATE secret (a Playwright storageState JSON) to
+      # enable it; until then the specs skip with an explicit reason.
+      # The secrets context is not available in a step-level `if`, so the
+      # presence check happens inside the script and simply emits no path.
+      - name: Restore Block Kit Builder session
+        id: session
+        env:
+          STORAGE_STATE: ${{ secrets.SLACK_BUILDER_STORAGE_STATE }}
+        run: |
+          if [ -z "$STORAGE_STATE" ]; then
+            echo 'No SLACK_BUILDER_STORAGE_STATE secret; browser specs will skip.'
+            exit 0
+          fi
+          umask 077
+          printf '%s' "$STORAGE_STATE" > "$RUNNER_TEMP/slack-builder-state.json"
+          echo "path=$RUNNER_TEMP/slack-builder-state.json" >> "$GITHUB_OUTPUT"
+
+      # Advisory: a Slack-side outage or UI change must not fail the build.
+      - name: Render the modal in Block Kit Builder
+        id: render
+        continue-on-error: true
+        working-directory: tests/blockkit
+        env:
+          SLACK_BUILDER_STORAGE_STATE: ${{ steps.session.outputs.path }}
+        run: npx playwright test
+
+      - name: Upload previews and report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: block-kit-preview
+          path: |
+            tests/blockkit/artifacts/**
+            tests/blockkit/playwright-report/**
+            target/blockkit/*.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Report advisory outcome
+        if: always()
+        env:
+          HAVE_SESSION: ${{ steps.session.outputs.path != '' }}
+          RENDER_OUTCOME: ${{ steps.render.outcome }}
+        run: |
+          {
+            echo "### Block Kit contract"
+            echo
+            if [ "$HAVE_SESSION" != "true" ]; then
+              echo "**Not run — no workspace session configured.**"
+              echo
+              echo "Slack's Block Kit Builder redirects anonymous visitors to"
+              echo "\`/workspace-signin\`, so the browser specs skipped without"
+              echo "rendering anything. This is *not* a pass. To enable it, save a"
+              echo "Playwright \`storageState\` JSON for a workspace that can open the"
+              echo "builder and set it as the \`SLACK_BUILDER_STORAGE_STATE\` secret."
+              echo
+              echo "The deterministic Block Kit ceilings are enforced regardless, by"
+              echo "\`modal_payload_respects_slack_block_kit_limits\` in the CI workflow."
+            elif [ "$RENDER_OUTCOME" = "success" ]; then
+              echo "Rendered both modals in the builder with no payload errors."
+            else
+              echo "**Did not pass.** This job is advisory and does not block merge."
+              echo
+              echo "Download the \`block-kit-preview\` artifact for the rendered dialog"
+              echo "and Playwright report. A landing on \`/workspace-signin\` means the"
+              echo "saved session expired rather than the payload being malformed."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
