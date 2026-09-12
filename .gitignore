@@ -45,3 +45,5 @@ tests/blockkit/artifacts/
 tests/blockkit/playwright-report/
 tests/blockkit/test-results/
 tests/blockkit/package-lock.json
+# Sanctioned scratch locations - AGENTS.md requires both, trailing-slash form
+temp/
