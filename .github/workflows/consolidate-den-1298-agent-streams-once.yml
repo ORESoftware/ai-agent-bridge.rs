@@ -1,0 +1,123 @@
+name: DEN-1298 consolidate agent streams once
+
+on:
+  push:
+    branches:
+      - agent/DEN-1298-consolidated-control-plane-hardening
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-1298-consolidate-agent-streams-once
+  cancel-in-progress: false
+
+jobs:
+  consolidate:
+    if: github.repository == 'ORESoftware/ai-agent-bridge.rs' && github.ref == 'refs/heads/agent/DEN-1298-consolidated-control-plane-hardening'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/DEN-1298-consolidated-control-plane-hardening
+          persist-credentials: true
+          submodules: false
+          fetch-depth: 0
+
+      - name: Verify exact reviewed source lineage
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_merge=6209f567e41eb381ec5985d3d8eeb036f03e09bb
+          source_head=a539f1c414dff4e5ea006a8023e68c96607c9e8c
+          carrier=.github/workflows/consolidate-den-1298-agent-streams-once.yml
+
+          git merge-base --is-ancestor "${base_merge}" HEAD
+          test "$(git diff --name-only "${base_merge}"...HEAD)" = "${carrier}"
+          git fetch --no-tags origin \
+            refs/heads/agent/alex-main-agent-diagnostic-harness:refs/remotes/origin/agent/alex-main-agent-diagnostic-harness
+          test "$(git rev-parse refs/remotes/origin/agent/alex-main-agent-diagnostic-harness)" = \
+            "${source_head}"
+
+      - name: Apply the semantic merge and self-delete
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_ref=refs/remotes/origin/agent/alex-main-agent-diagnostic-harness
+
+          git checkout "${source_ref}" -- \
+            docs/alex-main-agent-browser-tests.md \
+            src/bin/alex-main-agent-registry-browser.rs \
+            tests/browser/specs/registry.spec.mjs
+          git show "${source_ref}:.github/workflows/alex-main-agent-registry-boundary.yml" > \
+            .github/workflows/alex-main-agent-registry-boundary.yml
+
+          python - <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/alex-main-agent-registry-boundary.yml')
+          text = workflow.read_text()
+          needle = '.bindings == 13'
+          assert text.count(needle) == 1, 'expected one focused binding assertion'
+          workflow.write_text(text.replace(needle, '.bindings == 14'))
+
+          docs = Path('docs/alex-main-agent-browser-tests.md')
+          text = docs.read_text()
+          old = '`config/alex-main-agent.channels.json` — reviewed 13-channel registry.'
+          new = ('`config/alex-main-agent.channels.json` — thirteen manifest-backed project '
+                 'channels plus the separately reviewed `#oresoftware` control-plane pilot.')
+          assert text.count(old) == 1, 'expected reviewed registry description'
+          text = text.replace(old, new)
+          old = '6. verifies that all 13 bindings loaded;'
+          new = ('6. verifies that all 14 bindings loaded while the remote manifest audit '
+                 'remains scoped to the thirteen project-owned entries;')
+          assert text.count(old) == 1, 'expected binding-count runbook step'
+          docs.write_text(text.replace(old, new))
+          PY
+
+          rm .github/workflows/consolidate-den-1298-agent-streams-once.yml
+
+      - name: Validate combined 14-route policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check tests/browser/specs/registry.spec.mjs
+          python -m unittest -v tests.test_audit_alex_main_agent_manifests
+          python scripts/audit_alex_main_agent_manifests.py \
+            --registry config/alex-main-agent.channels.json \
+            --lock config/alex-main-agent.manifests.lock.json \
+            --report "${RUNNER_TEMP}/alex-main-agent-audit.json"
+          jq -e '
+            .status == "pass" and
+            .mode == "offline" and
+            .central_registry.bindings == 14 and
+            .central_registry.manifest_bindings == 13 and
+            (.manifests | length) == 13
+          ' "${RUNNER_TEMP}/alex-main-agent-audit.json"
+          find . -type d -name __pycache__ -prune -exec rm -rf {} +
+          find . -type f -name '*.py[co]' -delete
+          git diff --check
+
+          expected=$(cat <<'EOF'
+          .github/workflows/alex-main-agent-registry-boundary.yml
+          .github/workflows/consolidate-den-1298-agent-streams-once.yml
+          docs/alex-main-agent-browser-tests.md
+          src/bin/alex-main-agent-registry-browser.rs
+          tests/browser/specs/registry.spec.mjs
+          EOF
+          )
+          actual=$(git status --short | sed 's/^...//' | sort)
+          printf 'changed paths:\n%s\n' "${actual}"
+          test "${actual}" = "$(printf '%s\n' "${expected}" | sort)"
+
+      - name: Commit clean product files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(DEN-1298): consolidate control-plane routing and browser hardening"
+          git push origin HEAD:agent/DEN-1298-consolidated-control-plane-hardening
