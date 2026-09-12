@@ -1,0 +1,46 @@
+name: Agent Pontifex SDK
+
+on:
+  pull_request:
+    paths:
+      - sdk/**
+      - .github/workflows/agent-pontifex-sdk.yml
+  push:
+    branches: [main]
+    paths:
+      - sdk/**
+      - .github/workflows/agent-pontifex-sdk.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-pontifex-sdk-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: "1.95.0"
+          components: rustfmt, clippy
+      - name: Check protocol crate
+        run: |
+          cargo fmt --manifest-path sdk/agent-pontifex-protocol/Cargo.toml -- --check
+          cargo clippy --manifest-path sdk/agent-pontifex-protocol/Cargo.toml --all-targets -- -D warnings
+          cargo test --manifest-path sdk/agent-pontifex-protocol/Cargo.toml
+      - name: Check typed SDK crate
+        run: |
+          cargo fmt --manifest-path sdk/agent-pontifex-sdk/Cargo.toml -- --check
+          cargo clippy --manifest-path sdk/agent-pontifex-sdk/Cargo.toml --all-targets -- -D warnings
+          cargo test --manifest-path sdk/agent-pontifex-sdk/Cargo.toml
+          cargo doc --manifest-path sdk/agent-pontifex-sdk/Cargo.toml --no-deps

@@ -133,7 +133,7 @@ async fn enforce_http_admission(
 ) -> Response {
     if matches!(
         req.uri().path(),
-        "/" | "/health" | "/healthz" | "/readyz" | "/metrics"
+        "/" | "/health" | "/healthz" | "/readyz" | "/metrics" | "/.well-known/agent-pontifex"
     ) {
         return next.run(req).await;
     }
