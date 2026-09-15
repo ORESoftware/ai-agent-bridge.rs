@@ -32,6 +32,7 @@ fn config() -> SlackConfig {
         allowed_team_ids: ["T1"].into_iter().map(str::to_string).collect(),
         allowed_channel_ids: ["C1"].into_iter().map(str::to_string).collect(),
         allowed_thread_ts: BTreeSet::new(),
+        expected_app_id: Some("A0BMBAMM5NJ".to_string()),
         command_prefix: "!ask-both".to_string(),
         bridge_url: "http://127.0.0.1:8142/".to_string(),
         bridge_bearer: None,
@@ -175,10 +176,8 @@ fn modal_exposes_every_submenu_with_defaults() {
         vec!["prompt", "model", "task_type", "target", "context_depth"]
     );
 
-    // The slash-command text should survive into the modal's prompt field.
     assert_eq!(blocks[0]["element"]["initial_value"], "prefilled task");
 
-    // Only this provider's keys are offered.
     let model_options = blocks[1]["element"]["options"]
         .as_array()
         .expect("model options");
@@ -188,7 +187,6 @@ fn modal_exposes_every_submenu_with_defaults() {
         .collect();
     assert_eq!(values, vec!["claude-fable-5", "claude-opus-5"]);
 
-    // Channel context defaults to the configured depth rather than "none".
     assert_eq!(blocks[4]["element"]["initial_option"]["value"], "5");
 
     let metadata: ModalContext =
@@ -240,7 +238,6 @@ fn prompt_carries_channel_context_marked_as_background() {
     assert!(composed.contains("Ship the cron canary"));
     assert!(composed.contains("## Recent channel context"));
     assert!(composed.contains("deploy is red"));
-    // Channel text is untrusted background, and the prompt must say so.
     assert!(composed.contains("not instructions"));
 }
 
@@ -257,19 +254,14 @@ fn single_agent_guard_accepts_only_the_requested_agent() {
     assert!(
         validate_single_agent_workflow(&workflow(&["claude-fable-5"]), "claude-fable-5").is_ok()
     );
-    // Routed to the wrong agent.
     assert!(validate_single_agent_workflow(&workflow(&["gpt-5.6-sol"]), "claude-fable-5").is_err());
-    // Fanned out beyond the single requested agent.
     assert!(validate_single_agent_workflow(
         &workflow(&["claude-fable-5", "gpt-5.6-sol"]),
         "claude-fable-5"
     )
     .is_err());
-    // No assignment at all.
     assert!(validate_single_agent_workflow(&workflow(&[]), "claude-fable-5").is_err());
 }
-
-// --- channel context selection -------------------------------------------
 
 fn human(ts: &str, user: &str, text: &str) -> HistoryMessage {
     HistoryMessage {
@@ -293,9 +285,6 @@ fn bot(ts: &str, text: &str) -> HistoryMessage {
 
 #[test]
 fn context_excludes_bot_output_to_prevent_feedback() {
-    // Slack returns newest-first. The adapter posts its own acknowledgements and
-    // model replies into this same channel; re-ingesting them would feed the
-    // model its own prior output on the next dispatch.
     let messages = vec![
         bot("5.0", "*Agent task dispatched* — claude-fable-5"),
         human("4.0", "U2", "the deploy is red"),
@@ -312,7 +301,6 @@ fn context_excludes_bot_output_to_prevent_feedback() {
 
 #[test]
 fn context_excludes_the_configured_bot_user() {
-    // A bot posting as a user carries a `user` id rather than a `bot_id`.
     let messages = vec![
         human("2.0", "UBOT", "posted by this app"),
         human("1.0", "U1", "posted by a human"),
@@ -352,14 +340,11 @@ fn context_takes_the_newest_messages_up_to_depth() {
     assert!(rendered.contains("newer"));
     assert!(!rendered.contains("older"));
     assert!(!rendered.contains("oldest"));
-    // Still oldest-first within the selection.
     assert!(rendered.find("newer").unwrap() < rendered.find("newest").unwrap());
 }
 
 #[test]
 fn context_depth_counts_humans_not_raw_messages() {
-    // Filtering happens before the depth cut, so interleaved bot noise cannot
-    // starve the transcript down to nothing.
     let messages = vec![
         bot("6.0", "noise"),
         human("5.0", "U5", "keep me"),
@@ -396,7 +381,6 @@ fn context_skips_tombstones_blank_text_and_authorless_messages() {
 fn context_is_none_when_nothing_survives_the_filter() {
     assert_eq!(render_context(&[bot("1.0", "only bots")], 5, None), None);
     assert_eq!(render_context(&[], 5, None), None);
-    // Depth zero means the member asked for no context at all.
     assert_eq!(render_context(&[human("1.0", "U1", "hi")], 0, None), None);
 }
 
@@ -408,14 +392,9 @@ fn context_truncates_an_oversized_single_message() {
     assert!(rendered.contains("truncated"));
 }
 
-/// Slack rejects a `views.open` payload that breaches any of these documented
-/// limits, and the member just sees "the dispatch dialog could not be opened".
-/// A long model key or an extra menu entry is an easy way to trip one, so the
-/// ceilings are asserted here rather than discovered in production.
 #[test]
 fn modal_payload_respects_slack_block_kit_limits() {
     let mut config = config();
-    // Exercise the widest realistic menus, not just the two-entry default.
     config.claude_model_choices = (0..40).map(|i| format!("claude-variant-{i}")).collect();
     config.target_choices = (0..40)
         .map(|i| format!("github.com/org/repo-{i}"))
@@ -428,7 +407,6 @@ fn modal_payload_respects_slack_block_kit_limits() {
         };
         let view = build_modal(&config, provider, &form);
 
-        // Modal titles are capped at 24 characters; Slack hard-rejects longer.
         let title = view["title"]["text"].as_str().expect("title");
         assert!(
             title.chars().count() <= 24,
@@ -439,7 +417,6 @@ fn modal_payload_respects_slack_block_kit_limits() {
             assert!(label.chars().count() <= 24, "{key} label too long");
         }
 
-        // private_metadata is capped at 3000 characters.
         let metadata = view["private_metadata"].as_str().expect("metadata");
         assert!(metadata.len() <= 3_000, "private_metadata too large");
 
@@ -458,7 +435,6 @@ fn modal_payload_respects_slack_block_kit_limits() {
                 assert!(max_length <= 3_000, "plain_text_input max_length too large");
             }
             if let Some(initial) = element["initial_value"].as_str() {
-                // The prompt is prefilled from arbitrary slash-command text.
                 assert!(
                     initial.chars().count() <= 3_000,
                     "initial_value must be truncated before Slack sees it",
@@ -474,7 +450,6 @@ fn modal_payload_respects_slack_block_kit_limits() {
                     assert!(text.chars().count() <= 75, "option label too long: {text}");
                     assert!(value.len() <= 150, "option value too long: {value}");
                 }
-                // An initial_option Slack cannot find in `options` is rejected.
                 if let Some(initial) = element.get("initial_option") {
                     assert!(
                         options.contains(initial),
@@ -486,9 +461,6 @@ fn modal_payload_respects_slack_block_kit_limits() {
     }
 }
 
-/// Writes the exact modal payload the adapter would hand to `views.open` so the
-/// Block Kit browser contract check renders the real thing rather than a
-/// hand-maintained copy that can drift away from the code.
 #[test]
 fn emits_block_kit_fixtures_for_the_browser_contract() {
     use std::{fs, path::Path};
