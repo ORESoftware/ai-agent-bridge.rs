@@ -40,9 +40,10 @@ jobs:
   verify:
     permissions:
       contents: read
-    uses: ORESoftware/ores-gha-workflows/.github/workflows/container-images.yml@aee40347aac0b4a23fb0da38326540228741975c
+    uses: ORESoftware/ores-gha-workflows/.github/workflows/container-images.yml@f0725007da6d592ca912b8d3f841fb16d0a7513e
     with:
       image-name: oresoftware/ai-agent-bridge
+      submodules: recursive
       gcp-project: ""
       dockerhub-namespace: oresoftware
       push: false
