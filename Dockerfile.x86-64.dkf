@@ -1,4 +1,4 @@
-# GENERATED from Dockerfile (sha256:1e2a303633bac186) by ores-gha-workflows/scripts/render-dkf.mjs — target linux/amd64. Do not edit; edit Dockerfile and re-render.
+# GENERATED from Dockerfile (sha256:5df0fc13d9a3d164) by ores-gha-workflows/scripts/render-dkf.mjs — target linux/amd64. Do not edit; edit Dockerfile and re-render.
 # syntax=docker/dockerfile:1.7
 
 # One reviewed source tree builds all runtime binaries. Final targets copy only
@@ -9,7 +9,7 @@
 # The optional Postgres adapter is private shared-schema material and is tested
 # in the centralized exact-schema certification lane; it is not required by the
 # currently deployed bridge or provider runner.
-FROM --platform=linux/amd64 rust:1.97.1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa AS builder
+FROM --platform=linux/amd64 rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922 AS builder
 ARG TARGETARCH
 
 WORKDIR /workspace

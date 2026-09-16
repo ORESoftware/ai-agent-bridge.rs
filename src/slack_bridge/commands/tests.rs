@@ -32,6 +32,7 @@ fn config() -> SlackConfig {
         allowed_team_ids: ["T1"].into_iter().map(str::to_string).collect(),
         allowed_channel_ids: ["C1"].into_iter().map(str::to_string).collect(),
         allowed_thread_ts: BTreeSet::new(),
+        expected_app_id: Some("A0BMBAMM5NJ".to_string()),
         command_prefix: "!ask-both".to_string(),
         bridge_url: "http://127.0.0.1:8142/".to_string(),
         bridge_bearer: None,
