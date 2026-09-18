@@ -9,7 +9,7 @@
 # The optional Postgres adapter is private shared-schema material and is tested
 # in the centralized exact-schema certification lane; it is not required by the
 # currently deployed bridge or provider runner.
-FROM --platform=linux/arm64 rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922 AS builder
+FROM --platform=linux/arm64 rust:1.98.1-bookworm@sha256:9a73a5088750b4c95158ab26629c854c3d6fc4b173cb7bc8079ad252d8ed7bfa AS builder
 ARG TARGETARCH
 
 WORKDIR /workspace
